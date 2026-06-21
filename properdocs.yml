@@ -1,0 +1,21 @@
+site_name: MarkFeyn
+site_description: Render simple Feynman diagram code blocks as native SVG in MkDocs and ProperDocs.
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.instant
+    - content.code.copy
+
+plugins:
+  - feynman-diagrams
+
+markdown_extensions:
+  - fenced_code
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Syntax: syntax.md
+  - Examples: examples.md
+  - Development: development.md
