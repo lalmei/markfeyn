@@ -97,9 +97,29 @@ fermion v2->o1
   assert.ok(cyclicLayout.positions.v2.x < cyclicLayout.width);
 }
 
+function testLatexLabelMarkup() {
+  assert.deepEqual(feynman.parseLabelMarkup("\\mu^- p_{T} \\gamma"), [
+    { kind: "normal", text: "μ" },
+    { kind: "sup", text: "-" },
+    { kind: "normal", text: " p" },
+    { kind: "sub", text: "T" },
+    { kind: "normal", text: " γ" },
+  ]);
+
+  assert.deepEqual(feynman.parseLabelMarkup("m_{\\mu}^{2}"), [
+    { kind: "normal", text: "m" },
+    { kind: "sub", text: "μ" },
+    { kind: "sup", text: "2" },
+  ]);
+
+  assert.equal(feynman.labelMarkupToText("\\nu_\\mu \\to e^-"), "νμ → e-");
+  assert.equal(feynman.labelMarkupToText("\\unknown \\_literal"), "\\unknown _literal");
+}
+
 testSampleDiagram();
 testParserValidation();
 testEdgeLabelsAndAllParticleTypes();
 testCyclicInternalLayoutStaysBounded();
+testLatexLabelMarkup();
 
 console.log("feynman-diagrams tests passed");
