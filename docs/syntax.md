@@ -60,6 +60,24 @@ fermion i1->v1 v1->o1
 label i1:"incoming particle" o1:"outgoing particle"
 ```
 
+Labels support a small TeX-like subset for common symbols and scripts. Use `\mu`,
+`\gamma`, and other Greek symbol commands directly, plus `^` and `_` for
+superscripts and subscripts. Braces group multi-character scripts:
+
+```feynman
+incoming e positron
+outgoing muon antimuon
+fermion e->v1 positron->v1 v1->muon v1->antimuon
+label e:e^- positron:e^+ muon:\mu^- antimuon:\mu^+ v1:\gamma
+```
+
+```feynman
+incoming p1
+outgoing p2
+fermion p1->v1 v1->p2
+label p1:p_{T} p2:m_{\mu}^{2}
+```
+
 Edge labels use `from->to:text`:
 
 ```feynman

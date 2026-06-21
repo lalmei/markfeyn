@@ -96,6 +96,11 @@ Supported particles:
 - `scalar`: dashed line
 
 Labels use `node:text`. Edge labels are also accepted with `from->to:text`.
+Labels support a small TeX-like subset for common symbols and scripts:
+
+```feynman
+label electron:e^- muon:\mu^- vertex:\gamma momentum:p_{T}
+```
 
 ## Manual JavaScript Setup
 
