@@ -14,8 +14,8 @@ incoming i1 i2
 outgoing o1 o2
 fermion i1->v1 v2->o1
 photon v1->v2
-scalar i2->v2 v2->o2
-label i1:e⁻ i2:e⁺ o1:μ⁻ o2:μ⁺ v1:γ
+fermion i2->v1 v2->o2
+label i1:e⁻ i2:e⁺ o1:μ⁻ o2:μ⁺ v1->v2:γ
 ```
 
 Start with [Installation](installation.md), then see [Syntax](syntax.md) and [Examples](examples.md).
