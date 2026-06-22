@@ -36,6 +36,8 @@
     orientation: "horizontal",
     size: "medium",
   };
+  const GLUON_ENDPOINT_RAMP_LOOPS = 0.62;
+  const GLUON_JUNCTION_CAP_RADIUS = 1.7;
   const VISUAL_DEFAULTS = Object.freeze({
     edgeStrokeWidth: 2.6,
     gluonStrokeWidth: 2.1,
@@ -105,6 +107,78 @@
     ["large blob", "disk"],
     ["large-blob", "disk"],
   ]);
+  const BLOB_VERTEX_DEFAULT_RADII = Object.freeze({
+    blob: 18,
+    disk: 44,
+  });
+  const BLOB_VERTEX_SIZE_PRESETS = new Map([
+    ["tiny", 8],
+    ["small", 14],
+    ["medium", BLOB_VERTEX_DEFAULT_RADII.blob],
+    ["large", 28],
+    ["huge", BLOB_VERTEX_DEFAULT_RADII.disk],
+    ["disk", BLOB_VERTEX_DEFAULT_RADII.disk],
+  ]);
+  const BLOB_HATCHES = new Map([
+    ["hatched", "diagonal"],
+    ["hatch", "diagonal"],
+    ["diagonal", "diagonal"],
+    ["diagonal right", "diagonal"],
+    ["forward diagonal", "diagonal"],
+    ["slash", "diagonal"],
+    ["north east", "diagonal"],
+    ["north east lines", "diagonal"],
+    ["ne", "diagonal"],
+    ["diagonal reverse", "diagonal-reverse"],
+    ["diagonal left", "diagonal-reverse"],
+    ["reverse diagonal", "diagonal-reverse"],
+    ["backward diagonal", "diagonal-reverse"],
+    ["backslash", "diagonal-reverse"],
+    ["north west", "diagonal-reverse"],
+    ["north west lines", "diagonal-reverse"],
+    ["nw", "diagonal-reverse"],
+    ["cross", "cross"],
+    ["cross hatch", "cross"],
+    ["crosshatch", "cross"],
+    ["cross hatched", "cross"],
+    ["horizontal", "horizontal"],
+    ["horizontal lines", "horizontal"],
+    ["vertical", "vertical"],
+    ["vertical lines", "vertical"],
+    ["grid", "grid"],
+    ["grid lines", "grid"],
+  ]);
+  const BLOB_HATCH_PATTERNS = Object.freeze({
+    diagonal: {
+      size: 8,
+      paths: ["M -2 8 L 8 -2", "M 0 10 L 10 0", "M 2 12 L 12 2"],
+    },
+    "diagonal-reverse": {
+      size: 8,
+      paths: ["M -2 0 L 8 10", "M 0 -2 L 10 8", "M 2 -4 L 12 6"],
+    },
+    cross: {
+      size: 8,
+      paths: [
+        "M -2 8 L 8 -2",
+        "M 0 10 L 10 0",
+        "M -2 0 L 8 10",
+        "M 0 -2 L 10 8",
+      ],
+    },
+    horizontal: {
+      size: 7,
+      paths: ["M 0 2 L 7 2"],
+    },
+    vertical: {
+      size: 7,
+      paths: ["M 2 0 L 2 7"],
+    },
+    grid: {
+      size: 8,
+      paths: ["M 0 2 L 8 2", "M 2 0 L 2 8"],
+    },
+  });
   const LATEX_SYMBOLS = new Map(Object.entries({
     alpha: "\u03b1",
     beta: "\u03b2",
@@ -383,7 +457,7 @@
         continue;
       }
 
-      if (character === "\"") {
+      if (character === "\"" || character === "'") {
         quote = character;
         buffer += character;
         continue;
@@ -921,27 +995,221 @@
   }
 
   function parseVertices(source, vertices, errors, lineNumber) {
-    const pattern = /([^\s:]+):(?:"([^"]*)"|'([^']*)'|(\S+))/g;
-    let match;
-    let matched = false;
+    const specs = splitEdgeSpecs(source);
 
-    while ((match = pattern.exec(source)) !== null) {
-      matched = true;
-      const node = match[1];
-      const rawShape = match[2] ?? match[3] ?? match[4] ?? "";
-      const shape = normalizeVertexShape(rawShape);
+    if (!specs.length && source) {
+      errors.push(`Line ${lineNumber}: vertices must use node:shape pairs`);
+      return;
+    }
 
-      if (!shape) {
-        errors.push(`Line ${lineNumber}: unsupported vertex shape "${rawShape}"`);
+    specs.forEach((spec) => {
+      const parsed = parseVertexSpec(spec, errors, lineNumber);
+
+      if (parsed) {
+        vertices[parsed.node] = parsed.definition;
+      }
+    });
+  }
+
+  function parseVertexSpec(spec, errors, lineNumber) {
+    const separator = spec.indexOf(":");
+
+    if (separator <= 0 || separator === spec.length - 1) {
+      errors.push(`Line ${lineNumber}: vertices must use node:shape pairs`);
+      return null;
+    }
+
+    const node = spec.slice(0, separator).trim();
+    const rawDefinition = spec.slice(separator + 1).trim();
+
+    if (!node || /\s/.test(node)) {
+      errors.push(`Line ${lineNumber}: invalid vertex node "${node}"`);
+      return null;
+    }
+
+    const definition = parseVertexDefinition(rawDefinition, errors, lineNumber);
+
+    if (!definition) {
+      return null;
+    }
+
+    return { node, definition };
+  }
+
+  function parseVertexDefinition(rawDefinition, errors, lineNumber) {
+    const parsed = splitVertexShapeAndOptions(rawDefinition);
+    const rawShape = unwrapLabelValue(parsed.shape);
+    const shape = normalizeVertexShape(rawShape);
+
+    if (!shape) {
+      errors.push(`Line ${lineNumber}: unsupported vertex shape "${rawShape}"`);
+      return null;
+    }
+
+    const options = parseVertexOptions(parsed.options, errors, lineNumber);
+
+    if (!options) {
+      return null;
+    }
+
+    if ((options.hatch || options.size) && shape !== "blob" && shape !== "disk") {
+      errors.push(`Line ${lineNumber}: vertex options are only supported for blob and disk vertices`);
+      return null;
+    }
+
+    if (!Object.keys(options).length) {
+      return shape;
+    }
+
+    return { shape, ...options };
+  }
+
+  function splitVertexShapeAndOptions(rawDefinition) {
+    const source = String(rawDefinition || "").trim();
+
+    if (!source.endsWith("]")) {
+      return { shape: source, options: "" };
+    }
+
+    let quote = null;
+    let bracketDepth = 0;
+    let optionStart = -1;
+
+    for (let index = 0; index < source.length; index += 1) {
+      const character = source[index];
+
+      if (quote) {
+        if (character === quote) {
+          quote = null;
+        }
+
         continue;
       }
 
-      vertices[node] = shape;
+      if (character === "\"" || character === "'") {
+        quote = character;
+        continue;
+      }
+
+      if (character === "[") {
+        if (bracketDepth === 0) {
+          optionStart = index;
+        }
+
+        bracketDepth += 1;
+        continue;
+      }
+
+      if (character === "]") {
+        bracketDepth = Math.max(0, bracketDepth - 1);
+
+        if (bracketDepth === 0 && index !== source.length - 1) {
+          optionStart = -1;
+        }
+      }
     }
 
-    if (!matched && source) {
-      errors.push(`Line ${lineNumber}: vertices must use node:shape pairs`);
+    if (optionStart === -1 || bracketDepth !== 0) {
+      return { shape: source, options: "" };
     }
+
+    return {
+      shape: source.slice(0, optionStart).trim(),
+      options: source.slice(optionStart + 1, -1),
+    };
+  }
+
+  function parseVertexOptions(source, errors, lineNumber) {
+    const options = {};
+    let valid = true;
+
+    splitOptionList(source)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .forEach((item) => {
+        const parsed = parseOptionItem(item);
+        const name = normalizeOptionName(parsed.name);
+
+        if (name === "hatch" || name === "hatched" || name === "pattern") {
+          const hatch = normalizeBlobHatch(parsed.value || "diagonal");
+
+          if (!hatch) {
+            errors.push(`Line ${lineNumber}: unsupported blob hatch "${parsed.value}"`);
+            valid = false;
+            return;
+          }
+
+          options.hatch = hatch;
+          return;
+        }
+
+        if (name === "fill") {
+          const normalizedValue = normalizeOptionName(unwrapLabelValue(parsed.value || "hatched"));
+
+          if (normalizedValue === "shaded" || normalizedValue === "solid" || normalizedValue === "none") {
+            return;
+          }
+
+          const hatch = normalizeBlobHatch(parsed.value || "diagonal");
+
+          if (!hatch) {
+            errors.push(`Line ${lineNumber}: unsupported blob fill "${parsed.value}"`);
+            valid = false;
+            return;
+          }
+
+          options.hatch = hatch;
+          return;
+        }
+
+        if (name === "size" || name === "radius") {
+          const size = parseBlobVertexSize(parsed.value);
+
+          if (!Number.isFinite(size) || size <= 0) {
+            errors.push(`Line ${lineNumber}: blob vertex size must be a positive number or preset`);
+            valid = false;
+            return;
+          }
+
+          options.size = size;
+          return;
+        }
+
+        if (name === "diameter") {
+          const diameter = parseBlobVertexSize(parsed.value);
+
+          if (!Number.isFinite(diameter) || diameter <= 0) {
+            errors.push(`Line ${lineNumber}: blob vertex diameter must be a positive number or preset`);
+            valid = false;
+            return;
+          }
+
+          options.size = diameter / 2;
+          return;
+        }
+
+        errors.push(`Line ${lineNumber}: unknown vertex option "${parsed.name}"`);
+        valid = false;
+      });
+
+    return valid ? options : null;
+  }
+
+  function normalizeBlobHatch(value) {
+    const normalized = normalizeOptionName(unwrapLabelValue(value));
+
+    return BLOB_HATCHES.get(normalized) ?? null;
+  }
+
+  function parseBlobVertexSize(value) {
+    const normalized = normalizeOptionName(unwrapLabelValue(value));
+    const preset = BLOB_VERTEX_SIZE_PRESETS.get(normalized);
+
+    if (preset) {
+      return preset;
+    }
+
+    return parseDistanceValue(unwrapLabelValue(value));
   }
 
   function normalizeVertexShape(value) {
@@ -1745,8 +2013,12 @@
       svg.appendChild(edge);
     });
 
+    renderJunctionCaps(diagram, layout).forEach((cap) => {
+      svg.appendChild(cap);
+    });
+
     Object.entries(layout.positions).forEach(([node, position]) => {
-      const vertex = renderVertex(node, position, diagram);
+      const vertex = renderVertex(node, position, diagram, index);
 
       if (vertex) {
         svg.appendChild(vertex);
@@ -1797,6 +2069,48 @@
     return edge.type === "ghost";
   }
 
+  function renderJunctionCaps(diagram, layout) {
+    return junctionCapNodes(diagram, layout).map((cap) => createSvg("circle", {
+      class: "feynman-diagram__junction-cap",
+      cx: cap.position.x,
+      cy: cap.position.y,
+      r: GLUON_JUNCTION_CAP_RADIUS,
+      "aria-hidden": "true",
+    }));
+  }
+
+  function junctionCapNodes(diagram, layout) {
+    const incident = new Map();
+
+    diagram.edges
+      .filter(isVisibleJunctionEdge)
+      .forEach((edge) => {
+        markIncidentEdge(incident, edge.from, edge);
+        markIncidentEdge(incident, edge.to, edge);
+      });
+
+    return Object.entries(layout.positions)
+      .filter(([node, position]) => (
+        position.kind === "internal"
+        && !diagram.vertices?.[node]
+        && (incident.get(node)?.count ?? 0) > 1
+        && incident.get(node)?.hasGluon
+      ))
+      .map(([node, position]) => ({ node, position }));
+  }
+
+  function isVisibleJunctionEdge(edge) {
+    return !edge.hidden;
+  }
+
+  function markIncidentEdge(incident, node, edge) {
+    const current = incident.get(node) || { count: 0, hasGluon: false };
+
+    current.count += 1;
+    current.hasGluon = current.hasGluon || edge.type === "gluon";
+    incident.set(node, current);
+  }
+
   function createDefinitions(index) {
     const defs = createSvg("defs");
     const marker = createSvg("marker", {
@@ -1815,7 +2129,37 @@
     }));
     defs.appendChild(marker);
 
+    Object.entries(BLOB_HATCH_PATTERNS).forEach(([hatch, pattern]) => {
+      defs.appendChild(createBlobHatchPattern(index, hatch, pattern));
+    });
+
     return defs;
+  }
+
+  function createBlobHatchPattern(index, hatch, pattern) {
+    const patternElement = createSvg("pattern", {
+      id: blobHatchPatternId(index, hatch),
+      patternUnits: "userSpaceOnUse",
+      width: pattern.size,
+      height: pattern.size,
+    });
+
+    patternElement.appendChild(createSvg("rect", {
+      class: "feynman-diagram__hatch-fill",
+      x: 0,
+      y: 0,
+      width: pattern.size,
+      height: pattern.size,
+    }));
+
+    pattern.paths.forEach((path) => {
+      patternElement.appendChild(createSvg("path", {
+        class: "feynman-diagram__hatch-line",
+        d: path,
+      }));
+    });
+
+    return patternElement;
   }
 
   function renderEdge(edge, from, to, index) {
@@ -1929,8 +2273,9 @@
     });
   }
 
-  function renderVertex(node, position, diagram) {
-    const shape = diagram.vertices?.[node] ?? null;
+  function renderVertex(node, position, diagram, index = 0) {
+    const definition = diagram.vertices?.[node] ?? null;
+    const shape = vertexDefinitionShape(definition);
 
     if (!shape) {
       return null;
@@ -1998,10 +2343,27 @@
     }
 
     if (shape === "blob" || shape === "disk") {
+      const options = vertexDefinitionOptions(definition);
       const group = createSvg("g", {
         class: `feynman-diagram__vertex-group feynman-diagram__vertex-group--${shape}`,
       });
-      const radius = shape === "disk" ? 44 : 18;
+      const radius = options.size ?? BLOB_VERTEX_DEFAULT_RADII[shape];
+      const hatch = options.hatch;
+      const circleAttributes = {
+        class: [
+          "feynman-diagram__vertex",
+          "feynman-diagram__vertex--blob",
+          `feynman-diagram__vertex--${shape}`,
+          hatch ? "feynman-diagram__vertex--blob-hatched" : "feynman-diagram__vertex--blob-shaded",
+        ].join(" "),
+        cx: position.x,
+        cy: position.y,
+        r: radius,
+      };
+
+      if (hatch) {
+        circleAttributes.fill = `url(#${blobHatchPatternId(index, hatch)})`;
+      }
 
       group.appendChild(createSvg("circle", {
         class: "feynman-diagram__vertex-backdrop",
@@ -2009,17 +2371,36 @@
         cy: position.y,
         r: radius + 1,
       }));
-      group.appendChild(createSvg("circle", {
-        class: `feynman-diagram__vertex feynman-diagram__vertex--blob feynman-diagram__vertex--${shape}`,
-        cx: position.x,
-        cy: position.y,
-        r: radius,
-      }));
+      group.appendChild(createSvg("circle", circleAttributes));
 
       return group;
     }
 
     return null;
+  }
+
+  function vertexDefinitionShape(definition) {
+    if (!definition) {
+      return null;
+    }
+
+    if (typeof definition === "string") {
+      return definition;
+    }
+
+    return definition.shape ?? null;
+  }
+
+  function vertexDefinitionOptions(definition) {
+    if (!definition || typeof definition === "string") {
+      return {};
+    }
+
+    return definition;
+  }
+
+  function blobHatchPatternId(index, hatch) {
+    return `feynman-hatch-${hatch}-${index}`;
   }
 
   function wavePath(from, to, amplitude, wavelength) {
@@ -2066,8 +2447,9 @@
       const sample = geometrySample(geometry, t);
       const tangent = normalizeVector(sample.tangent.x, sample.tangent.y);
       const normal = perpendicularVector(tangent);
-      const along = Math.sin(phase) * radius;
-      const offset = Math.cos(phase) * radius;
+      const taper = gluonEndpointTaper(t, loops);
+      const along = Math.sin(phase) * radius * taper;
+      const offset = Math.cos(phase) * radius * taper;
 
       points.push({
         x: sample.point.x + tangent.ux * along + normal.x * offset,
@@ -2076,6 +2458,13 @@
     }
 
     return pointsToPath(points);
+  }
+
+  function gluonEndpointTaper(t, loops) {
+    const loopsFromEndpoint = Math.min(t, 1 - t) * loops;
+    const edgeProgress = Math.min(1, Math.max(0, loopsFromEndpoint / GLUON_ENDPOINT_RAMP_LOOPS));
+
+    return edgeProgress * edgeProgress * (3 - 2 * edgeProgress);
   }
 
   function edgePath(edge, from, to) {
@@ -3017,6 +3406,11 @@
         stroke-dasharray: 1 7;
       }
 
+      .feynman-diagram__junction-cap {
+        fill: currentColor;
+        stroke: none;
+      }
+
       .feynman-diagram__brace {
         fill: none;
         stroke: currentColor;
@@ -3059,9 +3453,30 @@
       }
 
       .feynman-diagram__vertex--blob {
+        stroke-width: ${VISUAL_DEFAULTS.blobStrokeWidth};
+      }
+
+      .feynman-diagram__vertex--blob-shaded {
         fill: currentColor;
         fill-opacity: 0.14;
-        stroke-width: ${VISUAL_DEFAULTS.blobStrokeWidth};
+      }
+
+      .feynman-diagram__vertex--blob-hatched {
+        fill-opacity: 1;
+      }
+
+      .feynman-diagram__hatch-fill {
+        fill: currentColor;
+        fill-opacity: 0.08;
+        stroke: none;
+      }
+
+      .feynman-diagram__hatch-line {
+        fill: none;
+        stroke: currentColor;
+        stroke-linecap: square;
+        stroke-opacity: 0.55;
+        stroke-width: 1.35;
       }
 
       .feynman-diagram__vertex-mark {
@@ -3148,6 +3563,7 @@
     edgeLabelPosition,
     momentumArrowGeometry,
     braceGeometry,
+    junctionCapNodes,
     parseLabelMarkup,
     labelMarkupToText,
     labelSegmentText,
