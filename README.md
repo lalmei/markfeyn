@@ -159,6 +159,22 @@ filled interaction point.
 Supported shapes are `dot`, `square-dot`, `empty-dot`, `crossed-dot`, `cross`,
 `blob`, and `disk`.
 
+Blob and disk vertices can use optional bracketed styling:
+
+````markdown
+```feynman
+incoming a
+outgoing b
+plain a->disk disk->b
+vertex disk:disk[hatch=cross,size=52]
+```
+````
+
+Supported hatch fills are `diagonal`, `diagonal-reverse`, `cross`,
+`horizontal`, `vertical`, and `grid`; TikZ-style aliases such as
+`north east lines` and `north west lines` are accepted. `size` and `radius`
+set the circle radius in SVG pixels, and `diameter` sets the full circle width.
+
 ## Manual JavaScript Setup
 
 If you do not want to use a plugin, copy the bundled renderer from:
