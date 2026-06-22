@@ -54,6 +54,20 @@ Supported vertex shapes:
 | `disk`, `large-blob` | Larger shaded disk for contact regions |
 
 Shape names with spaces can be quoted, such as `vertex v:"crossed dot"`.
+Blob and disk vertices also accept bracketed options:
+
+```feynman
+incoming a
+outgoing b
+plain a->disk disk->b
+vertex disk:disk[hatch=cross,size=52]
+```
+
+Supported hatch fills are `diagonal`, `diagonal-reverse`, `cross`,
+`horizontal`, `vertical`, and `grid`. TikZ-style aliases such as
+`north east lines` and `north west lines` are accepted. `size` and `radius`
+set the circle radius in SVG pixels; `diameter` sets the full circle width.
+Named sizes are `tiny`, `small`, `medium`, `large`, `huge`, and `disk`.
 
 ## Edges
 

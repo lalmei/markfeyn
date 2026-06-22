@@ -106,6 +106,45 @@ label q:q g:g q2:q h:H v1->v2:γ
   assert.ok(layout.positions.v1.x < layout.positions.v2.x);
 }
 
+function testGluonPathTouchesEndpoints() {
+  const from = { x: 0, y: 0 };
+  const to = { x: 100, y: 0 };
+  const path = pathNumbers(feynman.gluonPath(from, to, 5.5, 13));
+  const curvedPath = pathNumbers(feynman.gluonPathForEdge({
+    curve: { side: "left", amount: 0.35 },
+  }, from, to, 5.5, 13));
+
+  assert.deepEqual(path.slice(0, 2), [from.x, from.y]);
+  assert.deepEqual(path.slice(-2), [to.x, to.y]);
+  assert.ok(path.some((coordinate, index) => index % 2 === 1 && Math.abs(coordinate) > 1));
+  assert.deepEqual(curvedPath.slice(0, 2), [from.x, from.y]);
+  assert.deepEqual(curvedPath.slice(-2), [to.x, to.y]);
+}
+
+function testGluonJunctionCaps() {
+  const source = `
+incoming q
+outgoing q2 g
+fermion q->v1 v1->q2
+gluon v1->g
+`;
+  const diagram = feynman.parseFeynman(source);
+  const layout = feynman.layoutFeynman(diagram);
+  const styled = feynman.parseFeynman(`${source}\nvertex v1:dot`);
+  const styledLayout = feynman.layoutFeynman(styled);
+  const photonOnly = feynman.parseFeynman(`
+incoming q
+outgoing q2 gamma
+fermion q->v1 v1->q2
+photon v1->gamma
+`);
+  const photonOnlyLayout = feynman.layoutFeynman(photonOnly);
+
+  assert.deepEqual(feynman.junctionCapNodes(diagram, layout).map((cap) => cap.node), ["v1"]);
+  assert.deepEqual(feynman.junctionCapNodes(styled, styledLayout), []);
+  assert.deepEqual(feynman.junctionCapNodes(photonOnly, photonOnlyLayout), []);
+}
+
 function testCyclicInternalLayoutStaysBounded() {
   const cyclic = feynman.parseFeynman(`
 incoming i1
@@ -336,6 +375,28 @@ label c:X
   assert.equal(standalone.vertices.c, "cross");
   assert.equal(standaloneLayout.positions.c.x, 150);
   assert.equal(standaloneLayout.positions.c.y, 110);
+
+  const customized = feynman.parseFeynman(`
+position blob 120 110
+position disk 240 110
+position tall 360 110
+vertex blob:blob[hatch=diagonal,size=24] disk:disk[pattern="north west lines",radius=52] tall:blob[hatch=grid,diameter=60]
+`);
+
+  assert.deepEqual(customized.errors, []);
+  assert.deepEqual(customized.vertices.blob, { shape: "blob", hatch: "diagonal", size: 24 });
+  assert.deepEqual(customized.vertices.disk, { shape: "disk", hatch: "diagonal-reverse", size: 52 });
+  assert.deepEqual(customized.vertices.tall, { shape: "blob", hatch: "grid", size: 30 });
+
+  const invalid = feynman.parseFeynman(`
+position v 100 100
+vertex v:dot[hatch=cross] bad:blob[hatch=zigzag] tiny:blob[size=0]
+`);
+
+  assert.equal(invalid.errors.length, 3);
+  assert.match(invalid.errors[0], /only supported for blob and disk/);
+  assert.match(invalid.errors[1], /unsupported blob hatch/);
+  assert.match(invalid.errors[2], /size must be a positive number or preset/);
 }
 
 function testCurvedEdgesInlineLabelsAndBraces() {
@@ -613,6 +674,8 @@ function testDocumentedExamplesParseAndLayout() {
 testSampleDiagram();
 testParserValidation();
 testEdgeLabelsAndAllParticleTypes();
+testGluonPathTouchesEndpoints();
+testGluonJunctionCaps();
 testCyclicInternalLayoutStaysBounded();
 testLatexLabelMarkup();
 testLayoutOptionsManualPositionsAndInvisibleEdges();

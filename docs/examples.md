@@ -555,8 +555,8 @@ simplification made to express it in MarkFeyn.
 
 Recreated from the dash-cut definition in Eq. (4.7) of
 [arXiv:2606.18929](https://arxiv.org/abs/2606.18929). The source diagram is a
-four-leg contact disk with a vertical dashed cut. MarkFeyn uses a shaded disk
-instead of the original hatched TikZ fill.
+four-leg contact disk with a vertical dashed cut. MarkFeyn uses a hatched disk
+to match the original TikZ fill.
 
 ```feynman
 options width=560 height=360
@@ -569,7 +569,7 @@ position o3 480 95
 position o4 480 265
 plain o1->disk o2->disk disk->o3 disk->o4
 ghost cutBottom->cutTop
-vertex disk:disk
+vertex disk:disk[hatch="north east lines",size=48]
 ```
 
 Source:
@@ -586,7 +586,7 @@ position o3 480 95
 position o4 480 265
 plain o1->disk o2->disk disk->o3 disk->o4
 ghost cutBottom->cutTop
-vertex disk:disk
+vertex disk:disk[hatch="north east lines",size=48]
 ```
 ````
 
