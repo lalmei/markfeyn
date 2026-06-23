@@ -18,4 +18,4 @@ fermion i2->v1 v2->o2
 label i1:e⁻ i2:e⁺ o1:μ⁻ o2:μ⁺ v1->v2:γ
 ```
 
-Start with [Installation](installation.md), then see [Syntax](syntax.md) and [Examples](examples.md).
+Start with [Installation](installation.md), then see [Syntax](syntax.md) and [Examples](examples/index.md).

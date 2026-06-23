@@ -4,6 +4,8 @@ A diagram is written as a fenced code block tagged with `feynman`:
 
 ````markdown
 ```feynman
+incoming i1 i2
+outgoing o1 o2
 fermion i1->v1 v2->o1
 photon v1->v2
 fermion i2->v1 v2->o2
@@ -13,10 +15,10 @@ label i1:e⁻ i2:e⁺ o1:μ⁻ o2:μ⁺ v1->v2:γ
 
 ## Nodes
 
-External nodes are inferred from visible degree-1 endpoints. A terminal that
-appears as the source of its only visible edge is treated as incoming; a
-terminal that appears as the target of its only visible edge is treated as
-outgoing:
+Visible degree-1 endpoints are external nodes, but MarkFeyn does not infer
+incoming or outgoing roles from edge source/target order. A degree-1 endpoint
+without an explicit role is unclassified and is laid out symmetrically when no
+reliable process direction exists:
 
 ```feynman
 fermion e->v1 v1->muon
@@ -24,8 +26,8 @@ fermion positron->v1 v1->antimuon
 label e:e⁻ positron:e⁺ muon:μ⁻ antimuon:μ⁺
 ```
 
-Use `incoming` and `outgoing` when you want to override inference or set an
-explicit terminal order:
+Use `incoming` and `outgoing` when the diagram has a known process direction or
+when you need an explicit terminal order:
 
 ```feynman
 incoming positron e
@@ -36,8 +38,8 @@ label e:e⁻ positron:e⁺ muon:μ⁻ antimuon:μ⁺
 ```
 
 Internal vertices do not need separate declarations. Any node used in a visible
-edge with degree greater than one, or any node not inferred or declared as a
-terminal, is treated as an internal vertex.
+edge with degree greater than one, or any node not declared or detected as an
+external endpoint, is treated as an internal vertex.
 
 ## Vertex Shapes
 
@@ -161,7 +163,7 @@ The obvious differences are:
 | Layout algorithms | Uses bundled ELK.js backends for `spring`, `spring-electrical`, `layered`, and `tree`; these are compatible graph-layout families, not pixel-identical TikZ/PGF output. |
 | Option support | Only documented options are recognized. Unknown TikZ keys are ignored only when they are part of unsupported edge options, or reported as parse errors for diagram-level options. |
 | Coordinates | Manual `position node x y` values are absolute SVG coordinates, not TeX dimensions or TikZ coordinate expressions. |
-| Labels | Supports a small TeX-like label subset for common symbols, scripts, and overlines; arbitrary LaTeX math is not typeset. |
+| Labels | Supports a small TeX-like label subset for common symbols, scripts, and overlines. When MathJax is loaded on the page (as in the bundled docs sites), labels with richer subscripts such as `g_{\pi\pi n}` are typeset through MathJax automatically. |
 | Styling | Uses bundled CSS classes and fixed SVG geometry defaults instead of TikZ styles, scopes, layers, decorations, and reusable PGF styles. |
 | Arrows and momenta | Arrowheads and momentum arrows are SVG glyphs computed from the edge geometry, so spacing and orientation are approximate rather than TikZ-identical. |
 
@@ -180,8 +182,8 @@ then normalizes the result into its SVG coordinate model.
 | Default layout | `\feynmandiagram` and non-starred `\diagram` inject TikZ's `spring layout`. Starred `\diagram*` does not inject the automatic layout and is intended for manually placed vertices. | `layout spring` is the default for every diagram unless the source selects another MarkFeyn layout. |
 | Spring layout | PGF's `spring layout` selects Hu's 2006 spring layout. The implementation supports fixed `desired at` nodes, graph-distance forces, adaptive step length, convergence tolerance, and optional multilevel coarsening. | Uses ELK `force`, normalized into MarkFeyn's viewBox and terminal-side model. |
 | Spring-electrical layout | PGF's `spring electrical layout` selects a separate Hu 2006 electrical algorithm. It supports per-node `electric charge`, a spring constant, optional quadtree approximation for remote repulsive forces, adaptive convergence, and optional coarsening. | Uses ELK `force` with stronger spacing and repulsion settings than `spring`. |
-| Layered layout | PGF's `layered layout` is the modular Sugiyama method: cycle removal, layer assignment, crossing minimization, node positioning, and edge routing. Its default node ranking uses a network-simplex implementation, and its default crossing minimization uses weighted-median sweeps. | Uses ELK `layered`, with inferred or declared incoming nodes constrained to the first layer and outgoing nodes to the last layer before MarkFeyn terminal-side normalization. |
-| Tree layout | PGF's `tree layout` uses the Reingold-Tilford algorithm on a tree or spanning tree, with subtree contour spacing and options for missing children. | Uses ELK `mrtree`, preserving declared external sides and manual positions. Tree layout does not infer degree-1 terminals automatically. |
+| Layered layout | PGF's `layered layout` is the modular Sugiyama method: cycle removal, layer assignment, crossing minimization, node positioning, and edge routing. Its default node ranking uses a network-simplex implementation, and its default crossing minimization uses weighted-median sweeps. | Uses ELK `layered`, with declared incoming nodes constrained to the first layer and outgoing nodes to the last layer before MarkFeyn terminal-side normalization. Unclassified endpoints do not receive process-side constraints. |
+| Tree layout | PGF's `tree layout` uses the Reingold-Tilford algorithm on a tree or spanning tree, with subtree contour spacing and options for missing children. | Uses MarkFeyn's deterministic tree placer after semantic analysis, preserving declared external sides and manual positions. |
 | Manual placement | TikZ accepts coordinates, relative positioning, scopes, transforms, and TeX dimensions. | `position node x y` pins absolute SVG coordinates only. These pinned nodes are respected by all MarkFeyn layouts. |
 | Invisible edges | TikZ-Feynman recommends `draw=none` edges because PGF layout still treats them as edges, while the drawing pass skips them. | `invisible` and `hidden` edges are kept in most layout calculations and skipped by the SVG renderer. |
 | Edge paths | TikZ-Feynman draws particle lines through PGF styles, postactions, and decorations. Photons use a custom `complete sines` decoration, gluons use PGF's `coil` decoration, and momentum arrows use path-construction decorations. | MarkFeyn converts each edge to a straight line or cubic Bezier, then samples that geometry for photon waves, gluon loops, labels, and momentum arrows. |
@@ -198,9 +200,115 @@ The renderer keeps this graph contract around ELK:
 - Hidden and invisible edges are passed to ELK but skipped by SVG rendering.
 - `incoming` and `outgoing` remain optional MarkFeyn side/order hints, not
   TikZ syntax.
-- External nodes are placed on terminal sides after ELK normalization.
+- Unclassified external endpoints remain distinct from incoming and outgoing
+  states; they do not create a process direction by themselves.
+- Declared incoming and outgoing nodes are placed on terminal sides after ELK
+  normalization.
 - Single visible terminal legs are kept straight where possible by matching the
   terminal node's cross-axis coordinate to its adjacent internal node.
+
+Milestone 2 adds a stricter semantic ordering and diagnostics contract:
+
+- External ordering is stable. Declared `incoming` and `outgoing` nodes keep
+  their declaration order on process boundaries. If a previous semantic order
+  is supplied by API options it is used next, followed by source declaration
+  order, then stable node id order.
+- Symmetric diagrams keep unclassified degree-1 endpoints unclassified. They
+  are ordered deterministically for balanced contact and tree placement without
+  assigning incoming or outgoing process meaning.
+- Layered process diagrams use explicit ELK ports. Incoming terminal legs use
+  the process-start side and adjacent internal ports use the opposite side;
+  outgoing terminal legs use the process-end side and adjacent internal ports
+  use the opposite side. Fermion arrows, momentum arrows, and edge source/target
+  spelling do not determine process direction.
+- Spring, spring-electrical, and symmetric layouts still avoid applying those
+  layered port constraints, although debug diagnostics can show the inferred
+  port plan.
+- Multiple visible internal propagators between the same two interaction
+  vertices are detected as parallel propagator groups. When the group is an
+  internal two-vertex bubble, topology reports it as `selfEnergy`.
+- Uncurved parallel internal propagators are assigned deterministic cubic arcs.
+  For two propagators, the arcs are placed on opposite sides of the principal
+  axis. Existing label and momentum helpers then sample those curved paths, so
+  labels and momentum arrows stay outside the loop where the geometry allows it.
+- `layout.score` contains a lightweight numeric score with a breakdown for
+  missing coordinates, non-finite coordinates, external boundary role
+  violations, parallel-edge overlap, external alignment, rough symmetry, loop
+  edge overlap, loop readability, loop symmetry, external leg straightness,
+  node-label overlap, edge-label overlap, label-label overlap, labels inside
+  loop interiors, and momentum-label or momentum-arrow loop collisions.
+- `layout.diagnostics` includes topology, orientation evidence, external
+  ordering, port constraints, parallel-edge groups, label placement, and the
+  score summary. ELK's compiled graph remains debug-only under `layout.debug`.
+
+Milestones 3A, 3B, and 3D add focused one-loop candidate layouts plus final
+label placement:
+
+- Topology analysis detects triangle loops, box loops, tadpoles, and simple
+  one-loop polygon cycles among interaction vertices. Generic polygon loops
+  with five or more loop vertices use the `polygonLoop` topology. Two-vertex
+  self-energy bubbles made from parallel internal propagators keep the
+  Milestone 2 `selfEnergy` behavior and are not replaced by the loop-candidate
+  path.
+- The candidate generator tries deterministic placements for the detected loop
+  and chooses the lowest-scoring candidate. The implemented score checks cover
+  missing or non-finite coordinates, external role placement, edge overlap,
+  loop readability, soft loop symmetry, label placement, and straightness for
+  declared external legs.
+- Label-aware scoring estimates node-label, edge-label, momentum-label,
+  momentum-arrow, and loop-edge-label boxes without browser font metrics.
+  Triangle, box, polygon, tadpole, and self-energy-like loop labels prefer
+  exterior placements when the candidate geometry makes an outside placement
+  available. Explicit label-side options such as `edge label'` and
+  `momentum'` are preserved; scoring may choose a different loop candidate, but
+  it does not rewrite the label option.
+- After geometric placement finishes, a deterministic label-placement pass
+  evaluates local bounding-box candidates for node labels, edge labels, and
+  momentum label/arrow groups. It chooses concrete anchors that minimize
+  residual overlap with vertices, sampled propagators, loop interiors, and
+  previously placed labels. The result is exposed as `layout.labelPlacement`,
+  reported with diagnostic stage `label-placement`, and reused by the SVG
+  renderer so final score diagnostics reflect the rendered anchors.
+- Vacuum one-loop diagrams without external states use deterministic centered
+  polygon placement and keep symmetric orientation. Disconnected two-loop
+  vacuum regions are separated deterministically; arbitrary higher-order vacuum
+  packing remains a documented limitation.
+- Multi-loop diagrams with two nested, overlapping, or disjoint loop regions are
+  decomposed into loop regions and assigned bounded semantic candidates before
+  falling back to ELK. The topology diagnostics expose `loopRegions`,
+  `biconnectedComponents`, articulation vertices, bridges, and the multiloop
+  sub-kind.
+- Candidate generation is semantic. Declared `incoming` and `outgoing` roles
+  influence external placement, but fermion arrows, momentum-arrow direction,
+  and edge source/target spelling do not infer a process direction.
+- Manual `position` coordinates are preserved. Existing explicit curve options,
+  `out=...`, and `in=...` are preserved; only uncurved tadpole self-loops get
+  an automatic self-loop curve.
+- `preservePreviousLayout: true` with a `previousLayout` object preserves shared
+  vertex coordinates and external ordering for small source edits. This is a
+  stability hint, not a guarantee when the topology class changes.
+- Selected label-aware candidates are reported in `layout.diagnostics` with
+  stage `loop-candidate`. When label-aware scoring changes the choice from the
+  non-label baseline, the diagnostic and `layout.debug.loopCandidates` expose
+  that fact. Candidate summaries include total, non-label, and label score
+  totals.
+- Pass `{ profile: true }` or `{ debug: true }` to include stage timings in
+  `layout.debug.profile`. The `quality` option (`fast`, `balanced`, or `high`)
+  bounds deterministic loop-candidate enumeration.
+
+Current automatic-layout limitations are intentional: label placement uses
+estimated SVG text boxes, not exact TeX/TikZ font metrics; MarkFeyn uses
+bounded two-loop heuristics rather than a complete N-loop optimizer; and
+incremental layout stability is best-effort for unchanged vertices.
+- Labels and momentum arrows still use the normal SVG geometry helpers with
+  resolved placement anchors. For loop edges this keeps them outside the loop
+  where the selected geometry and side options make that possible, but it does
+  not run a global label-packing optimizer or move vertices to create label
+  space.
+
+Current automatic layout still does not perform general higher-order multiloop
+optimization. Use manual positions or explicit curve options when exact
+publication geometry matters.
 
 ### TikZ-Feynman Initial Settings
 
@@ -215,12 +323,11 @@ the completed graph:
 | `vertical=a to b` | Shorthand for `orient tail=a`, `orient head=b`, and `orient=-90`; the line from `a` to `b` is aligned vertically. | `vertical a to b` |
 | `vertical'=a to b` | Same line alignment as `vertical`, with the rest of the graph flipped across that line. | `vertical' a to b` |
 
-MarkFeyn's `orientation` command is different. It places inferred or declared
-external nodes on terminal sides before layout: `horizontal` places incoming
-nodes on the left and outgoing nodes on the right, while `horizontal-reverse`
-swaps those sides. `vertical` and `vertical-reverse` keep the same terminal-side
-idea but use a taller canvas and encourage internal vertices to stack
-vertically.
+MarkFeyn's `orientation` command is different. It places declared external
+roles on terminal sides before layout: `horizontal` places incoming nodes on the
+left and outgoing nodes on the right, while `horizontal-reverse` swaps those
+sides. `vertical` and `vertical-reverse` keep the same terminal-side idea but
+use a taller canvas and encourage internal vertices to stack vertically.
 
 The TikZ-style `horizontal a to b` and `vertical a to b` commands are separate
 post-layout alignment commands. They rotate the completed layout so the named
@@ -296,27 +403,39 @@ The implementation pipeline is:
 1. `parseFeynman` reads the block line by line into a diagram object containing
    explicit incoming and outgoing hints, edges, labels, braces, manual
    positions, vertex shapes, options, and parse errors.
-2. `layoutFeynman` returns a promise. It infers missing spring/layered terminal
-   classifications from visible degree-1 endpoints, merges defaults, diagram
-   options, and caller options, sends the graph to ELK, then normalizes the
-   result into the selected viewBox.
+2. `layoutFeynman` returns a promise. It converts the parsed diagram into a
+   semantic graph with incoming, outgoing, unclassified, and internal vertices;
+   validates references and role conflicts; classifies simple topology; chooses
+   process, symmetric, or fixed orientation; sends eligible graphs to ELK; then
+   normalizes the result into the selected viewBox.
 3. `renderFeynmanElement` draws the positioned graph as SVG paths, markers,
    labels, vertex shapes, and braces. Parse errors are kept visible in a
    caption instead of failing silently.
 
-The automatic layouts share the same coordinate model. Inferred or declared
-incoming nodes are placed on one terminal side, outgoing nodes on the opposite
+The automatic layouts share the same coordinate model. Declared incoming nodes
+are placed on one terminal side, declared outgoing nodes on the opposite
 terminal side, and the orientation option controls which side is considered the
-start or end. Manual `position` commands are reapplied after automatic layout
-and post-layout orientation, so absolute coordinates always win.
+start or end. Unclassified external nodes remain unclassified and use symmetric
+placement when no reliable process direction exists. Manual `position` commands
+are reapplied after automatic layout and post-layout orientation, so absolute
+coordinates always win.
 Hidden or invisible edges still participate in layout, but are skipped by the
 SVG renderer.
 
 After ELK returns coordinates, MarkFeyn applies a small normalization layer to
 match common Feynman-diagram expectations:
 
-- Spring and layered layouts infer external terminals from visible degree-1
-  endpoints when `incoming` and `outgoing` are omitted.
+- Visible degree-1 endpoints without explicit roles are represented as
+  unclassified external states instead of inferred from edge direction.
+- Symmetric unclassified contact and tree diagrams use deterministic balanced
+  placement rather than invented incoming/outgoing sides.
+- Balanced two-center trees with matching unclassified leaf fans (any N→N per center,
+  even **total** unclassified count), and unequal N→(N±1) splits with **odd total**
+  count and the median leaf at top or bottom center, and symmetric two-point self-energy loops with one
+  unclassified external leg on each loop endpoint, receive focused reflection-symmetric
+  refinement. Balanced two-center trees use the same left-to-right scattering geometry as
+  explicit-role process diagrams, without inferring process roles. This heuristic does
+  not solve general graph automorphisms or force symmetry when leaf counts differ.
 - Common two-in/two-out exchange topologies center their interaction vertices
   between paired terminal legs so the internal propagator is not tilted by
   arbitrary force-layout coordinates.
@@ -347,8 +466,8 @@ Layout implementations:
 
 | Layout | Implementation |
 | --- | --- |
-| `layered` | ELK `layered`, with inferred or declared incoming nodes constrained to the first layer and outgoing nodes constrained to the last layer where applicable. |
-| `tree` | ELK `mrtree`, preserving declared external sides and manual positions without automatic terminal inference. |
+| `layered` | ELK `layered`, with declared incoming nodes constrained to the first layer and outgoing nodes constrained to the last layer where applicable. |
+| `tree` | Deterministic MarkFeyn tree placement, preserving declared external sides and manual positions without automatic terminal-role inference. |
 | `spring` | ELK `force`, with fixed MarkFeyn spacing and seed options. |
 | `spring-electrical` | ELK `force` with stronger spacing and repulsion settings than `spring`. |
 
