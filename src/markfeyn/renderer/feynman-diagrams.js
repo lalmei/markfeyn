@@ -1,4 +1,16 @@
 import ELK from "elkjs/lib/elk.bundled.js";
+import { buildSemanticElkGraph } from "./layout/elk-compiler.js";
+import { compareExternalOrdering } from "./layout/external-order.js";
+import { applyIncrementalStability } from "./layout/incremental.js";
+import { selectLoopCandidateLayout } from "./layout/loop-candidates.js";
+import { selectMultiloopLayout } from "./layout/multiloop.js";
+import {
+  attachLayoutAnalysis,
+  prepareFeynmanLayout,
+  shouldUseSymmetricContactLayout,
+  shouldUseSymmetricTreeLayout,
+  shouldUseSymmetricUnclassifiedLayout,
+} from "./layout/layout.js";
 
 (function () {
   "use strict";
@@ -266,6 +278,8 @@ import ELK from "elkjs/lib/elk.bundled.js";
     ["₈", "8"],
     ["₉", "9"],
   ]);
+  const MATHJAX_COMPLEX_COMMANDS = /\\(frac|sqrt|sum|prod|int|oint|text|mathbf|mathrm|mathcal|mathbb|hat|tilde|vec|begin)\b/;
+  const XHTML_NS = "http://www.w3.org/1999/xhtml";
   let diagramSerial = 0;
 
   function parseFeynman(source) {
@@ -941,6 +955,16 @@ import ELK from "elkjs/lib/elk.bundled.js";
     return null;
   }
 
+  function normalizeQuality(value) {
+    const normalized = String(value || "balanced").toLowerCase();
+
+    if (normalized === "fast" || normalized === "high") {
+      return normalized;
+    }
+
+    return "balanced";
+  }
+
   function normalizeOrientation(value) {
     const normalized = value.toLowerCase().replace(/_/g, "-").replace(/\s+/g, "-").trim();
 
@@ -1316,25 +1340,139 @@ import ELK from "elkjs/lib/elk.bundled.js";
   let elkInstance = null;
 
   async function layoutFeynman(diagram, options) {
-    const layoutDiagram = diagramWithInferredTerminals(diagram, resolveRequestedLayout(diagram, options));
+    const prepared = prepareFeynmanLayout(diagram, options);
+    const layoutDiagram = prepared.compatibleDiagram;
     const layoutOptions = resolveLayoutOptions(layoutDiagram, options);
+    let rawLayout;
+
+    applyParallelPropagatorCurves(layoutDiagram, prepared);
 
     try {
-      return finalizeLayout(
-        layoutDiagram,
-        await layoutFeynmanWithElk(layoutDiagram, layoutOptions),
-        layoutOptions
-      );
+      const layoutStartedAt = profileNow();
+      rawLayout = await layoutFeynmanPreparedRaw(layoutDiagram, layoutOptions, prepared);
+      prepared.profile?.push("layout", profileNow() - layoutStartedAt);
     } catch (error) {
-      return finalizeLayout(layoutDiagram, layoutFeynmanFallbackRaw(layoutDiagram, layoutOptions), layoutOptions);
+      const fallbackStartedAt = profileNow();
+      rawLayout = layoutFeynmanPreparedFallbackRaw(layoutDiagram, layoutOptions, prepared);
+      prepared.profile?.push("layout-fallback", profileNow() - fallbackStartedAt);
     }
+
+    const finalLayout = applyIncrementalStability(
+      finalizeLayout(layoutDiagram, rawLayout, layoutOptions),
+      prepared.incremental
+    );
+
+    return attachLayoutAnalysis(
+      finalLayout,
+      prepared,
+      { enabled: layoutOptions.debug || layoutOptions.profile, elkGraph: prepared.compiledElkGraph }
+    );
   }
 
   function layoutFeynmanFallbackSync(diagram, options) {
-    const layoutDiagram = diagramWithInferredTerminals(diagram, resolveRequestedLayout(diagram, options));
+    const prepared = prepareFeynmanLayout(diagram, options);
+    const layoutDiagram = prepared.compatibleDiagram;
     const layoutOptions = resolveLayoutOptions(layoutDiagram, options);
 
-    return finalizeLayout(layoutDiagram, layoutFeynmanFallbackRaw(layoutDiagram, layoutOptions), layoutOptions);
+    applyParallelPropagatorCurves(layoutDiagram, prepared);
+
+    const fallbackStartedAt = profileNow();
+    const rawLayout = layoutFeynmanPreparedFallbackRaw(layoutDiagram, layoutOptions, prepared);
+    prepared.profile?.push("layout-fallback", profileNow() - fallbackStartedAt);
+
+    return attachLayoutAnalysis(
+      applyIncrementalStability(
+        finalizeLayout(layoutDiagram, rawLayout, layoutOptions),
+        prepared.incremental
+      ),
+      prepared,
+      { enabled: layoutOptions.debug || layoutOptions.profile, elkGraph: prepared.compiledElkGraph }
+    );
+  }
+
+  async function layoutFeynmanPreparedRaw(diagram, layoutOptions, prepared) {
+    const loopCandidateLayout = layoutLoopCandidate(diagram, layoutOptions, prepared);
+
+    if (loopCandidateLayout) {
+      return loopCandidateLayout;
+    }
+
+    const multiloopLayout = layoutMultiloopCandidate(diagram, layoutOptions, prepared);
+
+    if (multiloopLayout) {
+      return multiloopLayout;
+    }
+
+    if (shouldUseSymmetricContactLayout(prepared)) {
+      return layoutSymmetricContact(diagram, layoutOptions, prepared);
+    }
+
+    if (shouldUseSymmetricUnclassifiedLayout(prepared)) {
+      return layoutSymmetricUnclassifiedRefinement(diagram, layoutOptions, prepared);
+    }
+
+    if (shouldUseSymmetricTreeLayout(prepared)) {
+      return layoutSymmetricTree(diagram, layoutOptions, prepared);
+    }
+
+    if (layoutOptions.layout === "tree") {
+      return layoutTree(diagram, layoutOptions);
+    }
+
+    return layoutFeynmanWithElk(diagram, layoutOptions, prepared);
+  }
+
+  function layoutFeynmanPreparedFallbackRaw(diagram, layoutOptions, prepared) {
+    const loopCandidateLayout = layoutLoopCandidate(diagram, layoutOptions, prepared);
+
+    if (loopCandidateLayout) {
+      return loopCandidateLayout;
+    }
+
+    const multiloopLayout = layoutMultiloopCandidate(diagram, layoutOptions, prepared);
+
+    if (multiloopLayout) {
+      return multiloopLayout;
+    }
+
+    if (shouldUseSymmetricContactLayout(prepared)) {
+      return layoutSymmetricContact(diagram, layoutOptions, prepared);
+    }
+
+    if (shouldUseSymmetricUnclassifiedLayout(prepared)) {
+      return layoutSymmetricUnclassifiedRefinement(diagram, layoutOptions, prepared);
+    }
+
+    if (shouldUseSymmetricTreeLayout(prepared)) {
+      return layoutSymmetricTree(diagram, layoutOptions, prepared);
+    }
+
+    return layoutFeynmanFallbackRaw(diagram, layoutOptions);
+  }
+
+  function layoutLoopCandidate(diagram, layoutOptions, prepared) {
+    const selection = selectLoopCandidateLayout(prepared, layoutOptions);
+
+    if (!selection) {
+      return null;
+    }
+
+    prepared.loopCandidateSelection = selection.selection;
+    applyLoopCandidateCurves(diagram, selection.selection.selected);
+
+    return selection.layout;
+  }
+
+  function layoutMultiloopCandidate(diagram, layoutOptions, prepared) {
+    const selection = selectMultiloopLayout(prepared, layoutOptions);
+
+    if (!selection) {
+      return null;
+    }
+
+    prepared.multiloopCandidateSelection = selection.selection;
+
+    return selection.layout;
   }
 
   function layoutFeynmanFallbackRaw(diagram, layoutOptions) {
@@ -1351,12 +1489,64 @@ import ELK from "elkjs/lib/elk.bundled.js";
     return layoutLayered(diagram, layoutOptions);
   }
 
-  async function layoutFeynmanWithElk(diagram, layoutOptions) {
+  async function layoutFeynmanWithElk(diagram, layoutOptions, prepared) {
     const elk = getElk();
-    const graph = buildElkGraph(diagram, layoutOptions);
+    const graph = buildSemanticElkGraph(
+      prepared.semantic,
+      layoutOptions,
+      (node) => elkNodeDimensions(node, diagram),
+      prepared.externalOrdering
+    );
+    prepared.compiledElkGraph = graph;
+
     const result = await elk.layout(graph);
 
     return normalizeElkLayout(diagram, layoutOptions, result);
+  }
+
+  function applyParallelPropagatorCurves(diagram, prepared) {
+    (prepared.parallelCurvePlan || []).forEach((assignment) => {
+      const edge = diagram.edges[assignment.edgeIndex];
+
+      if (
+        !edge
+        || edge.hidden
+        || edge.curve
+        || Number.isFinite(Number(edge.outAngle))
+        || Number.isFinite(Number(edge.inAngle))
+      ) {
+        return;
+      }
+
+      edge.curve = {
+        side: assignment.side,
+        amount: assignment.amount,
+      };
+      edge.autoParallelCurve = true;
+    });
+  }
+
+  function applyLoopCandidateCurves(diagram, selectedCandidate) {
+    (selectedCandidate?.curvePlan || []).forEach((assignment) => {
+      const edge = diagram.edges[assignment.edgeIndex];
+
+      if (
+        !edge
+        || edge.hidden
+        || edge.curve
+        || Number.isFinite(Number(edge.outAngle))
+        || Number.isFinite(Number(edge.inAngle))
+      ) {
+        return;
+      }
+
+      edge.curve = {
+        side: assignment.side,
+        amount: assignment.amount,
+        shape: assignment.shape,
+      };
+      edge.autoLoopCurve = true;
+    });
   }
 
   function getElk() {
@@ -1367,6 +1557,12 @@ import ELK from "elkjs/lib/elk.bundled.js";
     }
 
     return elkInstance;
+  }
+
+  function profileNow() {
+    return typeof performance !== "undefined" && typeof performance.now === "function"
+      ? performance.now()
+      : Date.now();
   }
 
   function resolveLayoutOptions(diagram, options) {
@@ -1394,6 +1590,14 @@ import ELK from "elkjs/lib/elk.bundled.js";
       marginX: merged.margin_x ?? merged.marginX ?? defaultMarginX,
       marginY: merged.margin_y ?? merged.marginY ?? size.marginY,
       tikzOrientation,
+      orientationMode: merged.orientationMode,
+      direction: merged.direction,
+      deterministicSeed: merged.deterministicSeed,
+      debug: Boolean(merged.debug),
+      profile: Boolean(merged.profile),
+      quality: normalizeQuality(merged.quality),
+      preservePreviousLayout: Boolean(merged.preservePreviousLayout),
+      previousLayout: merged.previousLayout,
     };
   }
 
@@ -1614,9 +1818,12 @@ import ELK from "elkjs/lib/elk.bundled.js";
     const rawPositions = elkRawPositions(elkGraph);
     const incoming = new Set(diagram.incoming);
     const outgoing = new Set(diagram.outgoing);
+    const unclassified = new Set(diagram.unclassified || []);
     const manual = new Set(Object.keys(diagram.manualPositions || {}));
-    const internalNodes = allNodes.filter((node) => !incoming.has(node) && !outgoing.has(node));
-    const sourceNodes = internalNodes.length ? internalNodes : allNodes;
+    const internalNodes = allNodes.filter((node) => (
+      !incoming.has(node) && !outgoing.has(node) && !unclassified.has(node)
+    ));
+    const sourceNodes = internalNodes.length && !unclassified.size ? internalNodes : allNodes;
     const sourceBounds = boundsForNodes(sourceNodes, rawPositions);
     const crossBounds = boundsForAxis(allNodes, rawPositions, "y");
     const layerRange = elkInternalLayerRange(diagram, axes);
@@ -1661,9 +1868,14 @@ import ELK from "elkjs/lib/elk.bundled.js";
 
     if (usesSpringStyleNormalization(layoutOptions)) {
       alignHorizontalBackboneInternals(diagram, positions, axes, layoutOptions);
+      orientHorizontalBackboneInternals(diagram, positions, axes, layoutOptions);
       fitCurvedInternalEdgeGroupsToViewBox(diagram, positions, axes, layoutOptions);
     }
 
+    straightenSingleTerminalLegs(diagram, positions, axes);
+    if (!layoutOptions.tikzOrientation) {
+      alignVerticalProcessTerminalStacks(diagram, positions, axes, layoutOptions);
+    }
     straightenSingleTerminalLegs(diagram, positions, axes);
     alignInternalsAcrossInvisibleTerminalPairs(diagram, positions, axes);
     fitLayoutTranslationToEdgeBounds(diagram, positions, layoutOptions);
@@ -2012,6 +2224,28 @@ import ELK from "elkjs/lib/elk.bundled.js";
     });
   }
 
+  function orientHorizontalBackboneInternals(diagram, positions, axes, layoutOptions) {
+    if (!layoutOptions.orientation.startsWith("horizontal")) {
+      return;
+    }
+
+    const backbone = mainHorizontalBackboneNodes(diagram);
+    const manual = new Set(Object.keys(diagram.manualPositions || {}));
+
+    if (!backbone || backbone.length < 2 || backbone.some((node) => !positions[node] || manual.has(node))) {
+      return;
+    }
+
+    const direction = Math.sign(axes.layerEnd - axes.layerStart) || 1;
+    const orderedLayers = backbone
+      .map((node) => positions[node].x)
+      .sort((left, right) => direction * (left - right));
+
+    backbone.forEach((node, index) => {
+      positions[node].x = orderedLayers[index];
+    });
+  }
+
   function curvedInternalEdgeGroups(diagram) {
     const groups = new Map();
 
@@ -2194,11 +2428,90 @@ import ELK from "elkjs/lib/elk.bundled.js";
 
         const terminal = Array.from(terminals)[0];
 
-        if (positions[terminal] && canMoveTerminalCross(terminal, axes.crossOf(positions[internal]), positions, axes, kind)) {
+        if (!positions[terminal]) {
+          return;
+        }
+
+        if (canMoveTerminalCross(terminal, axes.crossOf(positions[internal]), positions, axes, kind)) {
           axes.setCross(positions[terminal], axes.crossOf(positions[internal]));
+          return;
+        }
+
+        if (!manual.has(internal)) {
+          axes.setCross(positions[internal], axes.crossOf(positions[terminal]));
         }
       });
     });
+  }
+
+  function alignVerticalProcessTerminalStacks(diagram, positions, axes, layoutOptions) {
+    if (!layoutOptions.orientation.startsWith("vertical")) {
+      return;
+    }
+
+    const manual = new Set(Object.keys(diagram.manualPositions || {}));
+    const orderedInternals = [];
+    const terminalsByInternal = new Map();
+
+    diagram.incoming.forEach((terminal) => {
+      const internals = visibleInternalNeighborsForTerminal(diagram, terminal, manual);
+
+      if (internals.length !== 1) {
+        return;
+      }
+
+      const internal = internals[0];
+
+      if (!orderedInternals.includes(internal)) {
+        orderedInternals.push(internal);
+      }
+
+      addTerminalForInternal(terminalsByInternal, internal, terminal);
+    });
+
+    diagram.outgoing.forEach((terminal) => {
+      const internals = visibleInternalNeighborsForTerminal(diagram, terminal, manual);
+
+      if (internals.length !== 1) {
+        return;
+      }
+
+      const internal = internals[0];
+
+      if (!orderedInternals.includes(internal)) {
+        orderedInternals.push(internal);
+      }
+
+      addTerminalForInternal(terminalsByInternal, internal, terminal);
+    });
+
+    if (orderedInternals.length < 2) {
+      return;
+    }
+
+    orderedInternals.forEach((internal, index) => {
+      const cross = crossCoordinateAt(index, orderedInternals.length, axes.crossStart, axes.crossEnd);
+
+      if (positions[internal] && !manual.has(internal)) {
+        axes.setCross(positions[internal], cross);
+      }
+
+      (terminalsByInternal.get(internal) || []).forEach((terminal) => {
+        if (positions[terminal] && !manual.has(terminal)) {
+          axes.setCross(positions[terminal], cross);
+        }
+      });
+    });
+  }
+
+  function addTerminalForInternal(terminalsByInternal, internal, terminal) {
+    if (!terminalsByInternal.has(internal)) {
+      terminalsByInternal.set(internal, []);
+    }
+
+    if (!terminalsByInternal.get(internal).includes(terminal)) {
+      terminalsByInternal.get(internal).push(terminal);
+    }
   }
 
   function alignInternalsAcrossInvisibleTerminalPairs(diagram, positions, axes) {
@@ -2366,6 +2679,7 @@ import ELK from "elkjs/lib/elk.bundled.js";
     }
 
     fanTikzOrientationMixedTerminalPairs(diagram, layout, orientation);
+    fanTikzOrientationProcessTerminalGroups(diagram, layout, orientation);
     fitLayoutPositions(layout, layoutOptions);
   }
 
@@ -2379,7 +2693,9 @@ import ELK from "elkjs/lib/elk.bundled.js";
 
     const axis = lineVector(from, to);
     const axisGap = clamp(Math.min(layout.width, layout.height) * 0.24, 72, 104);
-    const fanGap = clamp(Math.min(layout.width, layout.height) * 0.33, 84, 126);
+    const fanGap = orientation.axis === "vertical"
+      ? clamp(Math.min(layout.width, layout.height) * 0.45, 126, 150)
+      : clamp(Math.min(layout.width, layout.height) * 0.33, 84, 126);
 
     [
       { internal: orientation.from, outward: -1 },
@@ -2447,6 +2763,50 @@ import ELK from "elkjs/lib/elk.bundled.js";
       incoming: terminals.incoming[0],
       outgoing: terminals.outgoing[0],
     };
+  }
+
+  function fanTikzOrientationProcessTerminalGroups(diagram, layout, orientation) {
+    const from = layout.positions[orientation.from];
+    const to = layout.positions[orientation.to];
+
+    if (!from || !to) {
+      return;
+    }
+
+    const axis = lineVector(from, to);
+    const axisGap = clamp(Math.min(layout.width, layout.height) * 0.24, 72, 104);
+    const fanGap = clamp(Math.min(layout.width, layout.height) * 0.33, 84, 126);
+
+    [
+      { internal: orientation.from, kind: "incoming", outward: -1 },
+      { internal: orientation.to, kind: "outgoing", outward: 1 },
+    ].forEach(({ internal, kind, outward }) => {
+      const endpoint = layout.positions[internal];
+      const terminals = Array.from(terminalNeighborsByInternal(diagram, kind).get(internal) || [])
+        .filter((terminal) => layout.positions[terminal])
+        .sort((left, right) => terminalDeclarationOrder(diagram, kind, left) - terminalDeclarationOrder(diagram, kind, right) || left.localeCompare(right));
+
+      if (!endpoint || terminals.length < 2) {
+        return;
+      }
+
+      terminals.forEach((terminal, index) => {
+        const side = terminals.length === 1
+          ? 0
+          : -1 + (2 * index) / (terminals.length - 1);
+        const position = layout.positions[terminal];
+
+        position.x = endpoint.x + axis.ux * axisGap * outward + axis.px * fanGap * side;
+        position.y = endpoint.y + axis.uy * axisGap * outward + axis.py * fanGap * side;
+      });
+    });
+  }
+
+  function terminalDeclarationOrder(diagram, kind, terminal) {
+    const list = kind === "incoming" ? diagram.incoming : diagram.outgoing;
+    const index = list.indexOf(terminal);
+
+    return index === -1 ? Number.MAX_SAFE_INTEGER : index;
   }
 
   function moveTerminalIntoOrientationFan(position, endpoint, axis, outward, side, axisGap, fanGap) {
@@ -2522,19 +2882,488 @@ import ELK from "elkjs/lib/elk.bundled.js";
     return (degrees * Math.PI) / 180;
   }
 
+  function layoutSymmetricContact(diagram, layoutOptions, prepared) {
+    const { width, height, marginX, marginY } = layoutOptions;
+    const positions = initialFixedPositions(diagram, diagramAxes(layoutOptions));
+    const center = {
+      x: width / 2,
+      y: height / 2,
+    };
+    const centerNode = prepared.topology.internalVertices[0] || prepared.topology.graphCenters[0];
+    const externalNodes = orderedSemanticExternalNodes(prepared);
+    const radius = Math.max(
+      54,
+      Math.min(width - 2 * marginX, height - 2 * marginY) * 0.38
+    );
+
+    if (centerNode && !positions[centerNode]) {
+      positions[centerNode] = {
+        ...center,
+        kind: nodeKind(centerNode, diagram),
+        labelSide: labelSideForKind(nodeKind(centerNode, diagram), layoutOptions.orientation),
+      };
+    }
+
+    placeNodesOnRing(externalNodes, center, radius, positions, diagram, layoutOptions, -3 * Math.PI / 4);
+
+    Array.from(collectNodes(diagram)).sort().forEach((node) => {
+      if (!positions[node]) {
+        positions[node] = {
+          ...center,
+          kind: nodeKind(node, diagram),
+          labelSide: labelSideForKind(nodeKind(node, diagram), layoutOptions.orientation),
+        };
+      }
+    });
+
+    return { width, height, positions, options: layoutOptions };
+  }
+
+  function layoutSymmetricUnclassifiedRefinement(diagram, layoutOptions, prepared) {
+    const refinement = prepared.symmetricUnclassified;
+    const { width, height, marginX, marginY } = layoutOptions;
+    const positions = initialFixedPositions(diagram, diagramAxes(layoutOptions));
+    const center = { x: width / 2, y: height / 2 };
+    const axes = diagramAxes(layoutOptions);
+    const vertical = axes.orientation === "vertical" || axes.orientation === "vertical-reverse";
+
+    if (refinement.kind === "twoCenterTree") {
+      const leftCenter = refinement.leftCenter;
+      const rightCenter = refinement.rightCenter;
+      const leftLeaves = orderedLeafNodes(prepared, refinement.leftLeaves);
+      const rightLeaves = orderedLeafNodes(prepared, refinement.rightLeaves);
+
+      if (vertical) {
+        placeSymmetricTwoCenterTreeVertical(
+          positions,
+          diagram,
+          layoutOptions,
+          axes,
+          leftCenter,
+          rightCenter,
+          leftLeaves,
+          rightLeaves,
+          refinement
+        );
+      } else {
+        placeSymmetricTwoCenterTreeHorizontal(
+          positions,
+          diagram,
+          layoutOptions,
+          axes,
+          leftCenter,
+          rightCenter,
+          leftLeaves,
+          rightLeaves,
+          refinement
+        );
+      }
+    } else if (refinement.kind === "twoPointLoop") {
+      const [endpointA, endpointB] = refinement.loopEndpoints;
+      const legA = refinement.externalLegs.find((leg) => leg.internal === endpointA);
+      const legB = refinement.externalLegs.find((leg) => leg.internal === endpointB);
+
+      if (vertical) {
+        placeSymmetricTwoPointLoopVertical(
+          positions,
+          diagram,
+          layoutOptions,
+          axes,
+          endpointA,
+          endpointB,
+          legA,
+          legB
+        );
+      } else {
+        placeSymmetricTwoPointLoopHorizontal(
+          positions,
+          diagram,
+          layoutOptions,
+          axes,
+          endpointA,
+          endpointB,
+          legA,
+          legB
+        );
+      }
+    }
+
+    Array.from(collectNodes(diagram)).sort().forEach((node) => {
+      if (!positions[node]) {
+        positions[node] = {
+          ...center,
+          kind: nodeKind(node, diagram),
+          labelSide: labelSideForKind(nodeKind(node, diagram), layoutOptions.orientation),
+        };
+      }
+    });
+
+    return { width, height, positions, options: layoutOptions };
+  }
+
+  function orderedLeafNodes(prepared, leaves) {
+    return leaves.slice().sort((left, right) => compareExternalOrdering(prepared.externalOrdering, left, right));
+  }
+
+  function placeSymmetricTwoCenterTreeHorizontal(positions, diagram, layoutOptions, axes, leftCenter, rightCenter, leftLeaves, rightLeaves, refinement = {}) {
+    const { width, height, marginY } = layoutOptions;
+
+    if (refinement.centerExternal) {
+      placeSymmetricCenterExternalHorizontal(
+        positions,
+        diagram,
+        layoutOptions,
+        width,
+        height,
+        marginY,
+        refinement.centerExternal,
+        refinement.centerAttachedCenter === leftCenter
+      );
+    }
+
+    placeExternalNodes(leftLeaves, axes.layerStart, axes.crossStart, axes.crossEnd, "unclassified", axes, positions);
+    placeExternalNodes(rightLeaves, axes.layerEnd, axes.crossStart, axes.crossEnd, "unclassified", axes, positions);
+
+    const layerSpan = axes.layerEnd - axes.layerStart;
+    const terminalGap = Math.min(84, Math.max(48, Math.abs(layerSpan) * 0.24));
+    const direction = Math.sign(layerSpan) || 1;
+    const leftLayer = axes.layerStart + direction * terminalGap;
+    const rightLayer = axes.layerEnd - direction * terminalGap;
+    const leftCrossLeaves = refinement.centerExternal && refinement.centerAttachedCenter === leftCenter
+      ? [...leftLeaves, refinement.centerExternal]
+      : leftLeaves;
+    const rightCrossLeaves = refinement.centerExternal && refinement.centerAttachedCenter === rightCenter
+      ? [...rightLeaves, refinement.centerExternal]
+      : rightLeaves;
+
+    placeSymmetricInternalOnLayer(positions, diagram, layoutOptions, axes, leftCenter, leftLayer, leftCrossLeaves);
+    placeSymmetricInternalOnLayer(positions, diagram, layoutOptions, axes, rightCenter, rightLayer, rightCrossLeaves);
+  }
+
+  function placeSymmetricTwoCenterTreeVertical(positions, diagram, layoutOptions, axes, leftCenter, rightCenter, leftLeaves, rightLeaves, refinement = {}) {
+    const { width, marginX } = layoutOptions;
+    const sideAxes = {
+      ...axes,
+      crossOf: (position) => position.x,
+      setCross: (position, cross) => {
+        position.x = cross;
+      },
+      point: (cross, layer, kind) => ({
+        x: cross,
+        y: layer,
+        kind,
+        labelSide: labelSideForKind(kind, layoutOptions.orientation),
+      }),
+    };
+
+    if (refinement.centerExternal) {
+      placeSymmetricCenterExternalVertical(
+        positions,
+        diagram,
+        layoutOptions,
+        width,
+        marginX,
+        refinement.centerExternal,
+        refinement.centerAttachedCenter === leftCenter
+      );
+    }
+
+    placeExternalNodes(leftLeaves, axes.crossStart, axes.layerStart, axes.layerEnd, "unclassified", sideAxes, positions);
+    placeExternalNodes(rightLeaves, axes.crossEnd, axes.layerStart, axes.layerEnd, "unclassified", sideAxes, positions);
+
+    const layerSpan = axes.layerEnd - axes.layerStart;
+    const terminalGap = Math.min(84, Math.max(48, Math.abs(layerSpan) * 0.24));
+    const direction = Math.sign(layerSpan) || 1;
+    const leftLayer = axes.layerStart + direction * terminalGap;
+    const rightLayer = axes.layerEnd - direction * terminalGap;
+    const verticalAxes = {
+      crossOf: (position) => position.x,
+      point: (cross, layer, kind) => ({
+        x: cross,
+        y: layer,
+        kind,
+        labelSide: labelSideForKind(kind, layoutOptions.orientation),
+      }),
+    };
+
+    const leftCrossLeaves = refinement.centerExternal && refinement.centerAttachedCenter === leftCenter
+      ? [...leftLeaves, refinement.centerExternal]
+      : leftLeaves;
+    const rightCrossLeaves = refinement.centerExternal && refinement.centerAttachedCenter === rightCenter
+      ? [...rightLeaves, refinement.centerExternal]
+      : rightLeaves;
+
+    placeSymmetricInternalOnLayer(positions, diagram, layoutOptions, verticalAxes, leftCenter, leftLayer, leftCrossLeaves, "y");
+    placeSymmetricInternalOnLayer(positions, diagram, layoutOptions, verticalAxes, rightCenter, rightLayer, rightCrossLeaves, "y");
+  }
+
+  function placeSymmetricCenterExternalHorizontal(positions, diagram, layoutOptions, width, height, marginY, node, useTopMiddle) {
+    if (!node || positions[node]) {
+      return;
+    }
+
+    positions[node] = {
+      x: width / 2,
+      y: useTopMiddle ? marginY : height - marginY,
+      kind: nodeKind(node, diagram),
+      labelSide: labelSideForKind(nodeKind(node, diagram), layoutOptions.orientation),
+    };
+  }
+
+  function placeSymmetricCenterExternalVertical(positions, diagram, layoutOptions, width, marginX, node, useStartMiddle) {
+    if (!node || positions[node]) {
+      return;
+    }
+
+    positions[node] = {
+      x: useStartMiddle ? marginX : width - marginX,
+      y: layoutOptions.height / 2,
+      kind: nodeKind(node, diagram),
+      labelSide: labelSideForKind(nodeKind(node, diagram), layoutOptions.orientation),
+    };
+  }
+
+  function symmetricTwoPointLoopLayers(axes) {
+    const span = Math.abs(axes.layerEnd - axes.layerStart);
+    const minLeg = 48;
+    const loopChord = Math.min(span - 2 * minLeg, Math.max(120, span * 0.452));
+    const legLength = (span - loopChord) / 2;
+    const direction = Math.sign(axes.layerEnd - axes.layerStart) || 1;
+
+    return {
+      centerCross: (axes.crossStart + axes.crossEnd) / 2,
+      externalStart: axes.layerStart,
+      externalEnd: axes.layerEnd,
+      internalStart: axes.layerStart + direction * legLength,
+      internalEnd: axes.layerEnd - direction * legLength,
+    };
+  }
+
+  function placeSymmetricTwoPointLoopHorizontal(positions, diagram, layoutOptions, axes, endpointA, endpointB, legA, legB) {
+    const layers = symmetricTwoPointLoopLayers(axes);
+
+    if (legA && !positions[legA.external]) {
+      positions[legA.external] = axes.point(layers.externalStart, layers.centerCross, "unclassified");
+    }
+
+    if (legB && !positions[legB.external]) {
+      positions[legB.external] = axes.point(layers.externalEnd, layers.centerCross, "unclassified");
+    }
+
+    if (!positions[endpointA]) {
+      positions[endpointA] = axes.point(layers.internalStart, layers.centerCross, "internal");
+    }
+
+    if (!positions[endpointB]) {
+      positions[endpointB] = axes.point(layers.internalEnd, layers.centerCross, "internal");
+    }
+  }
+
+  function placeSymmetricTwoPointLoopVertical(positions, diagram, layoutOptions, axes, endpointA, endpointB, legA, legB) {
+    const verticalAxes = {
+      orientation: axes.orientation,
+      layerStart: axes.crossStart,
+      layerEnd: axes.crossEnd,
+      crossStart: axes.layerStart,
+      crossEnd: axes.layerEnd,
+      crossOf: (position) => position.x,
+      setCross: (position, cross) => {
+        position.x = cross;
+      },
+      point: (cross, layer, kind) => ({
+        x: cross,
+        y: layer,
+        kind,
+        labelSide: labelSideForKind(kind, layoutOptions.orientation),
+      }),
+    };
+    const layers = symmetricTwoPointLoopLayers(verticalAxes);
+
+    if (legA && !positions[legA.external]) {
+      positions[legA.external] = verticalAxes.point(layers.centerCross, layers.externalStart, "unclassified");
+    }
+
+    if (legB && !positions[legB.external]) {
+      positions[legB.external] = verticalAxes.point(layers.centerCross, layers.externalEnd, "unclassified");
+    }
+
+    if (!positions[endpointA]) {
+      positions[endpointA] = verticalAxes.point(layers.centerCross, layers.internalStart, "internal");
+    }
+
+    if (!positions[endpointB]) {
+      positions[endpointB] = verticalAxes.point(layers.centerCross, layers.internalEnd, "internal");
+    }
+  }
+
+  function placeSymmetricInternalOnLayer(positions, diagram, layoutOptions, axes, centerNode, layer, leaves, layerAxis = "x") {
+    if (positions[centerNode]) {
+      return;
+    }
+
+    const crosses = leaves
+      .map((leaf) => positions[leaf])
+      .filter(Boolean)
+      .map((position) => axes.crossOf(position));
+    const cross = crosses.length
+      ? crosses.reduce((sum, value) => sum + value, 0) / crosses.length
+      : (layoutOptions.marginY + (layoutOptions.height - layoutOptions.marginY)) / 2;
+
+    positions[centerNode] = layerAxis === "y"
+      ? axes.point(cross, layer, "internal")
+      : axes.point(layer, cross, "internal");
+  }
+
+  function layoutSymmetricTree(diagram, layoutOptions, prepared) {
+    const { width, height, marginX, marginY } = layoutOptions;
+    const positions = initialFixedPositions(diagram, diagramAxes(layoutOptions));
+    const allNodes = Array.from(collectNodes(diagram)).sort();
+    const centerNode = prepared.topology.graphCenters[0] || allNodes[0];
+    const center = { x: width / 2, y: height / 2 };
+    const adjacency = visibleAdjacencyForLayout(diagram, allNodes);
+    const depths = breadthFirstLayoutDepths(adjacency, centerNode);
+    const maxDepth = Math.max(1, ...Array.from(depths.values()));
+    const maxRadius = Math.max(60, Math.min(width - 2 * marginX, height - 2 * marginY) * 0.42);
+    const nodesByDepth = new Map();
+
+    allNodes.forEach((node) => {
+      const depth = depths.get(node) ?? maxDepth;
+
+      if (!nodesByDepth.has(depth)) {
+        nodesByDepth.set(depth, []);
+      }
+
+      nodesByDepth.get(depth).push(node);
+    });
+
+    nodesByDepth.forEach((nodes, depth) => {
+      const sortedNodes = nodes.sort((left, right) => semanticOrder(prepared, left, right));
+
+      if (depth === 0) {
+        sortedNodes.forEach((node) => {
+          if (!positions[node]) {
+            positions[node] = {
+              ...center,
+              kind: nodeKind(node, diagram),
+              labelSide: labelSideForKind(nodeKind(node, diagram), layoutOptions.orientation),
+            };
+          }
+        });
+        return;
+      }
+
+      const radius = (maxRadius * depth) / maxDepth;
+      const startAngle = sortedNodes.length === 1 ? 0 : -Math.PI / 2;
+
+      placeNodesOnRing(sortedNodes, center, radius, positions, diagram, layoutOptions, startAngle);
+    });
+
+    return { width, height, positions, options: layoutOptions };
+  }
+
+  function orderedSemanticExternalNodes(prepared) {
+    return prepared.externalOrdering.all.map((entry) => entry.id);
+  }
+
+  function semanticOrder(prepared, left, right) {
+    const leftExternal = prepared.semantic.externalVertices.includes(left);
+    const rightExternal = prepared.semantic.externalVertices.includes(right);
+
+    if (leftExternal || rightExternal) {
+      return compareExternalOrdering(prepared.externalOrdering, left, right);
+    }
+
+    const vertexById = new Map(prepared.semantic.vertices.map((vertex) => [vertex.id, vertex]));
+    const leftIndex = vertexById.get(left)?.metadata?.declarationIndex ?? Number.MAX_SAFE_INTEGER;
+    const rightIndex = vertexById.get(right)?.metadata?.declarationIndex ?? Number.MAX_SAFE_INTEGER;
+
+    return leftIndex - rightIndex || left.localeCompare(right);
+  }
+
+  function placeNodesOnRing(nodes, center, radius, positions, diagram, layoutOptions, startAngle) {
+    const count = Math.max(nodes.length, 1);
+
+    nodes.forEach((node, index) => {
+      if (positions[node]) {
+        return;
+      }
+
+      const angle = startAngle + (2 * Math.PI * index) / count;
+      const kind = nodeKind(node, diagram);
+
+      positions[node] = {
+        x: center.x + Math.cos(angle) * radius,
+        y: center.y + Math.sin(angle) * radius,
+        kind,
+        labelSide: labelSideForKind(kind, layoutOptions.orientation),
+      };
+    });
+  }
+
+  function visibleAdjacencyForLayout(diagram, nodes) {
+    const adjacency = new Map(nodes.map((node) => [node, new Set()]));
+
+    diagram.edges.forEach((edge) => {
+      if (edge.hidden || edge.from === edge.to) {
+        return;
+      }
+
+      if (!adjacency.has(edge.from)) {
+        adjacency.set(edge.from, new Set());
+      }
+
+      if (!adjacency.has(edge.to)) {
+        adjacency.set(edge.to, new Set());
+      }
+
+      adjacency.get(edge.from).add(edge.to);
+      adjacency.get(edge.to).add(edge.from);
+    });
+
+    return adjacency;
+  }
+
+  function breadthFirstLayoutDepths(adjacency, start) {
+    const depths = new Map();
+
+    if (!start) {
+      return depths;
+    }
+
+    const queue = [start];
+    depths.set(start, 0);
+
+    while (queue.length) {
+      const node = queue.shift();
+      const nextDepth = depths.get(node) + 1;
+
+      Array.from(adjacency.get(node) || [])
+        .sort()
+        .forEach((neighbor) => {
+          if (!depths.has(neighbor)) {
+            depths.set(neighbor, nextDepth);
+            queue.push(neighbor);
+          }
+        });
+    }
+
+    return depths;
+  }
+
   function layoutLayered(diagram, layoutOptions) {
     const { width, height } = layoutOptions;
     const axes = diagramAxes(layoutOptions);
     const positions = initialFixedPositions(diagram, axes);
     const incoming = new Set(diagram.incoming);
     const outgoing = new Set(diagram.outgoing);
+    const unclassified = new Set(diagram.unclassified || []);
     const allNodes = collectNodes(diagram);
 
     placeExternalNodes(diagram.incoming, axes.layerStart, axes.crossStart, axes.crossEnd, "incoming", axes, positions);
     placeExternalNodes(diagram.outgoing, axes.layerEnd, axes.crossStart, axes.crossEnd, "outgoing", axes, positions);
 
     const internalNodes = Array.from(allNodes).filter((node) => (
-      !incoming.has(node) && !outgoing.has(node) && !positions[node]
+      !incoming.has(node) && !outgoing.has(node) && !unclassified.has(node) && !positions[node]
     ));
     const layerByNode = computeInternalLayers(diagram, internalNodes, incoming);
     const maxLayer = Math.max(1, ...Array.from(layerByNode.values()));
@@ -2557,6 +3386,16 @@ import ELK from "elkjs/lib/elk.bundled.js";
         positions[node] = axes.point(layer, cross, "internal");
       });
     });
+
+    placeNodesOnRing(
+      Array.from(unclassified).filter((node) => !positions[node]),
+      { x: width / 2, y: height / 2 },
+      Math.max(52, Math.min(width - 2 * layoutOptions.marginX, height - 2 * layoutOptions.marginY) * 0.38),
+      positions,
+      diagram,
+      layoutOptions,
+      -3 * Math.PI / 4
+    );
 
     return { width, height, positions, options: layoutOptions };
   }
@@ -2955,6 +3794,10 @@ import ELK from "elkjs/lib/elk.bundled.js";
       return "outgoing";
     }
 
+    if ((diagram.unclassified || []).includes(node)) {
+      return "unclassified";
+    }
+
     return "internal";
   }
 
@@ -3036,7 +3879,7 @@ import ELK from "elkjs/lib/elk.bundled.js";
   }
 
   function collectNodes(diagram) {
-    const nodes = new Set([...diagram.incoming, ...diagram.outgoing]);
+    const nodes = new Set([...diagram.incoming, ...diagram.outgoing, ...(diagram.unclassified || [])]);
 
     diagram.edges.forEach((edge) => {
       nodes.add(edge.from);
@@ -3730,6 +4573,10 @@ import ELK from "elkjs/lib/elk.bundled.js";
     const outAngle = Number(edge?.outAngle);
     const inAngle = Number(edge?.inAngle);
 
+    if (samePoint(from, to)) {
+      return selfLoopGeometry(edge, from, outAngle, inAngle);
+    }
+
     if (Number.isFinite(outAngle) || Number.isFinite(inAngle)) {
       return angleCurveGeometry(edge, from, to, outAngle, inAngle);
     }
@@ -3743,6 +4590,67 @@ import ELK from "elkjs/lib/elk.bundled.js";
       from,
       to,
     };
+  }
+
+  function selfLoopGeometry(edge, point, outAngle, inAngle) {
+    const amount = clamp(edge?.curve?.amount ?? 0.72, 0.28, 1.1);
+    const radius = 68 * amount;
+
+    if (Number.isFinite(outAngle) || Number.isFinite(inAngle)) {
+      const outVector = angleUnitVector(Number.isFinite(outAngle) ? outAngle : 135);
+      const inVector = angleUnitVector(Number.isFinite(inAngle) ? inAngle : 45);
+
+      return {
+        kind: "cubic",
+        from: point,
+        c1: {
+          x: point.x + outVector.x * radius * 1.65,
+          y: point.y + outVector.y * radius * 1.65,
+        },
+        c2: {
+          x: point.x + inVector.x * radius * 1.65,
+          y: point.y + inVector.y * radius * 1.65,
+        },
+        to: point,
+      };
+    }
+
+    const side = selfLoopSideVector(edge?.curve?.side);
+    const tangent = { x: -side.y, y: side.x };
+
+    return {
+      kind: "cubic",
+      from: point,
+      c1: {
+        x: point.x - tangent.x * radius + side.x * radius * 1.7,
+        y: point.y - tangent.y * radius + side.y * radius * 1.7,
+      },
+      c2: {
+        x: point.x + tangent.x * radius + side.x * radius * 1.7,
+        y: point.y + tangent.y * radius + side.y * radius * 1.7,
+      },
+      to: point,
+    };
+  }
+
+  function samePoint(from, to) {
+    return Math.abs(from.x - to.x) < 0.001 && Math.abs(from.y - to.y) < 0.001;
+  }
+
+  function selfLoopSideVector(side) {
+    if (side === "right") {
+      return { x: 1, y: 0 };
+    }
+
+    if (side === "bottom") {
+      return { x: 0, y: 1 };
+    }
+
+    if (side === "left") {
+      return { x: -1, y: 0 };
+    }
+
+    return { x: 0, y: -1 };
   }
 
   function offsetCurveGeometry(edge, from, to) {
@@ -3959,35 +4867,41 @@ import ELK from "elkjs/lib/elk.bundled.js";
           return renderEdgeLabel(target, text, diagram, layout);
         }
 
-        return renderNodeLabel(target, text, layout.positions[target]);
+        return renderNodeLabel(target, text, layout.positions[target], layout);
       })
       .filter(Boolean);
 
     const inlineEdgeLabels = diagram.edges
-      .filter((edge) => edge.label)
-      .map((edge) => renderEdgeLabelForEdge(edge, edge.label, layout))
+      .map((edge, index) => (
+        edge.label
+          ? renderEdgeLabelForEdge(edge, edge.label, layout, {
+            placementId: edgePlacementId(edge, index),
+          })
+          : null
+      ))
       .filter(Boolean);
 
     return [...declaredLabels, ...inlineEdgeLabels];
   }
 
-  function renderNodeLabel(target, text, position) {
+  function renderNodeLabel(target, text, position, layout) {
     if (!position) {
       return null;
     }
 
+    const placement = labelPlacementEntry(layout, `node:${target}`);
     const offset = labelOffset(position.labelSide || position.kind);
-    const label = createSvg("text", {
-      class: `feynman-diagram__label feynman-diagram__label--${position.kind}`,
-      x: position.x + offset.x,
-      y: position.y + offset.y,
-      "text-anchor": offset.anchor,
-      "dominant-baseline": "middle",
+    const x = placement?.x ?? position.x + offset.x;
+    const y = placement?.y ?? position.y + offset.y;
+    const anchor = placement?.anchor || offset.anchor;
+
+    return createDiagramLabel({
+      text: text || target,
+      x,
+      y,
+      anchor,
+      className: `feynman-diagram__label feynman-diagram__label--${position.kind}`,
     });
-
-    appendLabelMarkup(label, text || target);
-
-    return label;
   }
 
   function renderEdgeLabel(target, text, diagram, layout) {
@@ -3997,7 +4911,10 @@ import ELK from "elkjs/lib/elk.bundled.js";
       return null;
     }
 
-    return renderEdgeLabelForEdge(edge, text, layout, { forceNormal: true });
+    return renderEdgeLabelForEdge(edge, text, layout, {
+      forceNormal: true,
+      placementId: `declared-edge:${target}`,
+    });
   }
 
   function renderEdgeLabelForEdge(edge, text, layout, options = {}) {
@@ -4008,30 +4925,31 @@ import ELK from "elkjs/lib/elk.bundled.js";
       return null;
     }
 
-    const position = edgeLabelPosition(edge, from, to, edge.labelSide || "left", options);
-
-    if (isMomentumEdge(edge) && !options.forceNormal) {
-      return renderMomentumLabelForEdge(edge, text, from, to, position);
-    }
-
-    const label = createSvg("text", {
-      class: "feynman-diagram__label feynman-diagram__label--edge",
-      x: position.x,
-      y: position.y,
-      "text-anchor": position.anchor,
-      "dominant-baseline": "middle",
+    const placement = labelPlacementEntry(layout, options.placementId);
+    const side = placement?.side || edge.labelSide || "left";
+    const position = placement || edgeLabelPosition(edge, from, to, side, {
+      ...options,
+      sideOverride: side,
     });
 
-    appendLabelMarkup(label, text);
+    if (isMomentumEdge(edge) && !options.forceNormal) {
+      return renderMomentumLabelForEdge(edge, text, from, to, position, { sideOverride: side });
+    }
 
-    return label;
+    return createDiagramLabel({
+      text,
+      x: position.x,
+      y: position.y,
+      anchor: position.anchor,
+      className: "feynman-diagram__label feynman-diagram__label--edge",
+    });
   }
 
-  function renderMomentumLabelForEdge(edge, text, from, to, position) {
+  function renderMomentumLabelForEdge(edge, text, from, to, position, options = {}) {
     const group = createSvg("g", {
       class: "feynman-diagram__momentum-label",
     });
-    const arrow = momentumArrowGeometry(edge, from, to);
+    const arrow = momentumArrowGeometry(edge, from, to, options);
 
     group.appendChild(createSvg("path", {
       class: "feynman-diagram__momentum-arrow",
@@ -4043,18 +4961,23 @@ import ELK from "elkjs/lib/elk.bundled.js";
       width: VISUAL_DEFAULTS.momentumArrowHeadWidth,
     }));
 
-    const label = createSvg("text", {
-      class: "feynman-diagram__label feynman-diagram__label--edge feynman-diagram__label--momentum",
+    group.appendChild(createDiagramLabel({
+      text,
       x: position.x,
       y: position.y,
-      "text-anchor": position.anchor,
-      "dominant-baseline": "middle",
-    });
-
-    appendLabelMarkup(label, text);
-    group.appendChild(label);
+      anchor: position.anchor,
+      className: "feynman-diagram__label feynman-diagram__label--edge feynman-diagram__label--momentum",
+    }));
 
     return group;
+  }
+
+  function labelPlacementEntry(layout, id) {
+    return layout?.labelPlacement?.byId?.[id] || null;
+  }
+
+  function edgePlacementId(edge, index) {
+    return `edge:${edge.id || `${edge.from}->${edge.to}#${index + 1}`}`;
   }
 
   function findEdgeByLabelTarget(target, edges) {
@@ -4074,13 +4997,14 @@ import ELK from "elkjs/lib/elk.bundled.js";
   function edgeLabelPosition(edge, from, to, side, options = {}) {
     const sample = geometrySample(edgeGeometry(edge, from, to), 0.5);
     const tangent = normalizeVector(sample.tangent.x, sample.tangent.y);
+    const resolvedSide = options.sideOverride || side;
 
     if (isMomentumEdge(edge)) {
       if (!options.forceNormal) {
-        return momentumLabelPosition(edge, sample.point, tangent);
+        return momentumLabelPosition(edge, sample.point, tangent, resolvedSide);
       }
 
-      const momentumNormal = momentumNormalForTangent(edge, tangent);
+      const momentumNormal = momentumNormalForTangent(edge, tangent, resolvedSide);
 
       return {
         x: sample.point.x - momentumNormal.x * VISUAL_DEFAULTS.edgeLabelOffset,
@@ -4089,7 +5013,7 @@ import ELK from "elkjs/lib/elk.bundled.js";
       };
     }
 
-    const normalSign = side === "right" ? 1 : -1;
+    const normalSign = resolvedSide === "right" ? 1 : -1;
 
     return {
       x: sample.point.x + tangent.px * VISUAL_DEFAULTS.edgeLabelOffset * normalSign,
@@ -4098,8 +5022,8 @@ import ELK from "elkjs/lib/elk.bundled.js";
     };
   }
 
-  function momentumLabelPosition(edge, point, tangent) {
-    const normal = momentumNormalForTangent(edge, tangent);
+  function momentumLabelPosition(edge, point, tangent, sideOverride) {
+    const normal = momentumNormalForTangent(edge, tangent, sideOverride);
     const offset = momentumArrowDistance(edge)
       + VISUAL_DEFAULTS.momentumLabelGap
       + momentumLabelDistance(edge);
@@ -4111,7 +5035,7 @@ import ELK from "elkjs/lib/elk.bundled.js";
     };
   }
 
-  function momentumArrowGeometry(edge, from, to) {
+  function momentumArrowGeometry(edge, from, to, options = {}) {
     const geometry = edgeGeometry(edge, from, to);
     const shorten = momentumArrowShorten(edge);
     const reverse = edge.momentumDirection === "reverse";
@@ -4121,7 +5045,8 @@ import ELK from "elkjs/lib/elk.bundled.js";
     const midpoint = geometrySample(geometry, 0.5);
     const normal = momentumNormalForTangent(
       edge,
-      normalizeVector(midpoint.tangent.x, midpoint.tangent.y)
+      normalizeVector(midpoint.tangent.x, midpoint.tangent.y),
+      options.sideOverride
     );
     const offset = momentumArrowDistance(edge);
     const points = [];
@@ -4152,9 +5077,9 @@ import ELK from "elkjs/lib/elk.bundled.js";
     return edge.labelPlacement === "momentum" || edge.labelPlacement === "momentum-prime";
   }
 
-  function momentumNormalForTangent(edge, tangent) {
+  function momentumNormalForTangent(edge, tangent, sideOverride) {
     const normal = canonicalMomentumNormal(tangent);
-    const normalSign = edge.labelPlacement === "momentum-prime" ? 1 : -1;
+    const normalSign = (sideOverride || (edge.labelPlacement === "momentum-prime" ? "right" : "left")) === "right" ? 1 : -1;
 
     return {
       x: normal.x * normalSign,
@@ -4228,16 +5153,13 @@ import ELK from "elkjs/lib/elk.bundled.js";
       }));
     }
 
-    const label = createSvg("text", {
-      class: "feynman-diagram__label feynman-diagram__label--brace",
+    group.appendChild(createDiagramLabel({
+      text: brace.label,
       x: geometry.label.x,
       y: geometry.label.y,
-      "text-anchor": geometry.label.anchor,
-      "dominant-baseline": "middle",
-    });
-
-    appendLabelMarkup(label, brace.label);
-    group.appendChild(label);
+      anchor: geometry.label.anchor,
+      className: "feynman-diagram__label feynman-diagram__label--brace",
+    }));
 
     return group;
   }
@@ -4361,6 +5283,186 @@ import ELK from "elkjs/lib/elk.bundled.js";
         `${round(y + yOffset * scale)})`,
       ].join(" "),
     };
+  }
+
+  function mathJaxAvailable() {
+    return typeof window !== "undefined"
+      && window.MathJax
+      && typeof window.MathJax.typesetPromise === "function";
+  }
+
+  function labelNeedsMathJax(source) {
+    const input = String(source ?? "");
+
+    if (!input.includes("\\")) {
+      return false;
+    }
+
+    if (MATHJAX_COMPLEX_COMMANDS.test(input)) {
+      return true;
+    }
+
+    let index = 0;
+
+    while (index < input.length) {
+      if (input[index] === "_" || input[index] === "^") {
+        const script = rawScriptArgument(input, index + 1);
+
+        if (script && script.text.includes("\\")) {
+          const commands = script.text.match(/\\[A-Za-z]+/g) || [];
+          const plain = script.text.replace(/\\[A-Za-z]+/g, "").trim();
+
+          if (commands.length > 1 || (commands.length === 1 && plain.length > 0)) {
+            return true;
+          }
+
+          if (commands.length === 1 && !LATEX_SYMBOLS.has(commands[0].slice(1))) {
+            return true;
+          }
+        }
+
+        index = script ? script.next : index + 1;
+        continue;
+      }
+
+      if (input[index] === "\\") {
+        const command = readLatexCommand(input, index);
+        const nameMatch = input.slice(index + 1, command.next).match(/^[A-Za-z]+/);
+
+        if (nameMatch && !LATEX_SYMBOLS.has(nameMatch[0]) && nameMatch[0] !== "overline" && nameMatch[0] !== "bar") {
+          return true;
+        }
+
+        index = command.next;
+        continue;
+      }
+
+      index += 1;
+    }
+
+    return false;
+  }
+
+  function createDiagramLabel({ text, x, y, anchor, className }) {
+    const source = String(text ?? "");
+
+    if (mathJaxAvailable() && labelNeedsMathJax(source)) {
+      return createMathJaxLabelElement({ text: source, x, y, anchor, className });
+    }
+
+    const label = createSvg("text", {
+      class: className,
+      x,
+      y,
+      "text-anchor": anchor,
+      "dominant-baseline": "middle",
+    });
+
+    appendLabelMarkup(label, source);
+
+    return label;
+  }
+
+  function createMathJaxLabelElement({ text, x, y, anchor, className }) {
+    const estWidth = Math.max(56, String(text).length * VISUAL_DEFAULTS.labelFontSize * 0.38);
+    const estHeight = Math.ceil(VISUAL_DEFAULTS.labelFontSize * 1.6);
+    const group = createSvg("g", {
+      class: `${className} feynman-diagram__label--mathjax`.trim(),
+      "data-mathjax-label": "true",
+      "data-label-x": x,
+      "data-label-y": y,
+      "data-label-anchor": anchor,
+      "data-label-est-width": estWidth,
+      "data-label-est-height": estHeight,
+    });
+    const foreignObject = createSvg("foreignObject", {
+      class: "feynman-diagram__label-math-fo",
+      x: foreignObjectX(x, estWidth, anchor),
+      y: y - estHeight / 2,
+      width: estWidth,
+      height: estHeight,
+      overflow: "visible",
+    });
+    const div = document.createElementNS(XHTML_NS, "div");
+
+    div.setAttribute("xmlns", XHTML_NS);
+    div.className = "arithmatex feynman-diagram__label-math";
+    div.style.display = "flex";
+    div.style.alignItems = "center";
+    div.style.justifyContent = anchor === "end" ? "flex-end" : anchor === "start" ? "flex-start" : "center";
+    div.style.width = "100%";
+    div.style.height = "100%";
+    div.style.fontSize = `${Math.round(VISUAL_DEFAULTS.labelFontSize * 0.72)}px`;
+    div.style.fontFamily = VISUAL_DEFAULTS.labelFontFamily;
+    div.style.fontStyle = VISUAL_DEFAULTS.labelFontStyle;
+    div.style.lineHeight = "1";
+    div.style.color = "currentColor";
+    div.textContent = `\\(${text}\\)`;
+    foreignObject.appendChild(div);
+    group.appendChild(foreignObject);
+
+    return group;
+  }
+
+  function foreignObjectX(x, width, anchor) {
+    if (anchor === "start") {
+      return x;
+    }
+
+    if (anchor === "end") {
+      return x - width;
+    }
+
+    return x - width / 2;
+  }
+
+  function fitMathJaxLabelForeignObjects(root) {
+    if (!root?.querySelectorAll) {
+      return;
+    }
+
+    root.querySelectorAll("[data-mathjax-label]").forEach((group) => {
+      const div = group.querySelector(".feynman-diagram__label-math");
+      const foreignObject = group.querySelector("foreignObject");
+
+      if (!div || !foreignObject) {
+        return;
+      }
+
+      const rendered = div.querySelector("mjx-container") || div;
+      const width = Math.ceil(
+        (rendered.offsetWidth || Number(group.dataset.labelEstWidth) || 56) + 6,
+      );
+      const height = Math.ceil(
+        (rendered.offsetHeight || Number(group.dataset.labelEstHeight) || 40) + 4,
+      );
+      const x = Number(group.dataset.labelX);
+      const y = Number(group.dataset.labelY);
+      const anchor = group.dataset.labelAnchor || "middle";
+
+      foreignObject.setAttribute("width", width);
+      foreignObject.setAttribute("height", height);
+      foreignObject.setAttribute("x", foreignObjectX(x, width, anchor));
+      foreignObject.setAttribute("y", y - height / 2);
+    });
+  }
+
+  function typesetFeynmanMathLabels(root) {
+    if (!mathJaxAvailable()) {
+      return Promise.resolve();
+    }
+
+    const labels = root?.querySelectorAll
+      ? [...root.querySelectorAll(".feynman-diagram__label-math")]
+      : [];
+
+    if (!labels.length) {
+      return Promise.resolve();
+    }
+
+    return window.MathJax.typesetPromise(labels).then(() => {
+      fitMathJaxLabelForeignObjects(root);
+    });
   }
 
   function appendLabelMarkup(label, source) {
@@ -4557,6 +5659,66 @@ import ELK from "elkjs/lib/elk.bundled.js";
     };
   }
 
+  function rawScriptArgument(input, start) {
+    if (start >= input.length) {
+      return null;
+    }
+
+    if (input[start] === "{") {
+      return readRawBracedScriptArgument(input, start);
+    }
+
+    if (input[start] === "\\") {
+      const command = readLatexCommand(input, start);
+      return {
+        text: input.slice(start, command.next),
+        next: command.next,
+      };
+    }
+
+    return {
+      text: input[start],
+      next: start + 1,
+    };
+  }
+
+  function readRawBracedScriptArgument(input, start) {
+    let depth = 0;
+    let text = "";
+
+    for (let index = start; index < input.length; index += 1) {
+      const character = input[index];
+
+      if (character === "{") {
+        depth += 1;
+
+        if (depth > 1) {
+          text += character;
+        }
+
+        continue;
+      }
+
+      if (character === "}") {
+        depth -= 1;
+
+        if (depth === 0) {
+          return {
+            text,
+            next: index + 1,
+          };
+        }
+
+        text += character;
+        continue;
+      }
+
+      text += character;
+    }
+
+    return null;
+  }
+
   function readBracedScriptArgument(input, start) {
     let depth = 0;
     let text = "";
@@ -4564,9 +5726,10 @@ import ELK from "elkjs/lib/elk.bundled.js";
     for (let index = start; index < input.length; index += 1) {
       const character = input[index];
 
-      if (character === "\\" && index + 1 < input.length) {
-        text += character + input[index + 1];
-        index += 1;
+      if (character === "\\") {
+        const command = readLatexCommand(input, index);
+        text += command.text;
+        index = command.next - 1;
         continue;
       }
 
@@ -4765,6 +5928,19 @@ import ELK from "elkjs/lib/elk.bundled.js";
         font-size: ${VISUAL_DEFAULTS.edgeLabelFontSize}px;
       }
 
+      .feynman-diagram__label-math-fo {
+        overflow: visible;
+      }
+
+      .feynman-diagram__label-math {
+        margin: 0;
+        padding: 0;
+      }
+
+      .feynman-diagram__label-math mjx-container {
+        margin: 0 !important;
+      }
+
       .feynman-diagram__errors {
         color: var(--md-code-hl-special-color, #b00020);
         font-size: 0.75rem;
@@ -4806,6 +5982,7 @@ import ELK from "elkjs/lib/elk.bundled.js";
       renderFeynmanElement(code.textContent, renderIndex)
         .then((figure) => {
           placeholder.replaceWith(figure);
+          return typesetFeynmanMathLabels(figure);
         })
         .catch((error) => {
           placeholder.replaceWith(renderErrorFigure(error, renderIndex));
@@ -4847,8 +6024,10 @@ import ELK from "elkjs/lib/elk.bundled.js";
     braceGeometry,
     junctionCapNodes,
     parseLabelMarkup,
+    labelNeedsMathJax,
     labelMarkupToText,
     labelSegmentText,
+    typesetFeynmanMathLabels,
     visualDefaults: VISUAL_DEFAULTS,
     renderAll,
   };
