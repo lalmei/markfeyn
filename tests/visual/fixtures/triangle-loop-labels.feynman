@@ -1,0 +1,7 @@
+layout spring
+incoming g1 g2
+outgoing h
+gluon g1->a g2->b
+fermion a->b[edge label=k] b->c[momentum=q] c->a
+scalar c->h
+label g1:g g2:g h:H a:a b:b c:c

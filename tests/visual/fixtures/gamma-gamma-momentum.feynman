@@ -1,0 +1,6 @@
+layout spring
+incoming gamma1
+outgoing gamma2
+photon gamma1->a b->gamma2
+fermion a->b[half left, momentum=k] b->a[half left, momentum'=k-p]
+label gamma1:gamma gamma2:gamma
