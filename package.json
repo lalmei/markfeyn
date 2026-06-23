@@ -1,0 +1,27 @@
+{
+  "name": "markfeyn",
+  "version": "0.1.0",
+  "description": "MarkFeyn renders fenced `feynman` code blocks as native SVG diagrams in MkDocs and ProperDocs.",
+  "private": true,
+  "scripts": {
+    "build:js": "esbuild src/markfeyn/renderer/feynman-diagrams.js --bundle --format=iife --platform=browser --target=es2020 --charset=utf8 --banner:js=\"/*! MarkFeyn renderer bundle. Includes elkjs; see THIRD_PARTY_NOTICES.md. */\" --footer:js=\"if (typeof module !== 'undefined' && module.exports && typeof globalThis !== 'undefined') module.exports = globalThis.FeynmanDiagrams;\" --outfile=src/markfeyn/assets/feynman-diagrams.js",
+    "check:js": "npm run build:js && node --check src/markfeyn/assets/feynman-diagrams.js",
+    "test:js": "npm run check:js && node tests/feynman-diagrams.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lalmei/markfeyn.git"
+  },
+  "license": "MIT",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/lalmei/markfeyn/issues"
+  },
+  "homepage": "https://github.com/lalmei/markfeyn#readme",
+  "dependencies": {
+    "elkjs": "^0.11.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1"
+  }
+}

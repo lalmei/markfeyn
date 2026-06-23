@@ -1,7 +1,12 @@
 include README.md
 include LICENSE
+include THIRD_PARTY_NOTICES.md
+include package.json
+include package-lock.json
 include mkdocs.yml
 include properdocs.yml
+recursive-include licenses *.md
+recursive-include src/markfeyn/renderer *.js
 recursive-include src/markfeyn/assets *.js
 recursive-include docs *.md
 recursive-include tests *.py *.js
