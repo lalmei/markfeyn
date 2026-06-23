@@ -1,0 +1,9 @@
+layout spring
+incoming i1 i2
+outgoing o1 o2
+fermion i1->a i2->d
+fermion a->b[edge label=p]
+fermion b->c[edge label'=q]
+fermion c->d d->a
+photon b->o1 c->o2
+label i1:i_1 i2:i_2 o1:o_1 o2:o_2

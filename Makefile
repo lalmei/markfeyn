@@ -39,9 +39,8 @@ test: test-py test-js
 test-py:
 	$(PYTEST)
 
-test-js: build-js
-	node --check $(JS_RENDERER)
-	node tests/feynman-diagrams.test.js
+test-js:
+	npm run test:js
 
 docs: build-js docs-properdocs docs-mkdocs
 

@@ -1,0 +1,69 @@
+<svg style="--feynman-diagram-width: 500px;" aria-labelledby="feynman-title-3" viewBox="0 0 500 280" height="280" width="500" role="img" class="feynman-diagram__svg">
+<title id="feynman-title-3">Feynman diagram</title>
+<defs>
+<marker markerUnits="strokeWidth" orient="auto" refY="4" refX="7" markerHeight="11" markerWidth="11" id="feynman-arrow-3">
+<path class="feynman-diagram__arrow" d="M0,0 L8,4 L0,8 Z" />
+</marker>
+<pattern height="8" width="8" patternUnits="userSpaceOnUse" id="feynman-hatch-diagonal-3">
+<rect height="8" width="8" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M -2 10 L 10 -2" class="feynman-diagram__hatch-line" />
+</pattern>
+<pattern height="8" width="8" patternUnits="userSpaceOnUse" id="feynman-hatch-diagonal-reverse-3">
+<rect height="8" width="8" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M -2 -2 L 10 10" class="feynman-diagram__hatch-line" />
+</pattern>
+<pattern height="8" width="8" patternUnits="userSpaceOnUse" id="feynman-hatch-cross-3">
+<rect height="8" width="8" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M -2 10 L 10 -2" class="feynman-diagram__hatch-line" />
+<path d="M -2 -2 L 10 10" class="feynman-diagram__hatch-line" />
+</pattern>
+<pattern height="7" width="7" patternUnits="userSpaceOnUse" id="feynman-hatch-horizontal-3">
+<rect height="7" width="7" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M 0 2 L 7 2" class="feynman-diagram__hatch-line" />
+</pattern>
+<pattern height="7" width="7" patternUnits="userSpaceOnUse" id="feynman-hatch-vertical-3">
+<rect height="7" width="7" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M 2 0 L 2 7" class="feynman-diagram__hatch-line" />
+</pattern>
+<pattern height="8" width="8" patternUnits="userSpaceOnUse" id="feynman-hatch-grid-3">
+<rect height="8" width="8" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M 0 2 L 8 2" class="feynman-diagram__hatch-line" />
+<path d="M 2 0 L 2 8" class="feynman-diagram__hatch-line" />
+</pattern>
+</defs>
+<path d="M 70 140 L 71.46 143.5 L 72.92 146.06 L 74.38 147 L 75.83 146.06 L 77.29 143.5 L 78.75 140 L 80.21 136.5 L 81.67 133.94 L 83.13 133 L 84.58 133.94 L 86.04 136.5 L 87.5 140 L 88.96 143.5 L 90.42 146.06 L 91.88 147 L 93.33 146.06 L 94.79 143.5 L 96.25 140 L 97.71 136.5 L 99.17 133.94 L 100.63 133 L 102.08 133.94 L 103.54 136.5 L 105 140 L 106.46 143.5 L 107.92 146.06 L 109.38 147 L 110.83 146.06 L 112.29 143.5 L 113.75 140 L 115.21 136.5 L 116.67 133.94 L 118.13 133 L 119.58 133.94 L 121.04 136.5 L 122.5 140 L 123.96 143.5 L 125.42 146.06 L 126.88 147 L 128.33 146.06 L 129.79 143.5 L 131.25 140 L 132.71 136.5 L 134.17 133.94 L 135.63 133 L 137.08 133.94 L 138.54 136.5 L 140 140 L 141.46 143.5 L 142.92 146.06 L 144.38 147 L 145.83 146.06 L 147.29 143.5 L 148.75 140 L 150.21 136.5 L 151.67 133.94 L 153.13 133 L 154.58 133.94 L 156.04 136.5 L 157.5 140 L 158.96 143.5 L 160.42 146.06 L 161.88 147 L 163.33 146.06 L 164.79 143.5 L 166.25 140 L 167.71 136.5 L 169.17 133.94 L 170.63 133 L 172.08 133.94 L 173.54 136.5 L 175 140 L 176.46 143.5 L 177.92 146.06 L 179.38 147 L 180.83 146.06 L 182.29 143.5 L 183.75 140 L 185.21 136.5 L 186.67 133.94 L 188.13 133 L 189.58 133.94 L 191.04 136.5 L 192.5 140 L 193.96 143.5 L 195.42 146.06 L 196.88 147 L 198.33 146.06 L 199.79 143.5 L 201.25 140 L 202.71 136.5 L 204.17 133.94 L 205.63 133 L 207.08 133.94 L 208.54 136.5 L 210 140" class="feynman-diagram__edge feynman-diagram__edge--photon" />
+<g class="feynman-diagram__edge-group">
+<path d="M 210 140 C 210 -6.67 430 -6.67 430 140" class="feynman-diagram__edge feynman-diagram__edge--fermion" />
+<path d="M 329.33 30 L 315.33 35.5 L 315.33 24.5 Z" class="feynman-diagram__arrow" />
+</g>
+<g class="feynman-diagram__brace-group">
+<path transform="matrix(1.21 0 0 1.21 10.63 118.23)" d="M5.021171 4.513076C5.021171 3.696139 5.240349 1.793275 7.013699 .537983C7.143213 .438356 7.153176 .428394 7.153176 .249066C7.153176 .019925 7.143213 .009963 6.894147 .009963H6.734745C4.592777 1.165629 3.825654 3.048568 3.825654 4.513076V8.797011C3.825654 9.05604 3.835616 9.066002 4.104608 9.066002H4.742217C5.011208 9.066002 5.021171 9.05604 5.021171 8.797011V4.513076Z" class="feynman-diagram__brace feynman-diagram__brace--tex" />
+<path transform="matrix(1.21 0 0 1.21 10.63 129.11)" d="M3.825654 17.763387C3.825654 18.022416 3.835616 18.032379 4.104608 18.032379H4.742217C5.011208 18.032379 5.021171 18.022416 5.021171 17.763387V13.559153C5.021171 12.353674 4.513076 10.321295 2.281445 8.966376C4.533001 7.601494 5.021171 5.549191 5.021171 4.373599V.169365C5.021171-.089664 5.011208-.099626 4.742217-.099626H4.104608C3.835616-.099626 3.825654-.089664 3.825654 .169365V4.383562C3.825654 5.220423 3.646326 7.292653 1.8132 8.687422C1.703611 8.777086 1.693649 8.787049 1.693649 8.966376S1.703611 9.155666 1.8132 9.24533C2.072229 9.444583 2.759651 9.972603 3.237858 10.978829C3.626401 11.775841 3.825654 12.662516 3.825654 13.549191V17.763387Z" class="feynman-diagram__brace feynman-diagram__brace--tex" />
+<path transform="matrix(1.21 0 0 1.21 10.63 150.88)" d="M6.894147 8.956413C7.143213 8.956413 7.153176 8.946451 7.153176 8.71731C7.153176 8.537983 7.143213 8.52802 7.103362 8.498132C6.794521 8.268991 6.07721 7.760897 5.608966 6.844334C5.220423 6.087173 5.021171 5.32005 5.021171 4.4533V.169365C5.021171-.089664 5.011208-.099626 4.742217-.099626H4.104608C3.835616-.099626 3.825654-.089664 3.825654 .169365V4.4533C3.825654 5.927771 4.592777 7.81071 6.734745 8.956413H6.894147Z" class="feynman-diagram__brace feynman-diagram__brace--tex" />
+<text aria-label="B0" dominant-baseline="middle" text-anchor="end" y="140" x="-6" class="feynman-diagram__label feynman-diagram__label--brace">
+<tspan>B0</tspan>
+</text>
+</g>
+<text aria-label="bbar" dominant-baseline="middle" text-anchor="middle" y="116" x="70" class="feynman-diagram__label feynman-diagram__label--unclassified">
+<tspan>bbar</tspan>
+</text>
+<text aria-label="V" dominant-baseline="middle" text-anchor="middle" y="116" x="210" class="feynman-diagram__label feynman-diagram__label--internal">
+<tspan>V</tspan>
+</text>
+<text aria-label="f" dominant-baseline="middle" text-anchor="middle" y="116" x="430" class="feynman-diagram__label feynman-diagram__label--unclassified">
+<tspan>f</tspan>
+</text>
+<text aria-label="q" dominant-baseline="middle" text-anchor="middle" y="-2" x="320" class="feynman-diagram__label feynman-diagram__label--edge">
+<tspan>q</tspan>
+</text>
+<g class="feynman-diagram__momentum-label">
+<path d="M 100.8 121 L 179.2 121" class="feynman-diagram__momentum-arrow" />
+<path d="M 184.53 121 L 176.53 124.5 L 176.53 117.5 Z" class="feynman-diagram__arrow feynman-diagram__momentum-arrowhead" />
+<text aria-label="p" dominant-baseline="middle" text-anchor="middle" y="101" x="140" class="feynman-diagram__label feynman-diagram__label--edge feynman-diagram__label--momentum">
+<tspan>p</tspan>
+</text>
+</g>
+<text aria-label="k" dominant-baseline="middle" text-anchor="middle" y="-2" x="302" class="feynman-diagram__label feynman-diagram__label--edge">
+<tspan>k</tspan>
+</text>
+</svg>

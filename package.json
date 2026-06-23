@@ -6,7 +6,9 @@
   "scripts": {
     "build:js": "esbuild src/markfeyn/renderer/feynman-diagrams.js --bundle --format=iife --platform=browser --target=es2020 --charset=utf8 --banner:js=\"/*! MarkFeyn renderer bundle. Includes elkjs; see THIRD_PARTY_NOTICES.md. */\" --footer:js=\"if (typeof module !== 'undefined' && module.exports && typeof globalThis !== 'undefined') module.exports = globalThis.FeynmanDiagrams;\" --outfile=src/markfeyn/assets/feynman-diagrams.js",
     "check:js": "npm run build:js && node --check src/markfeyn/assets/feynman-diagrams.js",
-    "test:js": "npm run check:js && node tests/feynman-diagrams.test.js"
+    "test:visual": "node tests/feynman-visual-snapshots.test.js",
+    "update:visual": "MARKFEYN_UPDATE_VISUAL=1 node tests/feynman-visual-snapshots.test.js",
+    "test:js": "npm run check:js && node tests/feynman-diagrams.test.js && npm run test:visual"
   },
   "repository": {
     "type": "git",
@@ -22,6 +24,7 @@
     "elkjs": "^0.11.1"
   },
   "devDependencies": {
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.1",
+    "linkedom": "^0.18.12"
   }
 }
