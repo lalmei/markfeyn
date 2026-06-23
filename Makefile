@@ -1,4 +1,4 @@
-.PHONY: help sync test test-py test-js docs build-docs serve-docs serve build package publish publish-test clean
+.PHONY: help sync build-js test test-py test-js docs build-docs serve-docs serve build package publish publish-test clean
 
 PYTEST := uv run --group dev pytest
 PROPERDOCS := uv run properdocs
@@ -10,6 +10,7 @@ DOCS_ADDR ?= localhost:8001
 help:
 	@echo "Targets:"
 	@echo "  sync        Install/update the uv environment"
+	@echo "  build-js    Bundle the browser renderer"
 	@echo "  test        Run Python and JavaScript tests"
 	@echo "  test-py     Run pytest"
 	@echo "  test-js     Check and run the JavaScript renderer tests"
@@ -30,16 +31,19 @@ help:
 sync:
 	uv sync --group dev
 
+build-js:
+	npm run build:js
+
 test: test-py test-js
 
 test-py:
 	$(PYTEST)
 
-test-js:
+test-js: build-js
 	node --check $(JS_RENDERER)
 	node tests/feynman-diagrams.test.js
 
-docs: docs-properdocs docs-mkdocs
+docs: build-js docs-properdocs docs-mkdocs
 
 build-docs: docs
 
@@ -61,7 +65,7 @@ serve: serve-docs
 
 build: package
 
-package:
+package: build-js
 	uv build
 
 publish: package

@@ -1,7 +1,7 @@
 site_name: MarkFeyn
 site_description: Render simple Feynman diagram code blocks as native SVG in MkDocs and ProperDocs.
 theme:
-  name: material
+  name: materialx
   features:
     - navigation.sections
     - navigation.instant
@@ -12,7 +12,20 @@ plugins:
   - feynman-diagrams
 
 markdown_extensions:
-  - fenced_code
+  - pymdownx.highlight:
+      anchor_linenums: true
+      pygments_lang_class: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: feynman
+          class: language-feynman
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.arithmatex:
+      generic: true
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
 
 nav:
   - Home: index.md

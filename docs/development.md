@@ -4,9 +4,17 @@ Install dependencies:
 
 ```bash
 uv sync --group dev
+npm install
 ```
 
 The development dependency group includes `mkdocs-material`, which is used by both local MkDocs and ProperDocs documentation builds.
+The npm dependencies bundle the browser renderer with ELK.js.
+
+Build the JavaScript renderer:
+
+```bash
+make build-js
+```
 
 Run Python tests:
 
@@ -77,6 +85,8 @@ src/markfeyn/
   core.py
   mkdocs_plugin.py
   properdocs_plugin.py
+  renderer/
+    feynman-diagrams.js
   assets/
     feynman-diagrams.js
 ```

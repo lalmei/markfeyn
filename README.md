@@ -41,7 +41,14 @@ plugins:
   - feynman-diagrams
 
 markdown_extensions:
-  - fenced_code
+  - pymdownx.highlight:
+      anchor_linenums: true
+      pygments_lang_class: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: feynman
+          class: language-feynman
+          format: !!python/name:pymdownx.superfences.fence_code_format
 ```
 
 ## ProperDocs Setup
@@ -56,7 +63,14 @@ plugins:
   - feynman-diagrams
 
 markdown_extensions:
-  - fenced_code
+  - pymdownx.highlight:
+      anchor_linenums: true
+      pygments_lang_class: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: feynman
+          class: language-feynman
+          format: !!python/name:pymdownx.superfences.fence_code_format
 ```
 
 The plugin injects and copies the bundled browser renderer automatically. The Markdown parser stays lightweight because diagram parsing and SVG generation happen in the browser.
@@ -78,14 +92,17 @@ plugins:
 
 ````markdown
 ```feynman
-incoming i1 i2
-outgoing o1 o2
-fermion i1->v1 v2->o1
-photon v1->v2
-fermion i2->v1 v2->o2
-label i1:e⁻ i2:e⁺ o1:μ⁻ o2:μ⁺ v1->v2:γ
+fermion e_minus->ann
+anti fermion e_plus->ann
+photon ann->prod[momentum'=k]
+anti fermion prod->mu_plus
+fermion prod->mu_minus
+label e_minus:e^- e_plus:e^+ mu_plus:\mu^+ mu_minus:\mu^- ann->prod:\gamma
 ```
 ````
+
+Visible degree-1 endpoints are inferred as external terminals. Add `incoming`
+or `outgoing` only when you need to override the side or order.
 
 Supported particles:
 
@@ -137,8 +154,12 @@ label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
 ````
 
 Supported layouts are `spring` (default), `spring-electrical`, `layered`, and
-`tree`. Pin nodes manually with `position node x y` when an automatic layout is
-not enough.
+`tree`, all backed by bundled ELK.js graph layout. Pin nodes manually with
+`position node x y` when an automatic layout is not enough.
+
+TikZ-Feynman-style post-layout alignment is available with commands such as
+`horizontal a to b`, `horizontal' a to b`, `vertical a to b`, and
+`vertical' a to b`.
 
 Vertex shapes can be selected with `vertex node:shape` pairs:
 
@@ -196,7 +217,14 @@ extra_javascript:
   - javascripts/feynman-diagrams.js
 
 markdown_extensions:
-  - fenced_code
+  - pymdownx.highlight:
+      anchor_linenums: true
+      pygments_lang_class: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: feynman
+          class: language-feynman
+          format: !!python/name:pymdownx.superfences.fence_code_format
 ```
 
 ## Package Layout
@@ -207,6 +235,8 @@ src/markfeyn/
   core.py
   mkdocs_plugin.py
   properdocs_plugin.py
+  renderer/
+    feynman-diagrams.js
   assets/
     feynman-diagrams.js
 ```

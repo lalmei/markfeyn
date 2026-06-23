@@ -2,35 +2,44 @@
 
 Each rendered diagram is followed by the verbatim source that produced it.
 
-## Electron-Positron Scattering
+## Electron-Positron Annihilation
+
+<div class="grid" markdown>
 
 ```feynman
-incoming i1 i2
-outgoing o1 o2
-fermion i1->v1 v2->o1
-photon v1->v2
-fermion i2->v1 v2->o2
-label i1:e^- i2:e^+ o1:μ^{-} o2:μ⁺ v1->v2:γ
+fermion e_minus->ann
+anti fermion e_plus->ann
+photon ann->prod[momentum'=k]
+anti fermion prod->mu_plus
+fermion prod->mu_minus
+label e_minus:e^- e_plus:e^+ mu_plus:\mu^+ mu_minus:\mu^- ann->prod:\gamma
 ```
 
-Source:
-
-````markdown
+````
 ```feynman
-incoming i1 i2
-outgoing o1 o2
-fermion i1->v1 v2->o1
-photon v1->v2
-fermion i2->v1 v2->o2
-label i1:e⁻ i2:e⁺ o1:μ⁻ o2:μ⁺ v1->v2:γ
+fermion e_minus->ann
+anti fermion e_plus->ann
+photon ann->prod[momentum'=k]
+anti fermion prod->mu_plus
+fermion prod->mu_minus
+label e_minus:e^- e_plus:e^+ mu_plus:\mu^+ mu_minus:\mu^- ann->prod:\gamma
 ```
 ````
+
+</div>
 
 ## Scalar Exchange
 
+````
 ```feynman
-incoming a b
-outgoing c d
+scalar a->v1 v2->c
+scalar b->v1 v2->d
+scalar v1->v2
+label a:ϕ b:ϕ c:ϕ d:ϕ v1->v2:H
+```
+````
+
+```feynman
 scalar a->v1 v2->c
 scalar b->v1 v2->d
 scalar v1->v2
@@ -39,40 +48,61 @@ label a:ϕ b:ϕ c:ϕ d:ϕ v1->v2:H
 
 Source:
 
-````markdown
-```feynman
-incoming a b
-outgoing c d
-scalar a->v1 v2->c
-scalar b->v1 v2->d
-scalar v1->v2
-label a:ϕ b:ϕ c:ϕ d:ϕ v1->v2:H
-```
-````
+## Emission
 
-## Gluon Emission
+<div class="grid" markdown>
+<div markdown>
+=== "gluon"
 
-```feynman
-incoming q
-outgoing q2 g
-fermion q->v1 v1->q2
-gluon v1->g
-label q:q q2:q g:g
-```
+    ```feynman
+    size small
+    fermion q->v1 v1->q2
+    gluon v1->g
+    label q:q q2:q g:g
+    ```
+
+=== "photon"
+
+    ```feynman
+    size small
+    fermion q->v1 v1->q2
+    photon v1->g
+    label q:q q2:q g:g
+    ```
+
+</div>
+<div markdown>
+
+=== "gluon"
+
+    ```` hl_lines="4"
+    ```feynman
+    size small
+    fermion q->v1 v1->q2
+    gluon v1->g
+    label q:q q2:q g:g
+    ```
+    ````
+
+=== "photon"
+
+    ````  hl_lines="4"
+    ```feynman
+    size small
+    fermion q->v1 v1->q2
+    photon v1->g
+    label q:q q2:q g:g
+    ```
+    ````
+
+</div>
+</div>
 
 Source:
-
-````markdown
-```feynman
-incoming q
-outgoing q2 g
-fermion q->v1 v1->q2
-gluon v1->g
-label q:q q2:q g:g
-```
-````
 
 ## Mixed Vertex
+
+Vertex are user define so you are not confined to the known symmetries of the this universe.
 
 ```feynman
 incoming q g
@@ -83,8 +113,6 @@ photon v1->v2
 scalar v2->h
 label q:q g:g q2:q h:H v1->v2:γ
 ```
-
-Source:
 
 ````markdown
 ```feynman
@@ -100,22 +128,72 @@ label q:q g:g q2:q h:H v1->v2:γ
 
 ## Vertex Shapes
 
-```feynman
-incoming a
-outgoing b c d
-fermion a->v v->b
-photon v->blob blob->c
-scalar blob->d
-vertex v:dot blob:blob a:empty-dot
-label a:e^- b:e^- c:\gamma d:H
-```
+You also can several choices of the vertex shapes, and fills
 
-Source:
+=== "empty-dot"
+
+    ```feynman
+    size small
+    fermion q->v1 v1->q2
+    gluon v1->g
+    vertex v1:empty-dot
+    label q:q q2:q g:g
+    ```
+
+=== "dot"
+
+    ```feynman
+    size small
+    fermion q->v1 v1->q2
+    gluon v1->g
+    vertex v1:dot
+    label q:q q2:q g:g
+    ```
+
+=== "disk"
+
+    ```feynman
+    size small
+    fermion q->v1 v1->q2
+    gluon v1->g
+    vertex v1:disk
+    label q:q q2:q g:g
+    ```
+
+=== "disk-hatched"
+
+    ```feynman
+    size small
+    fermion q->v1 v1->q2
+    gluon v1->g
+    vertex v1:disk[hatch="diagonal"]
+    label q:q q2:q g:g
+    ```
+
+=== "disk-hatched-vertical"
+
+    ```feynman
+    size small
+    fermion q->v1 v1->q2
+    gluon v1->g
+    vertex v1:disk[hatch="vertical"]
+    label q:q q2:q g:g
+    ```
+
+=== "disk-hatched-grid"
+
+    ```feynman
+    size small
+    fermion q->v1 v1->q2
+    gluon v1->g
+    vertex v1:disk[hatch="grid"]
+    label q:q q2:q g:g
+    ```
+
+You can also mix them together
 
 ````markdown
 ```feynman
-incoming a
-outgoing b c d
 fermion a->v v->b
 photon v->blob blob->c
 scalar blob->d
@@ -123,47 +201,104 @@ vertex v:dot blob:blob a:empty-dot
 label a:e^- b:e^- c:\gamma d:H
 ```
 ````
+
+```feynman
+fermion a->v v->b
+photon v->blob blob->c
+scalar blob->d
+vertex v:dot blob:blob a:empty-dot
+label a:e^- b:e^- c:\gamma d:H
+```
 
 ## Layout Algorithms
 
 The same decay can be drawn with different automatic layouts.
 
-```feynman
-layout layered
-incoming mu
-outgoing numu nue e
-fermion mu->w w->numu
-boson w->v
-anti fermion nue->v
-fermion v->e
-label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
-```
+=== "layered"
 
-Source:
+    ````
+    ```feynman
+    layout layered
+    incoming mu
+    outgoing numu e nue
+    fermion mu->w w->numu
+    boson w->v
+    anti fermion nue->v
+    fermion v->e
+    label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
+    ```
+    ````
 
-````markdown
-```feynman
-layout layered
-incoming mu
-outgoing numu nue e
-fermion mu->w w->numu
-boson w->v
-anti fermion nue->v
-fermion v->e
-label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
-```
-````
+=== "spring"
 
-```feynman
-layout spring
-incoming mu
-outgoing numu nue e
-fermion mu->w w->numu
-boson w->v
-anti fermion nue->v
-fermion v->e
-label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
-```
+    ````
+    ```feynman
+    layout spring
+    incoming mu
+    outgoing numu e nue
+    fermion mu->w w->numu
+    boson w->v
+    anti fermion nue->v
+    fermion v->e
+    label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
+    ```
+    ````
+
+=== "electrical spring"
+
+    ````
+    ```feynman
+    layout spring electrical
+    incoming mu
+    outgoing numu e nue
+    fermion mu->w w->numu
+    boson w->v
+    anti fermion nue->v
+    fermion v->e
+    label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
+    ```
+    ````
+
+---
+
+=== "layered"
+
+    ```feynman
+    layout layered
+    incoming mu
+    outgoing numu e nue
+    fermion mu->w w->numu
+    boson w->v
+    anti fermion nue->v
+    fermion v->e
+    label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
+    ```
+
+=== "spring"
+
+    ```feynman
+    layout spring
+    incoming mu
+    outgoing numu e nue
+    fermion mu->w w->numu
+    boson w->v
+    anti fermion nue->v
+    fermion v->e
+    label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
+    ```
+
+=== "electrical spring"
+
+    ```feynman
+    layout spring electrical
+    incoming mu
+    outgoing numu e nue
+    fermion mu->w w->numu
+    boson w->v
+    anti fermion nue->v
+    fermion v->e
+    label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
+    ```
 
 Source:
 
@@ -235,8 +370,7 @@ label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
 ## Vertical Orientation
 
 ```feynman
-orientation vertical
-size small
+vertical a to b
 incoming e positron
 outgoing electron positron2
 fermion e->a a->electron
@@ -249,8 +383,7 @@ Source:
 
 ````markdown
 ```feynman
-orientation vertical
-size small
+vertical a to b
 incoming e positron
 outgoing electron positron2
 fermion e->a a->electron
@@ -263,10 +396,8 @@ label e:e^- positron:e^+ electron:e^- positron2:e^+ a->b:\gamma
 ## Invisible Layout Edge
 
 ```feynman
-layout spring
-size small
-incoming pi0
-outgoing gamma1 gamma2
+
+size medium
 scalar pi0->t1
 fermion t1->t2 t2->t3 t3->t1
 photon t2->gamma1 t3->gamma2
@@ -279,7 +410,6 @@ Source:
 ````markdown
 ```feynman
 layout spring
-size small
 incoming pi0
 outgoing gamma1 gamma2
 scalar pi0->t1
@@ -322,14 +452,7 @@ label a:e^- d:e^+ b:\gamma c:Z
 
 These examples rely on automatic layout only; no `position` commands are used.
 
-```feynman
-layout spring
-incoming gamma1
-outgoing gamma2
-photon gamma1->a b->gamma2
-fermion a->b[half left, momentum=k] b->a[half left, momentum'=k-p]
-label gamma1:\gamma gamma2:\gamma
-```
+$$ \gamma $$ self energy
 
 Source:
 
@@ -345,13 +468,9 @@ label gamma1:\gamma gamma2:\gamma
 ````
 
 ```feynman
-layout spring
-incoming e
-outgoing e2
-fermion e->a a->b b->e2
-photon a->b[half left, edge label=\gamma]
-fermion b->a[half left]
-label e:e^- e2:e^-
+photon gamma1->a b->gamma2
+fermion a->b[half left, momentum=k] b->a[half left, momentum'=k-p]
+label gamma1:\gamma gamma2:\gamma
 ```
 
 Source:
@@ -367,6 +486,16 @@ fermion b->a[half left]
 label e:e^- e2:e^-
 ```
 ````
+
+```feynman
+layout spring
+incoming e
+outgoing e2
+fermion e->a a->b b->e2
+photon a->b[half left, edge label=\gamma]
+fermion b->a[half left]
+label e:e^- e2:e^-
+```
 
 ```feynman
 layout spring
@@ -394,6 +523,10 @@ label g1:g g2:g h:H
 
 These examples use explicit coordinates when the diagram should match a
 specific publication layout.
+
+$$ \gamma $$
+
+self energy
 
 ```feynman
 options width=560 height=300

@@ -31,7 +31,14 @@ plugins:
   - feynman-diagrams
 
 markdown_extensions:
-  - fenced_code
+  - pymdownx.highlight:
+      anchor_linenums: true
+      pygments_lang_class: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: feynman
+          class: language-feynman
+          format: !!python/name:pymdownx.superfences.fence_code_format
 ```
 
 ## ProperDocs
@@ -46,7 +53,14 @@ plugins:
   - feynman-diagrams
 
 markdown_extensions:
-  - fenced_code
+  - pymdownx.highlight:
+      anchor_linenums: true
+      pygments_lang_class: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: feynman
+          class: language-feynman
+          format: !!python/name:pymdownx.superfences.fence_code_format
 ```
 
 The plugin adds this generated site asset automatically:
@@ -89,5 +103,12 @@ extra_javascript:
   - javascripts/feynman-diagrams.js
 
 markdown_extensions:
-  - fenced_code
+  - pymdownx.highlight:
+      anchor_linenums: true
+      pygments_lang_class: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: feynman
+          class: language-feynman
+          format: !!python/name:pymdownx.superfences.fence_code_format
 ```
