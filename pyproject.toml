@@ -9,7 +9,7 @@ description = "Render simple Feynman diagram code blocks as native SVG in MkDocs
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "licenses/*.md"]
 authors = [
   { name = "MarkFeyn contributors" }
 ]
@@ -32,6 +32,7 @@ dependencies = [
 [dependency-groups]
 dev = [
   "mkdocs-material>=9.7.6",
+  "mkdocs-materialx>=10.1.8",
   "pytest>=8",
 ]
 

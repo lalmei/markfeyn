@@ -31,7 +31,14 @@ plugins:
   - search
   - feynman-diagrams
 markdown_extensions:
-  - fenced_code
+  - pymdownx.highlight:
+      anchor_linenums: true
+      pygments_lang_class: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: feynman
+          class: language-feynman
+          format: !!python/name:pymdownx.superfences.fence_code_format
 """,
         encoding="utf-8",
     )
@@ -65,7 +72,14 @@ plugins:
   - feynman-diagrams:
       script_path: javascripts/markfeyn.js
 markdown_extensions:
-  - fenced_code
+  - pymdownx.highlight:
+      anchor_linenums: true
+      pygments_lang_class: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: feynman
+          class: language-feynman
+          format: !!python/name:pymdownx.superfences.fence_code_format
 """,
         encoding="utf-8",
     )
