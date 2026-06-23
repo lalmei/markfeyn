@@ -9,9 +9,26 @@ theme:
 
 plugins:
   - search
+  - table-reader
+  - document-dates:
+      position: top
+      type: date
+      show_updated: true
+      show_author: true
   - feynman-diagrams
 
 markdown_extensions:
+  - tables
+  - footnotes
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.inlinehilite
   - pymdownx.highlight:
       anchor_linenums: true
       pygments_lang_class: true
@@ -20,8 +37,7 @@ markdown_extensions:
         - name: feynman
           class: language-feynman
           format: !!python/name:pymdownx.superfences.fence_code_format
-  - pymdownx.arithmatex:
-      generic: true
+
 
 extra_javascript:
   - javascripts/mathjax.js
@@ -31,5 +47,28 @@ nav:
   - Home: index.md
   - Installation: installation.md
   - Syntax: syntax.md
-  - Examples: examples.md
+  - Examples:
+      - Overview: examples/index.md
+      - Scattering & decays:
+          - Electron-positron annihilation: examples/electron-positron-annihilation.md
+          - Scalar exchange: examples/scalar-exchange.md
+          - Emission: examples/emission.md
+          - Mixed vertex: examples/mixed-vertex.md
+          - Meson decay and mixing: examples/meson-decay-and-mixing.md
+      - Symmetric layout:
+          - Without process roles: examples/symmetric-mode-without-process-roles.md
+      - Vertices:
+          - Vertex shapes: examples/vertex-shapes.md
+      - Layout:
+          - Layout algorithms: examples/layout-algorithms.md
+          - Vertical orientation: examples/vertical-orientation.md
+          - Invisible layout edge: examples/invisible-layout-edge.md
+          - Manual placement: examples/manual-placement.md
+          - Label placement: examples/label-placement.md
+      - Loops:
+          - Loop diagrams: examples/loops.md
+          - Box diagram: examples/box-diagram.md
+          - Two-loop regions: examples/two-loop-regions.md
+      - From the literature:
+          - Published paper diagrams: examples/published-papers.md
   - Development: development.md

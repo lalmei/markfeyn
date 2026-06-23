@@ -92,6 +92,8 @@ plugins:
 
 ````markdown
 ```feynman
+incoming e_minus e_plus
+outgoing mu_plus mu_minus
 fermion e_minus->ann
 anti fermion e_plus->ann
 photon ann->prod[momentum'=k]
@@ -101,8 +103,12 @@ label e_minus:e^- e_plus:e^+ mu_plus:\mu^+ mu_minus:\mu^- ann->prod:\gamma
 ```
 ````
 
-Visible degree-1 endpoints are inferred as external terminals. Add `incoming`
-or `outgoing` only when you need to override the side or order.
+Visible degree-1 endpoints without `incoming` or `outgoing` declarations are
+kept as unclassified external states and laid out symmetrically when no process
+direction is declared. Balanced two-center trees and symmetric two-point
+self-energy loops without explicit roles receive focused reflection-symmetric
+refinement; this is not a full automorphism engine. Add `incoming` and
+`outgoing` for left-to-right process diagrams and explicit terminal ordering.
 
 Supported particles:
 
@@ -156,6 +162,18 @@ label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
 Supported layouts are `spring` (default), `spring-electrical`, `layered`, and
 `tree`, all backed by bundled ELK.js graph layout. Pin nodes manually with
 `position node x y` when an automatic layout is not enough.
+
+Common loop topologies also get semantic candidate layouts: triangle loops, box
+loops, tadpoles, generic polygon loops, centered vacuum one-loop diagrams, and
+bounded two-loop nested or overlapping regions are detected and placed
+deterministically before falling back to the general graph layout. Candidate
+scoring includes approximate label, momentum, multiloop recognizability, and
+previous-layout stability checks. Final layouts also run deterministic,
+bounding-box-based label placement so node labels, edge labels, and momentum
+labels can move away from nearby vertices, propagators, loop interiors, and
+other labels while preserving explicit primed/right-side choices. It still does
+not attempt arbitrary higher-order multiloop optimization or exact TeX/TikZ
+font metrics.
 
 TikZ-Feynman-style post-layout alignment is available with commands such as
 `horizontal a to b`, `horizontal' a to b`, `vertical a to b`, and
