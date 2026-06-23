@@ -1,0 +1,69 @@
+<svg style="--feynman-diagram-width: 520px;" aria-labelledby="feynman-title-6" viewBox="0 0 520 330" height="330" width="520" role="img" class="feynman-diagram__svg">
+<title id="feynman-title-6">Feynman diagram</title>
+<defs>
+<marker markerUnits="strokeWidth" orient="auto" refY="4" refX="7" markerHeight="11" markerWidth="11" id="feynman-arrow-6">
+<path class="feynman-diagram__arrow" d="M0,0 L8,4 L0,8 Z" />
+</marker>
+<pattern height="8" width="8" patternUnits="userSpaceOnUse" id="feynman-hatch-diagonal-6">
+<rect height="8" width="8" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M -2 10 L 10 -2" class="feynman-diagram__hatch-line" />
+</pattern>
+<pattern height="8" width="8" patternUnits="userSpaceOnUse" id="feynman-hatch-diagonal-reverse-6">
+<rect height="8" width="8" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M -2 -2 L 10 10" class="feynman-diagram__hatch-line" />
+</pattern>
+<pattern height="8" width="8" patternUnits="userSpaceOnUse" id="feynman-hatch-cross-6">
+<rect height="8" width="8" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M -2 10 L 10 -2" class="feynman-diagram__hatch-line" />
+<path d="M -2 -2 L 10 10" class="feynman-diagram__hatch-line" />
+</pattern>
+<pattern height="7" width="7" patternUnits="userSpaceOnUse" id="feynman-hatch-horizontal-6">
+<rect height="7" width="7" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M 0 2 L 7 2" class="feynman-diagram__hatch-line" />
+</pattern>
+<pattern height="7" width="7" patternUnits="userSpaceOnUse" id="feynman-hatch-vertical-6">
+<rect height="7" width="7" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M 2 0 L 2 7" class="feynman-diagram__hatch-line" />
+</pattern>
+<pattern height="8" width="8" patternUnits="userSpaceOnUse" id="feynman-hatch-grid-6">
+<rect height="8" width="8" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M 0 2 L 8 2" class="feynman-diagram__hatch-line" />
+<path d="M 2 0 L 2 8" class="feynman-diagram__hatch-line" />
+</pattern>
+</defs>
+<path d="M 82 128.7 L 164 128.7" class="feynman-diagram__edge feynman-diagram__edge--scalar" />
+<path d="M 164 128.7 L 356 128.7" class="feynman-diagram__edge feynman-diagram__edge--scalar" />
+<path d="M 356 128.7 L 260 165" class="feynman-diagram__edge feynman-diagram__edge--scalar" />
+<path d="M 260 165 L 164 128.7" class="feynman-diagram__edge feynman-diagram__edge--scalar" />
+<path d="M 260 165 L 164 201.3" class="feynman-diagram__edge feynman-diagram__edge--scalar" />
+<path d="M 164 201.3 L 356 201.3" class="feynman-diagram__edge feynman-diagram__edge--scalar" />
+<path d="M 356 201.3 L 260 165" class="feynman-diagram__edge feynman-diagram__edge--scalar" />
+<path d="M 356 128.7 L 438 128.7" class="feynman-diagram__edge feynman-diagram__edge--scalar" />
+<path d="M 356 201.3 L 438 201.3" class="feynman-diagram__edge feynman-diagram__edge--scalar" />
+<text aria-label="i" dominant-baseline="middle" text-anchor="end" y="128.7" x="62" class="feynman-diagram__label feynman-diagram__label--incoming">
+<tspan>i</tspan>
+</text>
+<text aria-label="o1" dominant-baseline="middle" text-anchor="start" y="128.7" x="458" class="feynman-diagram__label feynman-diagram__label--outgoing">
+<tspan>o</tspan>
+<tspan font-size="82%" baseline-shift="sub">1</tspan>
+</text>
+<text aria-label="o2" dominant-baseline="middle" text-anchor="start" y="201.3" x="458" class="feynman-diagram__label feynman-diagram__label--outgoing">
+<tspan>o</tspan>
+<tspan font-size="82%" baseline-shift="sub">2</tspan>
+</text>
+<text aria-label="a" dominant-baseline="middle" text-anchor="middle" y="104.7" x="164" class="feynman-diagram__label feynman-diagram__label--internal">
+<tspan>a</tspan>
+</text>
+<text aria-label="b" dominant-baseline="middle" text-anchor="middle" y="104.7" x="356" class="feynman-diagram__label feynman-diagram__label--internal">
+<tspan>b</tspan>
+</text>
+<text aria-label="c" dominant-baseline="middle" text-anchor="middle" y="141" x="242" class="feynman-diagram__label feynman-diagram__label--internal">
+<tspan>c</tspan>
+</text>
+<text aria-label="d" dominant-baseline="middle" text-anchor="middle" y="177.3" x="164" class="feynman-diagram__label feynman-diagram__label--internal">
+<tspan>d</tspan>
+</text>
+<text aria-label="e" dominant-baseline="middle" text-anchor="middle" y="177.3" x="356" class="feynman-diagram__label feynman-diagram__label--internal">
+<tspan>e</tspan>
+</text>
+</svg>

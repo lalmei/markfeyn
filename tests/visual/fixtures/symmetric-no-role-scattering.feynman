@@ -1,0 +1,6 @@
+fermion e_minus->ann
+anti fermion e_plus->ann
+photon ann->prod[edge label=A]
+fermion prod->mu_minus
+anti fermion prod->mu_plus
+label e_minus:e- e_plus:e+ mu_minus:mu- mu_plus:mu+

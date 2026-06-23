@@ -1,0 +1,8 @@
+options width=500 height=280
+position a 70 140
+position b 210 140
+position c 430 140
+photon a->b[momentum=p]
+fermion b->c[half left, edge label=k]
+brace a->b[left]:B0
+label a:bbar b:V c:f b->c:q
