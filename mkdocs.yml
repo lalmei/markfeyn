@@ -37,11 +37,14 @@ markdown_extensions:
         - name: feynman
           class: language-feynman
           format: !!python/name:pymdownx.superfences.fence_code_format
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
 
 
 extra_javascript:
   - javascripts/mathjax.js
-  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
+  - https://unpkg.com/mathjax@3/es5/tex-svg.js
 
 nav:
   - Home: index.md
@@ -49,26 +52,11 @@ nav:
   - Syntax: syntax.md
   - Examples:
       - Overview: examples/index.md
-      - Scattering & decays:
-          - Electron-positron annihilation: examples/electron-positron-annihilation.md
-          - Scalar exchange: examples/scalar-exchange.md
-          - Emission: examples/emission.md
-          - Mixed vertex: examples/mixed-vertex.md
-          - Meson decay and mixing: examples/meson-decay-and-mixing.md
-      - Symmetric layout:
-          - Without process roles: examples/symmetric-mode-without-process-roles.md
-      - Vertices:
-          - Vertex shapes: examples/vertex-shapes.md
-      - Layout:
-          - Layout algorithms: examples/layout-algorithms.md
-          - Vertical orientation: examples/vertical-orientation.md
-          - Invisible layout edge: examples/invisible-layout-edge.md
-          - Manual placement: examples/manual-placement.md
-          - Label placement: examples/label-placement.md
-      - Loops:
-          - Loop diagrams: examples/loops.md
-          - Box diagram: examples/box-diagram.md
-          - Two-loop regions: examples/two-loop-regions.md
-      - From the literature:
-          - Published paper diagrams: examples/published-papers.md
+      - Scattering & decays: examples/scattering-decays.md
+      - Symmetric layout: examples/symmetric-layout.md
+      - Edges: examples/edges.md
+      - Vertices: examples/vertices.md
+      - Layout: examples/layout.md
+      - Loops: examples/loops.md
+      - From the literature: examples/from-the-literature.md
   - Development: development.md

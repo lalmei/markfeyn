@@ -1,4 +1,4 @@
-# Published Recent Paper Diagrams
+# From the Literature
 
 Each rendered diagram is followed by the verbatim source that produced it.
 
@@ -6,7 +6,7 @@ These examples are schematic reproductions of diagrams that appear in recent
 arXiv papers. Each entry names the source figure or equation and notes any
 simplification made to express it in MarkFeyn.
 
-### Large-N Current Two-Point Function
+## Large-N Current Two-Point Function
 
 Recreated from Figure 1 of
 [arXiv:2606.19420](https://arxiv.org/abs/2606.19420). The source figure shows
@@ -56,7 +56,7 @@ label jllabel:J_V jrlabel:J_V eq:= sum:∑_n f1label:f_n f2label:f_n tail:+...
 ```
 ````
 
-### Large-N Pion Form Factor
+## Large-N Pion Form Factor
 
 Recreated from Figure 2 of
 [arXiv:2606.19420](https://arxiv.org/abs/2606.19420). The source figure shows
@@ -108,7 +108,7 @@ label pi1:\pi pi2:\pi jv:J_V eq:= sum:∑_n rpi1:\pi rpi2:\pi glabel:g_{\pi\pi n
 ```
 ````
 
-### Large-N Pion Amplitude
+## Large-N Pion Amplitude
 
 Recreated from Figure 3 of
 [arXiv:2606.19420](https://arxiv.org/abs/2606.19420). The source figure shows

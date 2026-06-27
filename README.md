@@ -205,14 +205,17 @@ Blob and disk vertices can use optional bracketed styling:
 incoming a
 outgoing b
 plain a->disk disk->b
-vertex disk:disk[hatch=cross,size=52]
+vertex disk:disk[hatch=cross,width=96,height=44]
 ```
 ````
 
 Supported hatch fills are `diagonal`, `diagonal-reverse`, `cross`,
 `horizontal`, `vertical`, and `grid`; TikZ-style aliases such as
 `north east lines` and `north west lines` are accepted. `size` and `radius`
-set the circle radius in SVG pixels, and `diameter` sets the full circle width.
+set the circular radius in SVG pixels, and `diameter` sets the full circle
+width. Use `width` and `height` for full elliptical extents, or `rx` and `ry`
+for horizontal and vertical radii. Unequal horizontal and vertical radii render
+as an SVG ellipse.
 
 ## Manual JavaScript Setup
 
