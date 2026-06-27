@@ -57,31 +57,35 @@ label a:e^- b:e^- c:\gamma
 
 Supported vertex shapes:
 
-| Shape | Rendering |
-| --- | --- |
-| `dot` | Small filled circle |
-| `square-dot` | Small filled square |
-| `empty-dot` | Small open circle |
-| `crossed-dot` | Open circle with a cross |
-| `cross` | Cross marker without an enclosing circle |
-| `blob` | Large shaded circle for effective interactions |
-| `disk`, `large-blob` | Larger shaded disk for contact regions |
+| Shape                | Rendering                                      |
+| -------------------- | ---------------------------------------------- |
+| `dot`                | Small filled circle                            |
+| `square-dot`         | Small filled square                            |
+| `empty-dot`          | Small open circle                              |
+| `crossed-dot`        | Open circle with a cross                       |
+| `cross`              | Cross marker without an enclosing circle       |
+| `blob`               | Large shaded circle for effective interactions |
+| `disk`, `large-blob` | Larger shaded disk for contact regions         |
 
 Shape names with spaces can be quoted, such as `vertex v:"crossed dot"`.
 Blob and disk vertices also accept bracketed options:
 
+<div class='grid' markdown>
 ```feynman
 incoming a
 outgoing b
 plain a->disk disk->b
-vertex disk:disk[hatch=cross,size=52]
+vertex disk:disk[hatch=cross,width=96,height=44]
 ```
-
+</div>
 Supported hatch fills are `diagonal`, `diagonal-reverse`, `cross`,
 `horizontal`, `vertical`, and `grid`. TikZ-style aliases such as
 `north east lines` and `north west lines` are accepted. `size` and `radius`
-set the circle radius in SVG pixels; `diameter` sets the full circle width.
-Named sizes are `tiny`, `small`, `medium`, `large`, `huge`, and `disk`.
+set the circular radius in SVG pixels; `diameter` sets the full circle width.
+Use `width` and `height` for full elliptical extents, or `rx` and `ry` for
+horizontal and vertical radii. Unequal horizontal and vertical radii render as an
+SVG ellipse. Named sizes are `tiny`, `small`, `medium`, `large`, `huge`, and
+`disk`.
 
 ## Edges
 
@@ -89,18 +93,24 @@ Edges use `from->to` notation. Multiple edges of the same type can be written on
 
 Supported particle types:
 
-| Type | Rendering |
-| --- | --- |
-| `plain`, `line`, `propagator` | Solid line without an arrow |
-| `fermion` | Solid line with centered arrow |
-| `anti fermion`, `anti-fermion` | Solid line with reversed centered arrow |
-| `photon` | Sinusoidal wave |
-| `boson` | Alias for `photon` |
-| `gluon` | Looped path |
-| `scalar` | Dashed line |
-| `charged scalar`, `charged-scalar` | Dashed line with centered arrow |
-| `ghost` | Dotted line |
-| `invisible`, `hidden` | A layout-only edge that is not rendered |
+| Type                                   | Rendering                                                     |
+| -------------------------------------- | ------------------------------------------------------------- |
+| `plain`, `line`, `propagator`          | Solid line without an arrow                                   |
+| `fermion`                              | Solid line with centered arrow                                |
+| `anti fermion`, `anti-fermion`         | Solid line with reversed centered arrow                       |
+| `photon`                               | Sinusoidal wave                                               |
+| `boson`                                | Alias for `photon`                                            |
+| `gluon`                                | Looped path                                                   |
+| `scalar`                               | Dashed line                                                   |
+| `charged scalar`, `charged-scalar`     | Dashed line with centered arrow                               |
+| `ghost`                                | Dotted line                                                   |
+| `dashed`                               | Dashed line                                                   |
+| `dot dashed`, `dot-dashed`, `dash-dot` | Dash-dot line                                                 |
+| `triangle`, `zigzag`                   | Triangle-wave (zigzag) line                                   |
+| `square`, `rectangle`, `rectangular`   | Square-wave (rectangular) line                                |
+| `double`                               | Double parallel line                                          |
+| `eikonal`, `wilson line`               | Double parallel line with centered arrow (directed worldline) |
+| `invisible`, `hidden`                  | A layout-only edge that is not rendered                       |
 
 Invisible edges are useful when the automatic layout needs a hint:
 
@@ -117,12 +127,14 @@ label pi0:\pi^0 gamma1:\gamma gamma2:\gamma
 
 Per-edge options can be written after an edge with brackets. `draw=none`,
 `hidden`, and `invisible` hide an edge while keeping it in the layout;
-`reverse` flips an edge arrow. TikZ-Feynman-style curve options are supported
-for loops and bent propagators:
+`reverse` flips an edge arrow. `overlay` or `foreground` draws an edge after
+vertices, which is useful for parton lines over a hadron blob.
+TikZ-Feynman-style curve options are supported for loops and bent propagators:
 
 ```feynman
 fermion a->b[reverse]
 scalar c->d[draw=none]
+fermion hadron_left->parton[overlay]
 fermion b->c[half left] c->b[half left]
 boson d->e[bend left]
 fermion f->g[out=180, in=45]
@@ -152,20 +164,20 @@ TeX macros, PGF keys, or TikZ graph syntax.
 The main overlaps are particle names and a small set of familiar edge options:
 `half left`, `half right`, `quarter left`, `quarter right`, `bend left`,
 `bend right`, `out=...`, `in=...`, `looseness=...`, `edge label=...`,
-`momentum=...`, and their primed label variants.
+`momentum=...`, `overlay`, `foreground`, and their primed label variants.
 
 The obvious differences are:
 
-| Area | MarkFeyn behavior |
-| --- | --- |
-| Input syntax | Uses commands such as `incoming`, `outgoing`, `fermion a->b`, and `label a:text`; it does not parse `\feynmandiagram`, `\diagram*`, or TikZ `a -- [fermion] b` syntax. |
-| Rendering engine | Produces native SVG in the browser; it does not run LaTeX, TikZ, PGF, LuaTeX, or Graphviz. |
-| Layout algorithms | Uses bundled ELK.js backends for `spring`, `spring-electrical`, `layered`, and `tree`; these are compatible graph-layout families, not pixel-identical TikZ/PGF output. |
-| Option support | Only documented options are recognized. Unknown TikZ keys are ignored only when they are part of unsupported edge options, or reported as parse errors for diagram-level options. |
-| Coordinates | Manual `position node x y` values are absolute SVG coordinates, not TeX dimensions or TikZ coordinate expressions. |
-| Labels | Supports a small TeX-like label subset for common symbols, scripts, and overlines. When MathJax is loaded on the page (as in the bundled docs sites), labels with richer subscripts such as `g_{\pi\pi n}` are typeset through MathJax automatically. |
-| Styling | Uses bundled CSS classes and fixed SVG geometry defaults instead of TikZ styles, scopes, layers, decorations, and reusable PGF styles. |
-| Arrows and momenta | Arrowheads and momentum arrows are SVG glyphs computed from the edge geometry, so spacing and orientation are approximate rather than TikZ-identical. |
+| Area               | MarkFeyn behavior                                                                                                                                                                                                                                                    |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Input syntax       | Uses commands such as `incoming`, `outgoing`, `fermion a->b`, and `label a:text`; it does not parse `\feynmandiagram`, `\diagram*`, or TikZ `a -- [fermion] b` syntax.                                                                                               |
+| Rendering engine   | Produces native SVG in the browser; it does not run LaTeX, TikZ, PGF, LuaTeX, or Graphviz.                                                                                                                                                                           |
+| Layout algorithms  | Uses bundled ELK.js backends for `spring`, `spring-electrical`, `layered`, and `tree`; these are compatible graph-layout families, not pixel-identical TikZ/PGF output.                                                                                              |
+| Option support     | Only documented options are recognized. Unknown TikZ keys are ignored only when they are part of unsupported edge options, or reported as parse errors for diagram-level options.                                                                                    |
+| Coordinates        | Manual `position node x y` values are absolute SVG coordinates, not TeX dimensions or TikZ coordinate expressions.                                                                                                                                                   |
+| Labels             | Supports a small TeX-like label subset for common symbols, scripts, and overlines. When MathJax is loaded on the page (as in the bundled docs sites), labels with richer subscripts such as `g_{\pi\pi n}` are converted to SVG math via MathJax's `tex2svg` output. |
+| Styling            | Uses bundled CSS classes and fixed SVG geometry defaults instead of TikZ styles, scopes, layers, decorations, and reusable PGF styles.                                                                                                                               |
+| Arrows and momenta | Arrowheads and momentum arrows are SVG glyphs computed from the edge geometry, so spacing and orientation are approximate rather than TikZ-identical.                                                                                                                |
 
 ### Graph Algorithm Comparison
 
@@ -176,18 +188,18 @@ TikZ's `spring layout` by default, and TikZ-Feynman loads PGF's `circular`,
 LuaTeX. MarkFeyn uses ELK.js in the browser for compatible layout families and
 then normalizes the result into its SVG coordinate model.
 
-| Concept | TikZ-Feynman / PGF | MarkFeyn |
-| --- | --- | --- |
-| Automatic placement backend | TikZ-Feynman is a wrapper around TikZ `\graph` and PGF graphdrawing. Automatic placement requires LuaTeX; without it, TikZ-Feynman falls back to a rudimentary mode and warns. | Bundles ELK.js into MarkFeyn's browser renderer; no TeX, LuaTeX, PGF, Graphviz, or runtime network dependency is involved. |
-| Default layout | `\feynmandiagram` and non-starred `\diagram` inject TikZ's `spring layout`. Starred `\diagram*` does not inject the automatic layout and is intended for manually placed vertices. | `layout spring` is the default for every diagram unless the source selects another MarkFeyn layout. |
-| Spring layout | PGF's `spring layout` selects Hu's 2006 spring layout. The implementation supports fixed `desired at` nodes, graph-distance forces, adaptive step length, convergence tolerance, and optional multilevel coarsening. | Uses ELK `force`, normalized into MarkFeyn's viewBox and terminal-side model. |
-| Spring-electrical layout | PGF's `spring electrical layout` selects a separate Hu 2006 electrical algorithm. It supports per-node `electric charge`, a spring constant, optional quadtree approximation for remote repulsive forces, adaptive convergence, and optional coarsening. | Uses ELK `force` with stronger spacing and repulsion settings than `spring`. |
-| Layered layout | PGF's `layered layout` is the modular Sugiyama method: cycle removal, layer assignment, crossing minimization, node positioning, and edge routing. Its default node ranking uses a network-simplex implementation, and its default crossing minimization uses weighted-median sweeps. | Uses ELK `layered`, with declared incoming nodes constrained to the first layer and outgoing nodes to the last layer before MarkFeyn terminal-side normalization. Unclassified endpoints do not receive process-side constraints. |
-| Tree layout | PGF's `tree layout` uses the Reingold-Tilford algorithm on a tree or spanning tree, with subtree contour spacing and options for missing children. | Uses MarkFeyn's deterministic tree placer after semantic analysis, preserving declared external sides and manual positions. |
-| Manual placement | TikZ accepts coordinates, relative positioning, scopes, transforms, and TeX dimensions. | `position node x y` pins absolute SVG coordinates only. These pinned nodes are respected by all MarkFeyn layouts. |
-| Invisible edges | TikZ-Feynman recommends `draw=none` edges because PGF layout still treats them as edges, while the drawing pass skips them. | `invisible` and `hidden` edges are kept in most layout calculations and skipped by the SVG renderer. |
-| Edge paths | TikZ-Feynman draws particle lines through PGF styles, postactions, and decorations. Photons use a custom `complete sines` decoration, gluons use PGF's `coil` decoration, and momentum arrows use path-construction decorations. | MarkFeyn converts each edge to a straight line or cubic Bezier, then samples that geometry for photon waves, gluon loops, labels, and momentum arrows. |
-| Determinism | PGF's force layouts use algorithm parameters such as random initial layouts, convergence tolerances, cooling, and optional coarsening, so exact placement is PGF-engine behavior rather than TikZ-Feynman code. | MarkFeyn uses fixed ELK options and a fixed random seed where applicable, so the same source should produce stable browser SVG across documentation builds. |
+| Concept                     | TikZ-Feynman / PGF                                                                                                                                                                                                                                                                    | MarkFeyn                                                                                                                                                                                                                          |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Automatic placement backend | TikZ-Feynman is a wrapper around TikZ `\graph` and PGF graphdrawing. Automatic placement requires LuaTeX; without it, TikZ-Feynman falls back to a rudimentary mode and warns.                                                                                                        | Bundles ELK.js into MarkFeyn's browser renderer; no TeX, LuaTeX, PGF, Graphviz, or runtime network dependency is involved.                                                                                                        |
+| Default layout              | `\feynmandiagram` and non-starred `\diagram` inject TikZ's `spring layout`. Starred `\diagram*` does not inject the automatic layout and is intended for manually placed vertices.                                                                                                    | `layout spring` is the default for every diagram unless the source selects another MarkFeyn layout.                                                                                                                               |
+| Spring layout               | PGF's `spring layout` selects Hu's 2006 spring layout. The implementation supports fixed `desired at` nodes, graph-distance forces, adaptive step length, convergence tolerance, and optional multilevel coarsening.                                                                  | Uses ELK `force`, normalized into MarkFeyn's viewBox and terminal-side model.                                                                                                                                                     |
+| Spring-electrical layout    | PGF's `spring electrical layout` selects a separate Hu 2006 electrical algorithm. It supports per-node `electric charge`, a spring constant, optional quadtree approximation for remote repulsive forces, adaptive convergence, and optional coarsening.                              | Uses ELK `force` with stronger spacing and repulsion settings than `spring`.                                                                                                                                                      |
+| Layered layout              | PGF's `layered layout` is the modular Sugiyama method: cycle removal, layer assignment, crossing minimization, node positioning, and edge routing. Its default node ranking uses a network-simplex implementation, and its default crossing minimization uses weighted-median sweeps. | Uses ELK `layered`, with declared incoming nodes constrained to the first layer and outgoing nodes to the last layer before MarkFeyn terminal-side normalization. Unclassified endpoints do not receive process-side constraints. |
+| Tree layout                 | PGF's `tree layout` uses the Reingold-Tilford algorithm on a tree or spanning tree, with subtree contour spacing and options for missing children.                                                                                                                                    | Uses MarkFeyn's deterministic tree placer after semantic analysis, preserving declared external sides and manual positions.                                                                                                       |
+| Manual placement            | TikZ accepts coordinates, relative positioning, scopes, transforms, and TeX dimensions.                                                                                                                                                                                               | `position node x y` pins absolute SVG coordinates only. These pinned nodes are respected by all MarkFeyn layouts.                                                                                                                 |
+| Invisible edges             | TikZ-Feynman recommends `draw=none` edges because PGF layout still treats them as edges, while the drawing pass skips them.                                                                                                                                                           | `invisible` and `hidden` edges are kept in most layout calculations and skipped by the SVG renderer.                                                                                                                              |
+| Edge paths                  | TikZ-Feynman draws particle lines through PGF styles, postactions, and decorations. Photons use a custom `complete sines` decoration, gluons use PGF's `coil` decoration, and momentum arrows use path-construction decorations.                                                      | MarkFeyn converts each edge to a straight line or cubic Bezier, then samples that geometry for photon waves, gluon loops, labels, and momentum arrows.                                                                            |
+| Determinism                 | PGF's force layouts use algorithm parameters such as random initial layouts, convergence tolerances, cooling, and optional coarsening, so exact placement is PGF-engine behavior rather than TikZ-Feynman code.                                                                       | MarkFeyn uses fixed ELK options and a fixed random seed where applicable, so the same source should produce stable browser SVG across documentation builds.                                                                       |
 
 ### Bundled ELK Layouts
 
@@ -209,13 +221,20 @@ The renderer keeps this graph contract around ELK:
 
 Milestone 2 adds a stricter semantic ordering and diagnostics contract:
 
-- External ordering is stable. Declared `incoming` and `outgoing` nodes keep
-  their declaration order on process boundaries. If a previous semantic order
-  is supplied by API options it is used next, followed by source declaration
-  order, then stable node id order.
+- External ordering is stable. Declared `incoming` and `outgoing` nodes use
+  clockwise boundary order on process diagrams: the left boundary is ordered
+  bottom-to-top and the right boundary is ordered top-to-bottom. If a previous
+  semantic order is supplied by API options it is used next, followed by source
+  declaration order, then stable node id order. Geometry cleanup may move
+  internal vertices, but it preserves declared external boundary order for sides
+  with two or more terminals; no-role external leaves use source appearance as
+  the deterministic fallback order.
 - Symmetric diagrams keep unclassified degree-1 endpoints unclassified. They
   are ordered deterministically for balanced contact and tree placement without
-  assigning incoming or outgoing process meaning.
+  assigning incoming or outgoing process meaning. One-center no-role contact
+  stars use a uniform ring around the contact vertex; odd leaf counts anchor the
+  median declared leaf on a visual symmetry axis and mirror the remaining leaves
+  in pairs.
 - Layered process diagrams use explicit ELK ports. Incoming terminal legs use
   the process-start side and adjacent internal ports use the opposite side;
   outgoing terminal legs use the process-end side and adjacent internal ports
@@ -300,6 +319,7 @@ Current automatic-layout limitations are intentional: label placement uses
 estimated SVG text boxes, not exact TeX/TikZ font metrics; MarkFeyn uses
 bounded two-loop heuristics rather than a complete N-loop optimizer; and
 incremental layout stability is best-effort for unchanged vertices.
+
 - Labels and momentum arrows still use the normal SVG geometry helpers with
   resolved placement anchors. For loop edges this keeps them outside the loop
   where the selected geometry and side options make that possible, but it does
@@ -316,12 +336,12 @@ TikZ-Feynman does not have `incoming` or `outgoing` declarations. Its automatic
 orientation keys work after graph layout by rotating, and optionally flipping,
 the completed graph:
 
-| TikZ-Feynman key | PGF orientation meaning | MarkFeyn command |
-| --- | --- | --- |
-| `horizontal=a to b` | Shorthand for `orient tail=a`, `orient head=b`, and `orient=0`; the line from `a` to `b` is aligned with the positive x-axis. | `horizontal a to b` |
-| `horizontal'=a to b` | Same line alignment as `horizontal`, with the rest of the graph flipped across that line. | `horizontal' a to b` |
-| `vertical=a to b` | Shorthand for `orient tail=a`, `orient head=b`, and `orient=-90`; the line from `a` to `b` is aligned vertically. | `vertical a to b` |
-| `vertical'=a to b` | Same line alignment as `vertical`, with the rest of the graph flipped across that line. | `vertical' a to b` |
+| TikZ-Feynman key     | PGF orientation meaning                                                                                                       | MarkFeyn command          |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| `horizontal=a to b`  | Shorthand for `orient tail=a`, `orient head=b`, and `orient=0`; the line from `a` to `b` is aligned with the positive x-axis. | `tikz horizontal a to b`  |
+| `horizontal'=a to b` | Same line alignment as `horizontal`, with the rest of the graph flipped across that line.                                     | `tikz horizontal' a to b` |
+| `vertical=a to b`    | Shorthand for `orient tail=a`, `orient head=b`, and `orient=-90`; the line from `a` to `b` is aligned vertically.             | `tikz vertical a to b`    |
+| `vertical'=a to b`   | Same line alignment as `vertical`, with the rest of the graph flipped across that line.                                       | `tikz vertical' a to b`   |
 
 MarkFeyn's `orientation` command is different. It places declared external
 roles on terminal sides before layout: `horizontal` places incoming nodes on the
@@ -329,26 +349,49 @@ left and outgoing nodes on the right, while `horizontal-reverse` swaps those
 sides. `vertical` and `vertical-reverse` keep the same terminal-side idea but
 use a taller canvas and encourage internal vertices to stack vertically.
 
-The TikZ-style `horizontal a to b` and `vertical a to b` commands are separate
-post-layout alignment commands. They rotate the completed layout so the named
-pair has the requested angle. Primed variants also mirror the graph across that
-named line.
+The TikZ-style `tikz horizontal a to b` and `tikz vertical a to b` commands are
+separate post-layout rotation commands. They rotate the completed layout so the
+named pair has the requested angle. Primed variants also mirror the graph
+across that named line. Bare `horizontal a to b` and `vertical a to b` remain
+accepted as deprecated compatibility aliases; new MarkFeyn examples should use
+the explicit `tikz` prefix.
+
+Native alignment constraints preserve the process layout and move only the
+named vertices onto a common axis:
+
+```feynman
+align vertical lepton_vertex struck
+align horizontal pql parton struck jet
+```
+
+`align vertical` gives the named vertices the same x coordinate. `align
+horizontal` gives them the same y coordinate. Manual `position` coordinates act
+as anchors when present.
+
+The declared node order also fixes the direction along the shared axis. For
+`align vertical a b`, `a` is placed above `b`; for `align horizontal a b`, `a`
+is placed left of `b`. This matches the `tikz vertical a to b` and
+`tikz horizontal a to b` direction conventions and makes the stacking order
+deterministic instead of layout-dependent. Ordering reuses the named vertices'
+existing cross-axis positions, so spacing and extent are preserved. When any
+named vertex is manually pinned with `position`, the order is left untouched so
+explicit coordinates win.
 
 TikZ's `vertical=a to b` uses `orient=-90` in TikZ's y-up coordinate system.
 MarkFeyn maps that to the corresponding visual direction in SVG, so `a`
 appears above `b` in the rendered diagram.
 
-When `vertical a to b` or `vertical' a to b` is used without explicit
+When `tikz vertical a to b` or `tikz vertical' a to b` is used without explicit
 `options width=... height=...`, MarkFeyn chooses a portrait viewBox so the
 rotated diagram has room for standard-length external legs.
 
 TikZ-Feynman's size presets also seed PGF graphdrawing distances:
 
 | TikZ-Feynman size | `node distance` | graphdrawing `node distance` | `level distance` | `sibling distance` |
-| --- | --- | --- | --- | --- |
-| `small` | `1cm` | `1.25cm` | `1cm` | `1.5cm` |
-| `medium` | `1.5cm` | `1.9cm` | `1.5cm` | `2.25cm` |
-| `large` | `2cm` | `2.5cm` | `2cm` | `3cm` |
+| ----------------- | --------------- | ---------------------------- | ---------------- | ------------------ |
+| `small`           | `1cm`           | `1.25cm`                     | `1cm`            | `1.5cm`            |
+| `medium`          | `1.5cm`         | `1.9cm`                      | `1.5cm`          | `2.25cm`           |
+| `large`           | `2cm`           | `2.5cm`                      | `2cm`            | `3cm`              |
 
 MarkFeyn size presets are SVG-pixel viewBox defaults instead. The current
 presets are `small` at `420 x 280`, `medium` at `520 x 330`, and `large` at
@@ -372,21 +415,21 @@ options width=560 height=420 margin_x=64 margin_y=56
 
 Supported layouts:
 
-| Layout | Use case |
-| --- | --- |
-| `spring` | Default, force-directed placement that spreads connected internal vertices |
-| `spring-electrical` | Spring layout with stronger charge-like repulsion between vertices |
-| `layered` | Stable side-to-side diagrams with deterministic vertex layers |
-| `tree` | Branching decays and hierarchy-like diagrams |
+| Layout              | Use case                                                                   |
+| ------------------- | -------------------------------------------------------------------------- |
+| `spring`            | Default, force-directed placement that spreads connected internal vertices |
+| `spring-electrical` | Spring layout with stronger charge-like repulsion between vertices         |
+| `layered`           | Stable side-to-side diagrams with deterministic vertex layers              |
+| `tree`              | Branching decays and hierarchy-like diagrams                               |
 
 Supported orientations:
 
-| Orientation | Direction |
-| --- | --- |
-| `horizontal` | Incoming nodes on the left, outgoing nodes on the right |
-| `horizontal-reverse` | Incoming nodes on the right, outgoing nodes on the left |
-| `vertical` | Incoming nodes on the left, outgoing nodes on the right, with internal vertices encouraged to stack vertically |
-| `vertical-reverse` | Incoming nodes on the right, outgoing nodes on the left, with internal vertices encouraged to stack vertically |
+| Orientation          | Direction                                                                                                      |
+| -------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `horizontal`         | Incoming nodes on the left, outgoing nodes on the right                                                        |
+| `horizontal-reverse` | Incoming nodes on the right, outgoing nodes on the left                                                        |
+| `vertical`           | Incoming nodes on the left, outgoing nodes on the right, with internal vertices encouraged to stack vertically |
+| `vertical-reverse`   | Incoming nodes on the right, outgoing nodes on the left, with internal vertices encouraged to stack vertically |
 
 The size presets are `small`, `medium`, and `large`. `options width=...` and
 `options height=...` override the SVG viewBox size.
@@ -428,7 +471,11 @@ match common Feynman-diagram expectations:
 - Visible degree-1 endpoints without explicit roles are represented as
   unclassified external states instead of inferred from edge direction.
 - Symmetric unclassified contact and tree diagrams use deterministic balanced
-  placement rather than invented incoming/outgoing sides.
+  placement rather than invented incoming/outgoing sides. For a single contact
+  vertex with only unclassified external leaves, names such as `l1` and `r2`,
+  fermion arrows, momentum arrows, and edge source/target spelling do not create
+  left/right process groups; declare `incoming` and `outgoing` when that
+  process grouping is intended.
 - Balanced two-center trees with matching unclassified leaf fans (any N→N per center,
   even **total** unclassified count), and unequal N→(N±1) splits with **odd total**
   count and the median leaf at top or bottom center, and symmetric two-point self-energy loops with one
@@ -452,10 +499,15 @@ match common Feynman-diagram expectations:
   layer axis.
 - When rendered edge geometry still crosses the viewBox margin, the layout is
   translated as a final pass.
-- TikZ-style `horizontal a to b` and `vertical a to b` are post-layout
+- Native `align vertical ...` and `align horizontal ...` constraints preserve
+  process boundaries while forcing the named vertices onto a shared x or y
+  coordinate.
+- TikZ-style `tikz horizontal a to b` and `tikz vertical a to b` are post-layout
   transforms. `vertical` is mapped from TikZ's y-up angle convention into SVG's
   y-down coordinates, then uses a portrait default viewBox when dimensions are
-  not explicit.
+  not explicit. No-role contact stars keep their balanced symmetric ring before
+  this transform, so `tikz vertical l3 to hub1` rotates the star to put the
+  named leg on the vertical axis without inferring incoming or outgoing sides.
 - Orientation endpoints with one incoming and one outgoing terminal are opened
   into mixed fans, so vertical scattering diagrams have the standard long,
   shallow external legs.
@@ -464,12 +516,12 @@ match common Feynman-diagram expectations:
 
 Layout implementations:
 
-| Layout | Implementation |
-| --- | --- |
-| `layered` | ELK `layered`, with declared incoming nodes constrained to the first layer and outgoing nodes constrained to the last layer where applicable. |
-| `tree` | Deterministic MarkFeyn tree placement, preserving declared external sides and manual positions without automatic terminal-role inference. |
-| `spring` | ELK `force`, with fixed MarkFeyn spacing and seed options. |
-| `spring-electrical` | ELK `force` with stronger spacing and repulsion settings than `spring`. |
+| Layout              | Implementation                                                                                                                                |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `layered`           | ELK `layered`, with declared incoming nodes constrained to the first layer and outgoing nodes constrained to the last layer where applicable. |
+| `tree`              | Deterministic MarkFeyn tree placement, preserving declared external sides and manual positions without automatic terminal-role inference.     |
+| `spring`            | ELK `force`, with fixed MarkFeyn spacing and seed options.                                                                                    |
+| `spring-electrical` | ELK `force` with stronger spacing and repulsion settings than `spring`.                                                                       |
 
 If ELK fails at runtime, `layoutFeynman` falls back to MarkFeyn's legacy
 synchronous layout helper. The helper is also exposed as

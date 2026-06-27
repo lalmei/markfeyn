@@ -1,10 +1,13 @@
-# Vertex Shapes
+# Vertices
 
 Each rendered diagram is followed by the verbatim source that produced it.
 
 You also can several choices of the vertex shapes, and fills
 
+
+
 === "empty-dot"
+
 
     ```feynman
     size small
@@ -16,7 +19,10 @@ You also can several choices of the vertex shapes, and fills
     label q:q q2:q g:g
     ```
 
+
+
 === "dot"
+
 
     ```feynman
     size small
@@ -28,7 +34,10 @@ You also can several choices of the vertex shapes, and fills
     label q:q q2:q g:g
     ```
 
-=== "disk"
+
+
+=== "blob"
+
 
     ```feynman
     size small
@@ -36,11 +45,13 @@ You also can several choices of the vertex shapes, and fills
     outgoing q2 g
     fermion q->v1 v1->q2
     gluon v1->g
-    vertex v1:disk
+    vertex v1:blob
     label q:q q2:q g:g
     ```
 
+
 === "disk-hatched"
+
 
     ```feynman
     size small
@@ -52,7 +63,9 @@ You also can several choices of the vertex shapes, and fills
     label q:q q2:q g:g
     ```
 
+
 === "disk-hatched-vertical"
+
 
     ```feynman
     size small
@@ -64,7 +77,9 @@ You also can several choices of the vertex shapes, and fills
     label q:q q2:q g:g
     ```
 
+
 === "disk-hatched-grid"
+
 
     ```feynman
     size small
@@ -76,10 +91,24 @@ You also can several choices of the vertex shapes, and fills
     label q:q q2:q g:g
     ```
 
-You can also mix them together
 
-<div class="grid" markdown>
-<div markdown>
+=== "blob-ellipse"
+
+
+    ```feynman
+    size small
+    incoming q
+    outgoing q2 g
+    fermion q->v1 v1->q2
+    gluon v1->g
+    vertex v1:blob[hatch="horizontal",width=72,height=32]
+    label q:q q2:q g:g
+    ```
+
+## Mixed Vertex Shapes
+
+You can also mix them together, including endpoint
+
 
 ````markdown
 ```feynman
@@ -91,16 +120,10 @@ label a:e^- b:e^- c:\gamma d:H
 ```
 ````
 
-</div>
 ```feynman
-layout layered
-incoming a
-outgoing b c d
 fermion a->v v->b
 photon v->blob blob->c
 scalar blob->d
 vertex v:dot blob:blob a:empty-dot
 label a:e^- b:e^- c:\gamma d:H
 ```
-
-</div>
