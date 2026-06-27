@@ -1,0 +1,3 @@
+scalar a->b b->c c->a
+scalar d->e e->f f->d
+scalar g->h h->i i->g
