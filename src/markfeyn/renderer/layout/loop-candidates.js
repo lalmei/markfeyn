@@ -133,6 +133,7 @@ function buildCandidate(prepared, layoutOptions, loop, variant, angles) {
   placeOffLoopInternals(prepared, positions, loop, placedLoopCenter, layoutOptions);
   placeExternalVertices(prepared, positions, placedLoopCenter, layoutOptions);
   placeRemainingVertices(prepared, positions, placedLoopCenter, layoutOptions);
+  normalizeDeclaredProcessTerminals(prepared, positions, layoutOptions);
 
   const candidate = {
     id: candidateId(loop, variant),
@@ -282,6 +283,64 @@ function placeRemainingVertices(prepared, positions, center, layoutOptions) {
 
     positions[node] = positionForKind(point.x, point.y, vertexKind(prepared, node), layoutOptions);
   });
+}
+
+function normalizeDeclaredProcessTerminals(prepared, positions, layoutOptions) {
+  if (layoutOptions.tikzOrientation) {
+    return;
+  }
+
+  [
+    { nodes: orderedRoleNodes(prepared, "incoming"), role: "incoming" },
+    { nodes: orderedRoleNodes(prepared, "outgoing"), role: "outgoing" },
+  ].forEach(({ nodes, role }) => {
+    if (nodes.length <= 1) {
+      return;
+    }
+
+    const layer = terminalLayerForRole(role, layoutOptions);
+    const midpoint = layoutOptions.width / 2;
+    const leftBoundary = layer <= midpoint;
+
+    nodes.forEach((node, index) => {
+      if (!positions[node] || isFixedVertex(prepared, node)) {
+        return;
+      }
+
+      positions[node] = {
+        ...positions[node],
+        x: layer,
+        y: boundaryCrossCoordinate(index, nodes.length, leftBoundary, layoutOptions),
+        kind: kindForExternalRole(role),
+        labelSide: labelSideForKind(role, layoutOptions.orientation),
+      };
+    });
+  });
+}
+
+function orderedRoleNodes(prepared, role) {
+  const entries = prepared.externalOrdering?.[role];
+
+  if (Array.isArray(entries) && entries.length) {
+    return entries.map((entry) => entry.id);
+  }
+
+  return prepared.semantic?.[role]?.slice() || [];
+}
+
+function isFixedVertex(prepared, node) {
+  return Boolean(prepared.semantic.vertices.find((vertex) => vertex.id === node)?.fixed);
+}
+
+function boundaryCrossCoordinate(index, count, leftBoundary, layoutOptions) {
+  if (count <= 1) {
+    return (layoutOptions.marginY + layoutOptions.height - layoutOptions.marginY) / 2;
+  }
+
+  const start = leftBoundary ? layoutOptions.height - layoutOptions.marginY : layoutOptions.marginY;
+  const end = leftBoundary ? layoutOptions.marginY : layoutOptions.height - layoutOptions.marginY;
+
+  return start + ((end - start) * index) / (count - 1);
 }
 
 function firstPositionedInternalNeighbor(prepared, positions, external) {

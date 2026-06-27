@@ -14,9 +14,7 @@ export function analyzeExternalOrdering(semantic, options = {}) {
   const outgoing = orderRole(semantic.outgoing, "outgoing", orderFor);
   const unclassified = orderRole(semantic.unclassified, "unclassified", orderFor);
   const byId = new Map([...incoming, ...outgoing, ...unclassified].map((entry) => [entry.id, entry]));
-  const all = semantic.externalVertices
-    .map((id) => byId.get(id) || orderFor(id, "unclassified"))
-    .sort(compareExternalOrder);
+  const all = cyclicBoundaryOrder(semantic, incoming, outgoing, unclassified, byId, orderFor);
 
   return {
     mode: semantic.incoming.length && semantic.outgoing.length ? "process" : "symmetric",
@@ -26,6 +24,33 @@ export function analyzeExternalOrdering(semantic, options = {}) {
     all,
     previousOrder: previousOrder.list,
   };
+}
+
+function cyclicBoundaryOrder(semantic, incoming, outgoing, unclassified, byId, orderFor) {
+  if (incoming.length || outgoing.length) {
+    const seen = new Set();
+    const ordered = [];
+
+    [...incoming, ...outgoing, ...unclassified].forEach((entry) => {
+      if (!seen.has(entry.id)) {
+        seen.add(entry.id);
+        ordered.push(entry);
+      }
+    });
+
+    semantic.externalVertices.forEach((id) => {
+      if (!seen.has(id)) {
+        seen.add(id);
+        ordered.push(byId.get(id) || orderFor(id, "unclassified"));
+      }
+    });
+
+    return ordered;
+  }
+
+  return semantic.externalVertices
+    .map((id) => byId.get(id) || orderFor(id, "unclassified"))
+    .sort(compareExternalOrder);
 }
 
 export function compareExternalOrdering(ordering, left, right) {
