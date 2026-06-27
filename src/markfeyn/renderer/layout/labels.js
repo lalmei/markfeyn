@@ -763,18 +763,20 @@ function buildVertexBounds(layout, semantic) {
         return null;
       }
 
-      const radius = vertexRadius(vertex);
+      const radii = vertexRadii(vertex);
 
       return {
         id: vertex.id,
         bounds: {
-          x1: position.x - radius,
-          x2: position.x + radius,
-          y1: position.y - radius,
-          y2: position.y + radius,
+          x1: position.x - radii.rx,
+          x2: position.x + radii.rx,
+          y1: position.y - radii.ry,
+          y2: position.y + radii.ry,
         },
         center: position,
-        radius,
+        radius: Math.max(radii.rx, radii.ry),
+        rx: radii.rx,
+        ry: radii.ry,
       };
     })
     .filter(Boolean)
@@ -1309,13 +1311,24 @@ function isLoopEdge(edgeId, prepared, candidate) {
   return Boolean(edgeId && loop?.edges?.includes(edgeId));
 }
 
-function vertexRadius(vertex) {
-  const shape = vertex.metadata.vertexShape;
+function vertexRadii(vertex) {
+  const definition = vertex.metadata.vertexShape;
+  const shape = typeof definition === "object" ? definition.shape : definition;
+  const defaultRadius = defaultVertexRadius(shape);
 
-  if (shape && typeof shape === "object" && Number.isFinite(shape.size)) {
-    return Math.max(4, shape.size);
+  if (!definition || typeof definition !== "object") {
+    return { rx: defaultRadius, ry: defaultRadius };
   }
 
+  const radius = Number.isFinite(definition.size) ? definition.size : defaultRadius;
+
+  return {
+    rx: Math.max(4, Number.isFinite(definition.rx) ? definition.rx : radius),
+    ry: Math.max(4, Number.isFinite(definition.ry) ? definition.ry : radius),
+  };
+}
+
+function defaultVertexRadius(shape) {
   if (shape === "blob") {
     return 18;
   }

@@ -44,6 +44,4683 @@
     mod
   ));
 
+  // src/markfeyn/renderer/layout/incremental.js
+  function analyzeIncrementalStability(semantic, options = {}) {
+    const previousLayout = normalizePreviousLayout(options.previousLayout || semantic.source.previousLayout);
+    const enabled = Boolean(options.preservePreviousLayout || semantic.source.preservePreviousLayout);
+    const sharedVertices = enabled ? semantic.vertices.map((vertex) => vertex.id).filter((id) => previousLayout.positions[id]).sort() : [];
+    return {
+      enabled,
+      previousLayout,
+      sharedVertices
+    };
+  }
+  function applyIncrementalStability(layout, incremental) {
+    if (!incremental?.enabled || !incremental.sharedVertices.length) {
+      return layout;
+    }
+    const positions = { ...layout.positions || {} };
+    incremental.sharedVertices.forEach((node) => {
+      const previous = incremental.previousLayout.positions[node];
+      const current = positions[node] || {};
+      positions[node] = {
+        ...current,
+        x: previous.x,
+        y: previous.y,
+        kind: current.kind || previous.kind || "internal"
+      };
+    });
+    layout.positions = positions;
+    layout.incremental = {
+      preserved: true,
+      sharedVertexCount: incremental.sharedVertices.length,
+      nodes: incremental.sharedVertices.slice()
+    };
+    return layout;
+  }
+  function incrementalDiagnostic(incremental) {
+    return {
+      stage: "incremental",
+      severity: incremental?.enabled ? "info" : "info",
+      message: incremental?.enabled ? `Incremental stability enabled for ${incremental.sharedVertices.length} shared vertices` : "Incremental stability disabled",
+      data: {
+        enabled: Boolean(incremental?.enabled),
+        sharedVertexCount: incremental?.sharedVertices?.length || 0,
+        previousExternalOrder: externalOrderFromPreviousLayout(incremental?.previousLayout)
+      }
+    };
+  }
+  function layoutInstabilityScore(layout, incremental) {
+    if (!incremental?.enabled || !incremental.sharedVertices.length) {
+      return 0;
+    }
+    const current = normalizedPositions(layout.positions || {}, incremental.sharedVertices);
+    const previous = normalizedPositions(incremental.previousLayout.positions || {}, incremental.sharedVertices);
+    if (!current || !previous) {
+      return 0;
+    }
+    const total = incremental.sharedVertices.reduce((sum, node) => {
+      const dx = current[node].x - previous[node].x;
+      const dy = current[node].y - previous[node].y;
+      return sum + dx * dx + dy * dy;
+    }, 0);
+    return total / incremental.sharedVertices.length / 20;
+  }
+  function previousOrderFromLayout(previousLayout) {
+    return externalOrderFromPreviousLayout(normalizePreviousLayout(previousLayout));
+  }
+  function normalizePreviousLayout(value) {
+    const positions = {};
+    if (value?.positions && typeof value.positions === "object") {
+      Object.entries(value.positions).forEach(([node, position]) => {
+        if (Number.isFinite(position?.x) && Number.isFinite(position?.y)) {
+          positions[node] = {
+            x: position.x,
+            y: position.y,
+            kind: position.kind
+          };
+        }
+      });
+    }
+    return {
+      ...value,
+      positions
+    };
+  }
+  function externalOrderFromPreviousLayout(previousLayout) {
+    const ordering = previousLayout?.analysis?.externalOrdering || previousLayout?.externalOrdering;
+    if (!ordering) {
+      return null;
+    }
+    return {
+      incoming: idsFromOrder(ordering.incoming),
+      outgoing: idsFromOrder(ordering.outgoing),
+      unclassified: idsFromOrder(ordering.unclassified),
+      all: idsFromOrder(ordering.all)
+    };
+  }
+  function idsFromOrder(values) {
+    return Array.isArray(values) ? values.map((value) => typeof value === "string" ? value : value?.id).filter(Boolean) : [];
+  }
+  function normalizedPositions(positions, nodes) {
+    const points = nodes.map((node) => positions[node]).filter((position) => Number.isFinite(position?.x) && Number.isFinite(position?.y));
+    if (points.length !== nodes.length) {
+      return null;
+    }
+    const center = {
+      x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+      y: points.reduce((sum, point) => sum + point.y, 0) / points.length
+    };
+    const scale = Math.max(
+      1,
+      Math.sqrt(points.reduce((sum, point) => sum + (point.x - center.x) ** 2 + (point.y - center.y) ** 2, 0) / points.length)
+    );
+    return Object.fromEntries(nodes.map((node) => [
+      node,
+      {
+        x: (positions[node].x - center.x) / scale,
+        y: (positions[node].y - center.y) / scale
+      }
+    ]));
+  }
+  var init_incremental = __esm({
+    "src/markfeyn/renderer/layout/incremental.js"() {
+    }
+  });
+
+  // src/markfeyn/renderer/layout/model.js
+  function createSemanticDiagram(diagram) {
+    const nodes = collectSemanticNodes(diagram);
+    const explicitIncoming = uniqueList(diagram.incoming || []);
+    const explicitOutgoing = uniqueList(diagram.outgoing || []);
+    const incoming = new Set(explicitIncoming);
+    const outgoing = new Set(explicitOutgoing);
+    const degree = visibleDegreeByNode(diagram);
+    const vertices = Array.from(nodes).sort(compareStable).map((id) => {
+      const externalRole = externalRoleForNode(id, incoming, outgoing, degree);
+      return {
+        id,
+        kind: externalRole === "none" ? "interaction" : "external",
+        externalRole,
+        fixed: Boolean(diagram.manualPositions?.[id]),
+        positionHint: diagram.manualPositions?.[id] || null,
+        metadata: {
+          declarationIndex: declarationIndexForNode(diagram, id),
+          vertexShape: diagram.vertices?.[id]
+        }
+      };
+    });
+    return {
+      id: diagram.id || "markfeyn-diagram",
+      source: diagram,
+      vertices,
+      propagators: (diagram.edges || []).map((edge, index) => semanticPropagator(edge, index)),
+      process: {
+        initialState: explicitIncoming,
+        finalState: explicitOutgoing,
+        preferredFlow: explicitIncoming.length && explicitOutgoing.length ? "left-to-right" : void 0
+      },
+      layoutHints: {
+        topology: diagram.options?.topology || "auto",
+        orientationMode: diagram.options?.orientationMode || "auto"
+      },
+      externalVertices: vertices.filter((vertex) => vertex.externalRole !== "none").map((vertex) => vertex.id),
+      internalVertices: vertices.filter((vertex) => vertex.externalRole === "none").map((vertex) => vertex.id),
+      incoming: explicitIncoming,
+      outgoing: explicitOutgoing,
+      unclassified: vertices.filter((vertex) => vertex.externalRole === "unclassified").map((vertex) => vertex.id)
+    };
+  }
+  function createCompatibilityDiagram(diagram, semantic) {
+    return {
+      ...diagram,
+      incoming: semantic.incoming.slice(),
+      outgoing: semantic.outgoing.slice(),
+      unclassified: semantic.unclassified.slice(),
+      semantic
+    };
+  }
+  function semanticNodeById(semantic) {
+    return new Map(semantic.vertices.map((vertex) => [vertex.id, vertex]));
+  }
+  function collectSemanticNodes(diagram) {
+    const nodes = /* @__PURE__ */ new Set([
+      ...diagram.incoming || [],
+      ...diagram.outgoing || [],
+      ...diagram.unclassified || []
+    ]);
+    (diagram.edges || []).forEach((edge) => {
+      nodes.add(edge.from);
+      nodes.add(edge.to);
+    });
+    Object.keys(diagram.labels || {}).forEach((target) => {
+      if (!target.includes("->")) {
+        nodes.add(target);
+      }
+    });
+    (diagram.braces || []).forEach((brace) => {
+      nodes.add(brace.from);
+      nodes.add(brace.to);
+    });
+    Object.keys(diagram.manualPositions || {}).forEach((node) => nodes.add(node));
+    Object.keys(diagram.vertices || {}).forEach((node) => nodes.add(node));
+    return nodes;
+  }
+  function visibleDegreeByNode(diagram) {
+    const degree = /* @__PURE__ */ new Map();
+    (diagram.edges || []).filter((edge) => !edge.hidden && edge.from !== edge.to).forEach((edge) => {
+      degree.set(edge.from, (degree.get(edge.from) || 0) + 1);
+      degree.set(edge.to, (degree.get(edge.to) || 0) + 1);
+    });
+    return degree;
+  }
+  function uniqueList(values) {
+    const seen = /* @__PURE__ */ new Set();
+    const result = [];
+    values.forEach((value) => {
+      if (!seen.has(value)) {
+        seen.add(value);
+        result.push(value);
+      }
+    });
+    return result;
+  }
+  function compareStable(left, right) {
+    return String(left).localeCompare(String(right));
+  }
+  function semanticPropagator(edge, index) {
+    return {
+      id: edge.id || `${edge.from}->${edge.to}#${index + 1}`,
+      source: edge.from,
+      target: edge.to,
+      style: edge.type || "plain",
+      layoutDirection: edge.layoutDirection || "unspecified",
+      momentumDirection: semanticMomentumDirection(edge),
+      fermionFlow: semanticFermionFlow(edge),
+      momentumLabel: edge.labelPlacement?.startsWith("momentum") ? edge.label : void 0,
+      particleLabel: edge.labelPlacement?.startsWith("momentum") ? void 0 : edge.label,
+      routingHint: edge.curve ? "arc" : "automatic",
+      metadata: {
+        edgeIndex: index,
+        hidden: Boolean(edge.hidden),
+        arrow: edge.arrow,
+        labelSide: edge.labelSide,
+        labelPlacement: edge.labelPlacement,
+        momentum: edge.momentum ? { ...edge.momentum } : null,
+        curve: edge.curve ? { ...edge.curve } : null,
+        outAngle: edge.outAngle,
+        inAngle: edge.inAngle,
+        looseness: edge.looseness,
+        relativeAngles: edge.relativeAngles
+      }
+    };
+  }
+  function semanticMomentumDirection(edge) {
+    if (edge.momentumDirection === "forward") {
+      return "source-to-target";
+    }
+    if (edge.momentumDirection === "reverse") {
+      return "target-to-source";
+    }
+    return "unspecified";
+  }
+  function semanticFermionFlow(edge) {
+    if (edge.type !== "fermion") {
+      return edge.arrow ? "unspecified" : "none";
+    }
+    if (edge.arrow === "reverse") {
+      return "target-to-source";
+    }
+    if (edge.arrow === "forward") {
+      return "source-to-target";
+    }
+    return "unspecified";
+  }
+  function externalRoleForNode(node, incoming, outgoing, degree) {
+    if (incoming.has(node) && outgoing.has(node)) {
+      return "incoming";
+    }
+    if (incoming.has(node)) {
+      return "incoming";
+    }
+    if (outgoing.has(node)) {
+      return "outgoing";
+    }
+    if ((degree.get(node) || 0) === 1) {
+      return "unclassified";
+    }
+    return "none";
+  }
+  function declarationIndexForNode(diagram, node) {
+    const candidates = [];
+    (diagram.edges || []).forEach((edge, index) => {
+      if (edge.from === node || edge.to === node) {
+        candidates.push(index);
+      }
+    });
+    return candidates.length ? Math.min(...candidates) : Number.MAX_SAFE_INTEGER;
+  }
+  var init_model = __esm({
+    "src/markfeyn/renderer/layout/model.js"() {
+    }
+  });
+
+  // src/markfeyn/renderer/layout/validate.js
+  function validateSemanticDiagram(semantic) {
+    const diagnostics = [];
+    const vertices = semanticNodeById(semantic);
+    const vertexIds = semantic.vertices.map((vertex) => vertex.id);
+    const propagatorIds = semantic.propagators.map((propagator) => propagator.id);
+    duplicateValues(vertexIds).forEach((id) => {
+      diagnostics.push(error(`Duplicate vertex id "${id}".`, { vertex: id }));
+    });
+    duplicateValues(propagatorIds).forEach((id) => {
+      diagnostics.push(error(`Duplicate propagator id "${id}".`, { propagator: id }));
+    });
+    semantic.propagators.forEach((propagator) => {
+      if (!vertices.has(propagator.source)) {
+        diagnostics.push(error(`Propagator "${propagator.id}" references missing source "${propagator.source}".`, {
+          propagator: propagator.id,
+          vertex: propagator.source
+        }));
+      }
+      if (!vertices.has(propagator.target)) {
+        diagnostics.push(error(`Propagator "${propagator.id}" references missing target "${propagator.target}".`, {
+          propagator: propagator.id,
+          vertex: propagator.target
+        }));
+      }
+      if (propagator.source === propagator.target) {
+        diagnostics.push(warning(`Self-loop "${propagator.id}" has limited milestone-1 layout support.`, {
+          propagator: propagator.id
+        }));
+      }
+    });
+    const incoming = new Set(semantic.source.incoming || []);
+    const outgoing = new Set(semantic.source.outgoing || []);
+    Array.from(incoming).filter((node) => outgoing.has(node)).forEach((node) => {
+      diagnostics.push(error(`Vertex "${node}" is declared both incoming and outgoing.`, { vertex: node }));
+    });
+    duplicateValues(semantic.source.incoming || []).forEach((node) => {
+      diagnostics.push(error(`Incoming vertex "${node}" is declared more than once.`, { vertex: node }));
+    });
+    duplicateValues(semantic.source.outgoing || []).forEach((node) => {
+      diagnostics.push(error(`Outgoing vertex "${node}" is declared more than once.`, { vertex: node }));
+    });
+    semantic.vertices.forEach((vertex) => {
+      if (vertex.fixed && !vertex.positionHint) {
+        diagnostics.push(error(`Fixed vertex "${vertex.id}" is missing a position hint.`, { vertex: vertex.id }));
+      }
+    });
+    return {
+      errors: diagnostics.filter((diagnostic) => diagnostic.severity === "error"),
+      warnings: diagnostics.filter((diagnostic) => diagnostic.severity === "warning"),
+      diagnostics
+    };
+  }
+  function duplicateValues(values) {
+    const seen = /* @__PURE__ */ new Set();
+    const duplicates = /* @__PURE__ */ new Set();
+    values.forEach((value) => {
+      if (seen.has(value)) {
+        duplicates.add(value);
+      }
+      seen.add(value);
+    });
+    return Array.from(duplicates);
+  }
+  function error(message, data = {}) {
+    return {
+      stage: "validation",
+      severity: "error",
+      message,
+      data
+    };
+  }
+  function warning(message, data = {}) {
+    return {
+      stage: "validation",
+      severity: "warning",
+      message,
+      data
+    };
+  }
+  var init_validate = __esm({
+    "src/markfeyn/renderer/layout/validate.js"() {
+      init_model();
+    }
+  });
+
+  // src/markfeyn/renderer/layout/topology/classification.js
+  function classifyTopology(semantic, visibleEdges, connectedComponents, loopOrder, parallelEdgeGroups, oneLoop, multiLoop) {
+    const incomingCount = semantic.incoming.length;
+    const outgoingCount = semantic.outgoing.length;
+    const externalCount = semantic.externalVertices.length;
+    const internalCount = semantic.internalVertices.length;
+    if (loopOrder > 1 && multiLoop?.regions?.length) {
+      return "multiLoop";
+    }
+    if (parallelEdgeGroups.some((group) => group.selfEnergyLike)) {
+      return "selfEnergy";
+    }
+    if (loopOrder === 1 && oneLoop) {
+      if (oneLoop.type === "tadpole") {
+        return "tadpole";
+      }
+      if (oneLoop.type === "triangle") {
+        return "triangleLoop";
+      }
+      if (oneLoop.type === "box") {
+        return "boxLoop";
+      }
+      if (oneLoop.type === "polygon" || oneLoop.type === "simple") {
+        return "polygonLoop";
+      }
+      return "oneLoop";
+    }
+    if (incomingCount === 1 && outgoingCount >= 2 && loopOrder === 0) {
+      return "decay";
+    }
+    if (incomingCount === 2 && outgoingCount >= 2) {
+      return "scattering";
+    }
+    if (isContactInteraction(semantic, visibleEdges)) {
+      return "contactInteraction";
+    }
+    if (externalCount === 0 && internalCount > 0 && connectedComponents.length > 0) {
+      return "vacuum";
+    }
+    if (loopOrder === 0 && semantic.vertices.length > 0) {
+      return "tree";
+    }
+    return "unknown";
+  }
+  function topologyLimitations(semantic, connectedComponents, loopOrder, oneLoop, loopRegions) {
+    const limitations = [];
+    if (loopOrder > 1 && !loopRegions.length) {
+      limitations.push({
+        code: "general-multiloop-layout-not-implemented",
+        message: "General multiloop optimization is not implemented; layout falls back to local and ELK heuristics."
+      });
+    } else if (loopOrder > 2) {
+      limitations.push({
+        code: "higher-order-multiloop-heuristic",
+        message: "Higher-order multiloop diagrams use bounded region heuristics rather than a complete multiloop optimizer."
+      });
+    }
+    if (semantic.externalVertices.length === 0 && loopOrder === 1 && oneLoop) {
+      limitations.push({
+        code: "vacuum-one-loop-centered-only",
+        message: "Vacuum one-loop diagrams use deterministic centered polygon placement, not a full vacuum graph optimizer."
+      });
+    }
+    if (semantic.externalVertices.length === 0 && connectedComponents.length > 1 && loopOrder > 1) {
+      limitations.push({
+        code: "disconnected-vacuum-multiloop-not-solved",
+        message: "Disconnected multiloop vacuum diagrams are detected but not treated as solved by the one-loop candidate layout."
+      });
+    }
+    return limitations;
+  }
+  function isContactInteraction(semantic, visibleEdges) {
+    if (semantic.internalVertices.length !== 1 || semantic.externalVertices.length < 3) {
+      return false;
+    }
+    const center = semantic.internalVertices[0];
+    return visibleEdges.every((edge) => edge.source === center || edge.target === center);
+  }
+  function confidenceFor(topology) {
+    if (topology === "unknown") {
+      return 0.2;
+    }
+    return 0.85;
+  }
+  var init_classification = __esm({
+    "src/markfeyn/renderer/layout/topology/classification.js"() {
+    }
+  });
+
+  // src/markfeyn/renderer/layout/topology/fermion-flow.js
+  function analyzeFermionFlow(semantic, visibleEdges, detectedTopology) {
+    const internalVertices = new Set(semantic.internalVertices);
+    const externalVertices = new Set(semantic.externalVertices);
+    const fermionEdges = visibleEdges.filter((edge) => edge.style === "fermion");
+    const flux = /* @__PURE__ */ new Map();
+    const bucket = (id) => {
+      if (!flux.has(id)) {
+        flux.set(id, { in: 0, out: 0, unspecified: 0 });
+      }
+      return flux.get(id);
+    };
+    fermionEdges.forEach((edge) => {
+      if (edge.source === edge.target) {
+        const node = bucket(edge.source);
+        if (edge.fermionFlow === "source-to-target" || edge.fermionFlow === "target-to-source") {
+          node.in += 1;
+          node.out += 1;
+        } else {
+          node.unspecified += 2;
+        }
+        return;
+      }
+      const source = bucket(edge.source);
+      const target = bucket(edge.target);
+      if (edge.fermionFlow === "source-to-target") {
+        source.out += 1;
+        target.in += 1;
+      } else if (edge.fermionFlow === "target-to-source") {
+        source.in += 1;
+        target.out += 1;
+      } else {
+        source.unspecified += 1;
+        target.unspecified += 1;
+      }
+    });
+    const violations = [];
+    let unresolved = false;
+    Array.from(flux.entries()).filter(([id]) => internalVertices.has(id)).sort(([left], [right]) => compareStable(left, right)).forEach(([vertex, tally]) => {
+      if (tally.unspecified > 0) {
+        unresolved = true;
+        return;
+      }
+      if (tally.in !== tally.out) {
+        violations.push({ vertex, in: tally.in, out: tally.out });
+      }
+    });
+    const externalFermions = [];
+    fermionEdges.forEach((edge) => {
+      const sourceExternal = externalVertices.has(edge.source);
+      const targetExternal = externalVertices.has(edge.target);
+      if (sourceExternal === targetExternal) {
+        return;
+      }
+      const external = sourceExternal ? edge.source : edge.target;
+      const internal = sourceExternal ? edge.target : edge.source;
+      const arrowTarget = fermionArrowTarget(edge);
+      let direction = "unspecified";
+      if (arrowTarget === internal) {
+        direction = "incoming";
+      } else if (arrowTarget === external) {
+        direction = "outgoing";
+      }
+      externalFermions.push({
+        external,
+        internal,
+        edge: edge.id,
+        edgeIndex: edge.metadata.edgeIndex,
+        direction
+      });
+    });
+    externalFermions.sort((left, right) => left.edgeIndex - right.edgeIndex || compareStable(left.external, right.external));
+    const conserved = violations.length === 0;
+    const customGraph = !conserved && !FERMION_FLOW_EXEMPT_TOPOLOGIES.has(detectedTopology);
+    return {
+      fermionEdgeCount: fermionEdges.length,
+      externalFermionCount: externalFermions.length,
+      externalFermions,
+      conserved,
+      unresolved,
+      violations,
+      customGraph
+    };
+  }
+  function fermionArrowTarget(edge) {
+    if (edge.fermionFlow === "source-to-target") {
+      return edge.target;
+    }
+    if (edge.fermionFlow === "target-to-source") {
+      return edge.source;
+    }
+    return null;
+  }
+  function fermionFlowLimitations(fermionFlow) {
+    if (fermionFlow.customGraph) {
+      return [{
+        code: "fermion-number-not-conserved",
+        message: "Fermion number is not conserved at one or more internal vertices, so the diagram is treated as a custom graph; structural placement still applies but the topology is unverified."
+      }];
+    }
+    return [];
+  }
+  var FERMION_FLOW_EXEMPT_TOPOLOGIES;
+  var init_fermion_flow = __esm({
+    "src/markfeyn/renderer/layout/topology/fermion-flow.js"() {
+      init_model();
+      FERMION_FLOW_EXEMPT_TOPOLOGIES = /* @__PURE__ */ new Set([
+        "contactInteraction",
+        "vacuum",
+        "unknown"
+      ]);
+    }
+  });
+
+  // src/markfeyn/renderer/layout/topology/graph.js
+  function adjacencyMap(nodes, edges) {
+    const adjacency = new Map(nodes.map((node) => [node, /* @__PURE__ */ new Set()]));
+    edges.forEach((edge) => {
+      if (edge.source === edge.target) {
+        return;
+      }
+      if (!adjacency.has(edge.source)) {
+        adjacency.set(edge.source, /* @__PURE__ */ new Set());
+      }
+      if (!adjacency.has(edge.target)) {
+        adjacency.set(edge.target, /* @__PURE__ */ new Set());
+      }
+      adjacency.get(edge.source).add(edge.target);
+      adjacency.get(edge.target).add(edge.source);
+    });
+    return adjacency;
+  }
+  function components(adjacency) {
+    const visited = /* @__PURE__ */ new Set();
+    const result = [];
+    Array.from(adjacency.keys()).sort(compareStable).forEach((node) => {
+      if (visited.has(node)) {
+        return;
+      }
+      const component = [];
+      const stack = [node];
+      visited.add(node);
+      while (stack.length) {
+        const current = stack.pop();
+        component.push(current);
+        Array.from(adjacency.get(current) || []).sort(compareStable).forEach((neighbor) => {
+          if (!visited.has(neighbor)) {
+            visited.add(neighbor);
+            stack.push(neighbor);
+          }
+        });
+      }
+      result.push(component.sort(compareStable));
+    });
+    return result;
+  }
+  function graphCentersFor(adjacency, preferredNodes) {
+    const candidates = (preferredNodes.length ? preferredNodes : Array.from(adjacency.keys())).sort(compareStable);
+    let best = [];
+    let bestEccentricity = Infinity;
+    candidates.forEach((node) => {
+      const distances = breadthFirstDistances(adjacency, node);
+      const eccentricity = Math.max(...Array.from(distances.values()));
+      if (eccentricity < bestEccentricity) {
+        best = [node];
+        bestEccentricity = eccentricity;
+      } else if (eccentricity === bestEccentricity) {
+        best.push(node);
+      }
+    });
+    return best.length ? best.sort(compareStable) : [];
+  }
+  function breadthFirstDistances(adjacency, start) {
+    const distances = /* @__PURE__ */ new Map([[start, 0]]);
+    const queue = [start];
+    while (queue.length) {
+      const current = queue.shift();
+      const nextDistance = distances.get(current) + 1;
+      Array.from(adjacency.get(current) || []).sort(compareStable).forEach((neighbor) => {
+        if (!distances.has(neighbor)) {
+          distances.set(neighbor, nextDistance);
+          queue.push(neighbor);
+        }
+      });
+    }
+    return distances;
+  }
+  var init_graph = __esm({
+    "src/markfeyn/renderer/layout/topology/graph.js"() {
+      init_model();
+    }
+  });
+
+  // src/markfeyn/renderer/layout/topology.js
+  function analyzeTopology(semantic) {
+    return new TopologyAnalyzer(semantic).analyze();
+  }
+  function detectTadpoleLoops(semantic, visibleEdges) {
+    const internal = new Set(semantic.internalVertices);
+    return visibleEdges.filter((edge) => edge.source === edge.target).map((edge) => ({
+      id: `tadpole:${edge.source}:${edge.metadata.edgeIndex}`,
+      type: "tadpole",
+      nodes: [edge.source],
+      edges: [edge.id],
+      edgeIndices: [edge.metadata.edgeIndex],
+      length: 1,
+      internal: internal.has(edge.source),
+      externalLegs: externalLegsForNodes(semantic, [edge.source])
+    })).sort(compareCycleSummaries);
+  }
+  function detectSimpleInternalCycles(semantic, visibleEdges) {
+    const internal = new Set(semantic.internalVertices);
+    const pairEdges = internalPairEdges(visibleEdges, internal);
+    const adjacency = /* @__PURE__ */ new Map();
+    pairEdges.forEach((edges, key) => {
+      const [first, second] = key.split("|");
+      addInternalNeighbor(adjacency, first, second);
+      addInternalNeighbor(adjacency, second, first);
+    });
+    const cyclesByKey = /* @__PURE__ */ new Map();
+    const nodes = Array.from(adjacency.keys()).sort(compareStable);
+    nodes.forEach((start) => {
+      findCyclesFrom(start, start, adjacency, [start], /* @__PURE__ */ new Set([start]), cyclesByKey);
+    });
+    return Array.from(cyclesByKey.values()).map((nodesInCycle) => cycleSummary(nodesInCycle, pairEdges, semantic)).filter(Boolean).sort(compareCycleSummaries);
+  }
+  function internalPairEdges(visibleEdges, internal) {
+    const pairEdges = /* @__PURE__ */ new Map();
+    visibleEdges.forEach((edge) => {
+      if (edge.source === edge.target || !internal.has(edge.source) || !internal.has(edge.target)) {
+        return;
+      }
+      const key = edgePairKey(edge.source, edge.target);
+      if (!pairEdges.has(key)) {
+        pairEdges.set(key, []);
+      }
+      pairEdges.get(key).push(edge);
+    });
+    pairEdges.forEach((edges) => {
+      edges.sort((left, right) => left.metadata.edgeIndex - right.metadata.edgeIndex || compareStable(left.id, right.id));
+    });
+    return pairEdges;
+  }
+  function findCyclesFrom(start, current, adjacency, path, visited, cyclesByKey) {
+    Array.from(adjacency.get(current) || []).sort(compareStable).forEach((neighbor) => {
+      if (neighbor === start && path.length >= 3) {
+        const canonical = canonicalCycle(path);
+        cyclesByKey.set(canonical.join("|"), canonical);
+        return;
+      }
+      if (visited.has(neighbor) || compareStable(neighbor, start) < 0 || path.length >= 12) {
+        return;
+      }
+      visited.add(neighbor);
+      path.push(neighbor);
+      findCyclesFrom(start, neighbor, adjacency, path, visited, cyclesByKey);
+      path.pop();
+      visited.delete(neighbor);
+    });
+  }
+  function canonicalCycle(nodes) {
+    const candidates = [];
+    const forward = nodes.slice();
+    const reverse = nodes.slice().reverse();
+    [forward, reverse].forEach((cycle) => {
+      for (let index = 0; index < cycle.length; index += 1) {
+        candidates.push([
+          ...cycle.slice(index),
+          ...cycle.slice(0, index)
+        ]);
+      }
+    });
+    return candidates.sort(compareCycleNodeList)[0];
+  }
+  function cycleSummary(nodes, pairEdges, semantic) {
+    const edges = [];
+    const edgeIndices = [];
+    for (let index = 0; index < nodes.length; index += 1) {
+      const first = nodes[index];
+      const second = nodes[(index + 1) % nodes.length];
+      const edge = pairEdges.get(edgePairKey(first, second))?.[0];
+      if (!edge) {
+        return null;
+      }
+      edges.push(edge.id);
+      edgeIndices.push(edge.metadata.edgeIndex);
+    }
+    return {
+      id: `cycle:${nodes.join("|")}`,
+      type: cycleType(nodes.length),
+      nodes,
+      edges,
+      edgeIndices,
+      length: nodes.length,
+      internal: true,
+      externalLegs: externalLegsForNodes(semantic, nodes)
+    };
+  }
+  function selectOneLoopTopology(simpleCycles, tadpoleLoops) {
+    const tadpole = tadpoleLoops.find((loop) => loop.internal) || tadpoleLoops[0];
+    if (tadpole) {
+      return tadpole;
+    }
+    if (!simpleCycles.length) {
+      return null;
+    }
+    return simpleCycles.slice().sort((left, right) => loopTypeRank(left.type) - loopTypeRank(right.type) || left.length - right.length || compareCycleSummaries(left, right))[0];
+  }
+  function externalLegsForNodes(semantic, nodes) {
+    const nodeSet = new Set(nodes);
+    const external = new Set(semantic.externalVertices);
+    return semantic.propagators.filter((edge) => !edge.metadata.hidden).flatMap((edge) => {
+      if (nodeSet.has(edge.source) && external.has(edge.target)) {
+        return [externalLeg(edge.target, edge.source, edge)];
+      }
+      if (nodeSet.has(edge.target) && external.has(edge.source)) {
+        return [externalLeg(edge.source, edge.target, edge)];
+      }
+      return [];
+    }).sort((left, right) => left.edgeIndex - right.edgeIndex || compareStable(left.external, right.external) || compareStable(left.internal, right.internal));
+  }
+  function externalLeg(external, internal, edge) {
+    return {
+      external,
+      internal,
+      edge: edge.id,
+      edgeIndex: edge.metadata.edgeIndex
+    };
+  }
+  function cycleType(length) {
+    if (length === 3) {
+      return "triangle";
+    }
+    if (length === 4) {
+      return "box";
+    }
+    return "polygon";
+  }
+  function loopTypeRank(type) {
+    return {
+      tadpole: 0,
+      triangle: 1,
+      box: 2,
+      polygon: 3,
+      simple: 3
+    }[type] ?? 4;
+  }
+  function analyzeBiconnectedComponents(adjacency, edges) {
+    const edgeIdsByPair = edgeIdsByPairMap(edges);
+    const discovery = /* @__PURE__ */ new Map();
+    const low = /* @__PURE__ */ new Map();
+    const parent = /* @__PURE__ */ new Map();
+    const edgeStack = [];
+    const articulation = /* @__PURE__ */ new Set();
+    const bridges = [];
+    const componentsFound = [];
+    let time = 0;
+    Array.from(adjacency.keys()).sort(compareStable).forEach((root) => {
+      if (discovery.has(root)) {
+        return;
+      }
+      let rootChildren = 0;
+      function visit(node) {
+        discovery.set(node, time);
+        low.set(node, time);
+        time += 1;
+        Array.from(adjacency.get(node) || []).sort(compareStable).forEach((neighbor) => {
+          const edge = canonicalEdge(node, neighbor);
+          if (!discovery.has(neighbor)) {
+            parent.set(neighbor, node);
+            rootChildren += node === root ? 1 : 0;
+            edgeStack.push(edge);
+            visit(neighbor);
+            low.set(node, Math.min(low.get(node), low.get(neighbor)));
+            if (node === root && rootChildren > 1 || node !== root && low.get(neighbor) >= discovery.get(node)) {
+              articulation.add(node);
+              componentsFound.push(popComponent(edgeStack, edge, edgeIdsByPair));
+            }
+            if (low.get(neighbor) > discovery.get(node)) {
+              bridges.push(edgeSummary(node, neighbor, edgeIdsByPair));
+            }
+          } else if (parent.get(node) !== neighbor && discovery.get(neighbor) < discovery.get(node)) {
+            low.set(node, Math.min(low.get(node), discovery.get(neighbor)));
+            edgeStack.push(edge);
+          }
+        });
+      }
+      visit(root);
+      if (edgeStack.length) {
+        componentsFound.push(popComponent(edgeStack, null, edgeIdsByPair));
+      }
+    });
+    return {
+      components: componentsFound.filter((component) => component.nodes.length).map((component, index) => ({
+        id: `bcc:${index + 1}`,
+        ...component,
+        loopOrder: Math.max(0, component.edges.length - component.nodes.length + 1)
+      })).sort(compareComponentSummaries),
+      articulationVertices: Array.from(articulation).sort(compareStable),
+      bridges: bridges.sort((left, right) => compareStable(left.id, right.id))
+    };
+  }
+  function buildLoopRegions(semantic, cycles, biconnectedComponents) {
+    const cycleRegions = cycles.map((cycle, index) => ({
+      id: `loop-region:${index + 1}`,
+      nodes: cycle.nodes.slice(),
+      edges: cycle.edges.slice(),
+      loopOrder: 1,
+      kind: loopKind(cycle.type),
+      cycles: [cycle.id],
+      contains: [],
+      attachments: externalLegsForNodes(semantic, cycle.nodes)
+    }));
+    const componentRegions = biconnectedComponents.filter((component) => component.loopOrder > 1).map((component, index) => ({
+      id: `loop-region:bcc-${index + 1}`,
+      nodes: component.nodes.slice().sort(compareStable),
+      edges: component.edges.slice().sort(compareStable),
+      loopOrder: component.loopOrder,
+      kind: "generic",
+      cycles: cycles.filter((cycle) => cycle.nodes.every((node) => component.nodes.includes(node))).map((cycle) => cycle.id).sort(compareStable),
+      contains: [],
+      attachments: externalLegsForNodes(semantic, component.nodes)
+    }));
+    const regions = [...cycleRegions, ...componentRegions].filter((region, index, list) => list.findIndex((other) => sameMembers(region.nodes, other.nodes) && sameMembers(region.edges, other.edges)) === index).sort(compareLoopRegions);
+    regions.forEach((region) => {
+      region.contains = regions.filter((other) => other.id !== region.id && isStrictSubset(other.nodes, region.nodes)).map((other) => other.id).sort(compareStable);
+    });
+    return regions;
+  }
+  function classifyMultiLoop(loopOrder, loopRegions, cycles) {
+    if (loopOrder <= 1 || !loopRegions.length) {
+      return null;
+    }
+    const sharedEdges = hasSharedMembers(cycles, "edges");
+    const sharedNodes = hasSharedMembers(cycles, "nodes");
+    const nested = loopRegions.some((region) => region.kind !== "generic" && region.contains.length);
+    const kind = sharedEdges ? "overlapping" : sharedNodes ? "overlapping" : nested ? "nested" : "disjoint";
+    return {
+      kind,
+      loopOrder,
+      regions: loopRegions.map((region) => region.id)
+    };
+  }
+  function buildPrincipalSkeleton(semantic, loopRegions, biconnected) {
+    const regionByNode = /* @__PURE__ */ new Map();
+    loopRegions.forEach((region) => {
+      region.nodes.forEach((node) => {
+        if (!regionByNode.has(node)) {
+          regionByNode.set(node, []);
+        }
+        regionByNode.get(node).push(region.id);
+      });
+    });
+    const edges = biconnected.bridges.map((bridge) => ({
+      ...bridge,
+      regions: [
+        ...regionByNode.get(bridge.source) || [],
+        ...regionByNode.get(bridge.target) || []
+      ].filter((value, index, list) => list.indexOf(value) === index).sort(compareStable)
+    })).sort((left, right) => compareStable(left.id, right.id));
+    return {
+      articulationVertices: biconnected.articulationVertices.slice(),
+      bridges: edges,
+      externalAttachments: semantic.externalVertices.map((external) => ({
+        external,
+        internal: firstInternalNeighbor(semantic, external)
+      })).filter((entry) => entry.internal).sort((left, right) => compareStable(left.external, right.external))
+    };
+  }
+  function compareCycleSummaries(left, right) {
+    return loopTypeRank(left.type) - loopTypeRank(right.type) || left.length - right.length || compareCycleNodeList(left.nodes, right.nodes) || compareCycleNodeList(left.edges, right.edges);
+  }
+  function compareCycleNodeList(left, right) {
+    const count = Math.min(left.length, right.length);
+    for (let index = 0; index < count; index += 1) {
+      const compared = compareStable(left[index], right[index]);
+      if (compared) {
+        return compared;
+      }
+    }
+    return left.length - right.length;
+  }
+  function addInternalNeighbor(adjacency, node, neighbor) {
+    if (!adjacency.has(node)) {
+      adjacency.set(node, /* @__PURE__ */ new Set());
+    }
+    adjacency.get(node).add(neighbor);
+  }
+  function edgePairKey(first, second) {
+    return [first, second].sort(compareStable).join("|");
+  }
+  function detectParallelEdgeGroups(semantic, visibleEdges) {
+    const internal = new Set(semantic.internalVertices);
+    const grouped = /* @__PURE__ */ new Map();
+    visibleEdges.filter((edge) => edge.source !== edge.target).forEach((edge) => {
+      const nodes = [edge.source, edge.target].sort(compareStable);
+      const key = nodes.join("|");
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          id: key,
+          nodes,
+          internal: nodes.every((node) => internal.has(node)),
+          edges: []
+        });
+      }
+      grouped.get(key).edges.push({
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        edgeIndex: edge.metadata.edgeIndex,
+        style: edge.style,
+        curveSide: edge.metadata.curve?.side,
+        curveAmount: edge.metadata.curve?.amount
+      });
+    });
+    return Array.from(grouped.values()).filter((group) => group.edges.length > 1).map((group) => ({
+      ...group,
+      edges: group.edges.sort((left, right) => left.edgeIndex - right.edgeIndex || compareStable(left.id, right.id)),
+      selfEnergyLike: group.internal && group.edges.length >= 2
+    })).sort((left, right) => compareStable(left.id, right.id));
+  }
+  function edgeIdsByPairMap(edges) {
+    const map = /* @__PURE__ */ new Map();
+    edges.forEach((edge) => {
+      const key = edgePairKey(edge.source, edge.target);
+      if (!map.has(key)) {
+        map.set(key, []);
+      }
+      map.get(key).push(edge.id);
+    });
+    map.forEach((ids) => ids.sort(compareStable));
+    return map;
+  }
+  function canonicalEdge(source, target) {
+    const [left, right] = [source, target].sort(compareStable);
+    return { source: left, target: right, key: `${left}|${right}` };
+  }
+  function edgeSummary(source, target, edgeIdsByPair) {
+    const edge = canonicalEdge(source, target);
+    return {
+      id: edgeIdsByPair.get(edge.key)?.[0] || edge.key,
+      source: edge.source,
+      target: edge.target,
+      edges: edgeIdsByPair.get(edge.key) || []
+    };
+  }
+  function popComponent(edgeStack, stopEdge, edgeIdsByPair) {
+    const nodes = /* @__PURE__ */ new Set();
+    const edges = /* @__PURE__ */ new Set();
+    while (edgeStack.length) {
+      const edge = edgeStack.pop();
+      nodes.add(edge.source);
+      nodes.add(edge.target);
+      (edgeIdsByPair.get(edge.key) || [edge.key]).forEach((edgeId) => edges.add(edgeId));
+      if (!stopEdge || edge.key === stopEdge.key) {
+        break;
+      }
+    }
+    return {
+      nodes: Array.from(nodes).sort(compareStable),
+      edges: Array.from(edges).sort(compareStable)
+    };
+  }
+  function compareComponentSummaries(left, right) {
+    return compareCycleNodeList(left.nodes, right.nodes) || compareCycleNodeList(left.edges, right.edges);
+  }
+  function loopKind(type) {
+    if (type === "triangle" || type === "box" || type === "tadpole") {
+      return type;
+    }
+    if (type === "polygon" || type === "simple") {
+      return "polygon";
+    }
+    return "generic";
+  }
+  function compareLoopRegions(left, right) {
+    return left.loopOrder - right.loopOrder || left.nodes.length - right.nodes.length || compareCycleNodeList(left.nodes, right.nodes) || compareCycleNodeList(left.edges, right.edges);
+  }
+  function sameMembers(left, right) {
+    return left.length === right.length && left.every((value, index) => value === right[index]);
+  }
+  function isStrictSubset(left, right) {
+    const rightSet = new Set(right);
+    return left.length < right.length && left.every((value) => rightSet.has(value));
+  }
+  function hasSharedMembers(cycles, key) {
+    for (let leftIndex = 0; leftIndex < cycles.length; leftIndex += 1) {
+      const left = new Set(cycles[leftIndex][key]);
+      for (let rightIndex = leftIndex + 1; rightIndex < cycles.length; rightIndex += 1) {
+        if (cycles[rightIndex][key].some((value) => left.has(value))) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+  function firstInternalNeighbor(semantic, node) {
+    const internal = new Set(semantic.internalVertices);
+    const edge = semantic.propagators.filter((propagator) => !propagator.metadata.hidden).find((propagator) => propagator.source === node && internal.has(propagator.target) || propagator.target === node && internal.has(propagator.source));
+    if (!edge) {
+      return null;
+    }
+    return edge.source === node ? edge.target : edge.source;
+  }
+  function inferSimpleSymmetryGroups(semantic) {
+    if (semantic.unclassified.length >= 2) {
+      return [semantic.unclassified.slice().sort(compareStable)];
+    }
+    return [];
+  }
+  var TopologyAnalyzer;
+  var init_topology = __esm({
+    "src/markfeyn/renderer/layout/topology.js"() {
+      init_model();
+      init_classification();
+      init_fermion_flow();
+      init_graph();
+      init_graph();
+      TopologyAnalyzer = class {
+        constructor(semantic) {
+          this.semantic = semantic;
+        }
+        analyze() {
+          const semantic = this.semantic;
+          const visibleEdges = semantic.propagators.filter((propagator) => !propagator.metadata.hidden);
+          const adjacency = adjacencyMap(semantic.vertices.map((vertex) => vertex.id), visibleEdges);
+          const internalEdges = visibleEdges.filter((edge) => edge.source !== edge.target && semantic.internalVertices.includes(edge.source) && semantic.internalVertices.includes(edge.target));
+          const internalAdjacency = adjacencyMap(semantic.internalVertices, internalEdges);
+          const connectedComponents = components(adjacency);
+          const externalVertices = semantic.externalVertices.slice().sort(compareStable);
+          const internalVertices = semantic.internalVertices.slice().sort(compareStable);
+          const parallelEdgeGroups = detectParallelEdgeGroups(semantic, visibleEdges);
+          const tadpoleLoops = detectTadpoleLoops(semantic, visibleEdges);
+          const simpleCycles = detectSimpleInternalCycles(semantic, visibleEdges);
+          const oneLoop = selectOneLoopTopology(simpleCycles, tadpoleLoops);
+          const edgeCount = visibleEdges.length;
+          const loopOrder = Math.max(0, edgeCount - semantic.vertices.length + connectedComponents.length);
+          const biconnected = analyzeBiconnectedComponents(internalAdjacency, internalEdges);
+          const cycles = [
+            ...simpleCycles,
+            ...tadpoleLoops
+          ].sort(compareCycleSummaries);
+          const loopRegions = buildLoopRegions(semantic, cycles, biconnected.components);
+          const multiLoop = classifyMultiLoop(loopOrder, loopRegions, cycles);
+          const detectedTopology = classifyTopology(
+            semantic,
+            visibleEdges,
+            connectedComponents,
+            loopOrder,
+            parallelEdgeGroups,
+            oneLoop,
+            multiLoop
+          );
+          const fermionFlow = analyzeFermionFlow(semantic, visibleEdges, detectedTopology);
+          const graphCenters = graphCentersFor(adjacency, internalVertices);
+          const principalSkeleton = buildPrincipalSkeleton(semantic, loopRegions, biconnected);
+          const limitations = [
+            ...topologyLimitations(semantic, connectedComponents, loopOrder, oneLoop, loopRegions),
+            ...fermionFlowLimitations(fermionFlow)
+          ];
+          return {
+            connectedComponents,
+            externalVertices,
+            internalVertices,
+            cycles,
+            biconnectedComponents: biconnected.components,
+            articulationVertices: biconnected.articulationVertices,
+            bridges: biconnected.bridges,
+            loopOrder,
+            detectedTopology,
+            multiLoop,
+            fermionFlow,
+            loopRegions,
+            principalSkeleton,
+            confidence: confidenceFor(detectedTopology),
+            graphCenters,
+            repeatedStructures: parallelEdgeGroups.map((group) => ({
+              type: group.selfEnergyLike ? "selfEnergyParallelPropagators" : "parallelPropagators",
+              nodes: group.nodes,
+              edgeCount: group.edges.length
+            })),
+            parallelEdgeGroups,
+            selfEnergyBubbles: parallelEdgeGroups.filter((group) => group.selfEnergyLike),
+            tadpoleLoops,
+            loopCandidate: loopOrder === 1 && detectedTopology !== "selfEnergy" ? oneLoop : null,
+            inferredSymmetryGroups: inferSimpleSymmetryGroups(semantic),
+            limitations
+          };
+        }
+      };
+    }
+  });
+
+  // src/markfeyn/renderer/layout/orientation.js
+  function analyzeOrientation(semantic, topology, options = {}) {
+    const requested = options.orientationMode || semantic.layoutHints.orientationMode;
+    if (requested === "fixed") {
+      return {
+        mode: "fixed",
+        confidence: 1,
+        direction: directionFromOptions(options),
+        evidence: ["explicit fixed orientation mode"],
+        ambiguities: []
+      };
+    }
+    if (requested === "symmetric") {
+      return symmetricOrientation(["explicit symmetric orientation mode"]);
+    }
+    if (requested === "process") {
+      return processOrientation(["explicit process orientation mode"], directionFromOptions(options));
+    }
+    if (options.tikzOrientation || semantic.source.options?.tikzOrientation) {
+      return {
+        mode: "fixed",
+        confidence: 0.9,
+        direction: directionFromOptions(options),
+        evidence: ["explicit TikZ-Feynman orientation command"],
+        ambiguities: []
+      };
+    }
+    if (semantic.incoming.length > 0 && semantic.outgoing.length > 0) {
+      return processOrientation(["explicit incoming and outgoing external roles"], directionFromOptions(options));
+    }
+    if (semantic.process.initialState?.length && semantic.process.finalState?.length) {
+      return processOrientation(["process metadata includes initial and final states"], directionFromOptions(options));
+    }
+    return symmetricOrientation([
+      "no reliable incoming/outgoing process roles",
+      `topology classified as ${topology.detectedTopology}`
+    ]);
+  }
+  function processOrientation(evidence, direction = "RIGHT") {
+    return {
+      mode: "process",
+      confidence: 0.9,
+      direction,
+      axis: direction === "RIGHT" || direction === "LEFT" ? { x: 1, y: 0 } : { x: 0, y: 1 },
+      evidence,
+      ambiguities: []
+    };
+  }
+  function symmetricOrientation(evidence) {
+    return {
+      mode: "symmetric",
+      confidence: 0.8,
+      evidence,
+      ambiguities: ["external roles are unclassified"]
+    };
+  }
+  function directionFromOptions(options) {
+    const direction = String(options.direction || "").toUpperCase();
+    if (["RIGHT", "LEFT", "DOWN", "UP"].includes(direction)) {
+      return direction;
+    }
+    return "RIGHT";
+  }
+  var init_orientation = __esm({
+    "src/markfeyn/renderer/layout/orientation.js"() {
+    }
+  });
+
+  // src/markfeyn/renderer/layout/elk-options.js
+  function buildElkLayoutOptions(layoutOptions) {
+    const options = {
+      [ELK_LAYOUT_OPTIONS.algorithm]: elkAlgorithmForLayout(layoutOptions.layout),
+      [ELK_LAYOUT_OPTIONS.direction]: directionForLayout(layoutOptions),
+      [ELK_LAYOUT_OPTIONS.randomSeed]: String(layoutOptions.deterministicSeed ?? 1),
+      [ELK_LAYOUT_OPTIONS.separateConnectedComponents]: "true",
+      [ELK_LAYOUT_OPTIONS.spacingNodeNode]: String(layoutOptions.layout === "spring-electrical" ? 96 : 64),
+      [ELK_LAYOUT_OPTIONS.padding]: `[top=${layoutOptions.marginY},left=${layoutOptions.marginX},bottom=${layoutOptions.marginY},right=${layoutOptions.marginX}]`
+    };
+    if (layoutOptions.layout === "layered") {
+      options[ELK_LAYOUT_OPTIONS.layeredNodeNodeBetweenLayers] = "96";
+      options[ELK_LAYOUT_OPTIONS.layeredEdgeNodeBetweenLayers] = "42";
+      options[ELK_LAYOUT_OPTIONS.layeredFavorStraightEdges] = "true";
+    }
+    if (layoutOptions.layout === "tree") {
+      options[ELK_LAYOUT_OPTIONS.mrtreeSearchOrder] = "DFS";
+      options[ELK_LAYOUT_OPTIONS.mrtreeWeighting] = "DESCENDANTS";
+    }
+    if (layoutOptions.layout === "spring" || layoutOptions.layout === "spring-electrical") {
+      options[ELK_LAYOUT_OPTIONS.forceIterations] = layoutOptions.layout === "spring-electrical" ? "160" : "100";
+      options[ELK_LAYOUT_OPTIONS.forceRepulsion] = layoutOptions.layout === "spring-electrical" ? "1.2" : "0.6";
+    }
+    return options;
+  }
+  function elkAlgorithmForLayout(layout) {
+    if (layout === "tree") {
+      return "mrtree";
+    }
+    if (layout === "spring" || layout === "spring-electrical") {
+      return "force";
+    }
+    return "layered";
+  }
+  function directionForLayout(layoutOptions) {
+    if (layoutOptions.direction) {
+      return layoutOptions.direction;
+    }
+    if (layoutOptions.orientation?.endsWith("reverse")) {
+      return "LEFT";
+    }
+    return "RIGHT";
+  }
+  var ELK_LAYOUT_OPTIONS;
+  var init_elk_options = __esm({
+    "src/markfeyn/renderer/layout/elk-options.js"() {
+      ELK_LAYOUT_OPTIONS = Object.freeze({
+        algorithm: "elk.algorithm",
+        direction: "elk.direction",
+        randomSeed: "elk.randomSeed",
+        separateConnectedComponents: "elk.separateConnectedComponents",
+        spacingNodeNode: "elk.spacing.nodeNode",
+        padding: "elk.padding",
+        layeredNodeNodeBetweenLayers: "elk.layered.spacing.nodeNodeBetweenLayers",
+        layeredEdgeNodeBetweenLayers: "elk.layered.spacing.edgeNodeBetweenLayers",
+        layeredFavorStraightEdges: "elk.layered.nodePlacement.favorStraightEdges",
+        layerConstraint: "elk.layered.layering.layerConstraint",
+        portConstraints: "elk.portConstraints",
+        portSide: "elk.port.side",
+        portIndex: "elk.port.index",
+        forceRepulsivePower: "elk.force.repulsivePower",
+        forceIterations: "elk.force.iterations",
+        forceRepulsion: "elk.force.repulsion",
+        mrtreeSearchOrder: "elk.mrtree.searchOrder",
+        mrtreeWeighting: "elk.mrtree.weighting"
+      });
+    }
+  });
+
+  // src/markfeyn/renderer/layout/external-order.js
+  function analyzeExternalOrdering(semantic, options = {}) {
+    const previousOrder = normalizePreviousOrder(
+      options.previousSemanticOrder || options.previousExternalOrder || previousOrderFromLayout(options.previousLayout) || semantic.source.previousSemanticOrder || semantic.source.externalOrder
+    );
+    const orderFor = makeOrderResolver(semantic, previousOrder);
+    const incoming = orderRole(semantic.incoming, "incoming", orderFor);
+    const outgoing = orderRole(semantic.outgoing, "outgoing", orderFor);
+    const unclassified = orderRole(semantic.unclassified, "unclassified", orderFor);
+    const byId = new Map([...incoming, ...outgoing, ...unclassified].map((entry) => [entry.id, entry]));
+    const all = cyclicBoundaryOrder(semantic, incoming, outgoing, unclassified, byId, orderFor);
+    return {
+      mode: semantic.incoming.length && semantic.outgoing.length ? "process" : "symmetric",
+      incoming,
+      outgoing,
+      unclassified,
+      all,
+      previousOrder: previousOrder.list
+    };
+  }
+  function cyclicBoundaryOrder(semantic, incoming, outgoing, unclassified, byId, orderFor) {
+    if (incoming.length || outgoing.length) {
+      const seen = /* @__PURE__ */ new Set();
+      const ordered = [];
+      [...incoming, ...outgoing, ...unclassified].forEach((entry) => {
+        if (!seen.has(entry.id)) {
+          seen.add(entry.id);
+          ordered.push(entry);
+        }
+      });
+      semantic.externalVertices.forEach((id) => {
+        if (!seen.has(id)) {
+          seen.add(id);
+          ordered.push(byId.get(id) || orderFor(id, "unclassified"));
+        }
+      });
+      return ordered;
+    }
+    return semantic.externalVertices.map((id) => byId.get(id) || orderFor(id, "unclassified")).sort(compareExternalOrder);
+  }
+  function compareExternalOrdering(ordering, left, right) {
+    const indexById = new Map((ordering?.all || []).map((entry, index) => [entry.id, index]));
+    const leftIndex = indexById.get(left);
+    const rightIndex = indexById.get(right);
+    if (leftIndex !== void 0 && rightIndex !== void 0) {
+      return leftIndex - rightIndex;
+    }
+    if (leftIndex !== void 0) {
+      return -1;
+    }
+    if (rightIndex !== void 0) {
+      return 1;
+    }
+    return compareStable(left, right);
+  }
+  function externalOrderingDiagnostic(ordering) {
+    return {
+      stage: "external-order",
+      severity: "info",
+      message: `External ordering: ${ordering.mode}`,
+      data: {
+        mode: ordering.mode,
+        incoming: summarizeEntries(ordering.incoming),
+        outgoing: summarizeEntries(ordering.outgoing),
+        unclassified: summarizeEntries(ordering.unclassified)
+      }
+    };
+  }
+  function orderRole(nodes, role, orderFor) {
+    return nodes.map((id) => orderFor(id, role)).sort(compareExternalOrder).map((entry, index) => ({
+      ...entry,
+      order: index
+    }));
+  }
+  function makeOrderResolver(semantic, previousOrder) {
+    const vertexById = new Map(semantic.vertices.map((vertex) => [vertex.id, vertex]));
+    const explicitIncoming = orderMap(semantic.incoming);
+    const explicitOutgoing = orderMap(semantic.outgoing);
+    return (id, role) => {
+      const explicitIndex = role === "incoming" ? explicitIncoming.get(id) : role === "outgoing" ? explicitOutgoing.get(id) : void 0;
+      const previousIndex = previousOrder.indexById.get(id);
+      const declarationIndex = vertexById.get(id)?.metadata?.declarationIndex ?? Number.MAX_SAFE_INTEGER;
+      if (explicitIndex !== void 0) {
+        return orderEntry(id, role, 0, explicitIndex, "explicit");
+      }
+      if (previousIndex !== void 0) {
+        return orderEntry(id, role, 1, previousIndex, "previous");
+      }
+      if (declarationIndex !== Number.MAX_SAFE_INTEGER) {
+        return orderEntry(id, role, 2, declarationIndex, "declaration");
+      }
+      return orderEntry(id, role, 3, 0, "stable-id");
+    };
+  }
+  function orderEntry(id, role, priority, value, source) {
+    return {
+      id,
+      role,
+      priority,
+      value,
+      source
+    };
+  }
+  function compareExternalOrder(left, right) {
+    return left.priority - right.priority || left.value - right.value || compareStable(left.id, right.id);
+  }
+  function normalizePreviousOrder(value) {
+    const list = [];
+    if (Array.isArray(value)) {
+      list.push(...value);
+    } else if (value && typeof value === "object") {
+      [
+        value.incoming,
+        value.outgoing,
+        value.unclassified,
+        value.externalVertices,
+        value.all
+      ].forEach((items) => {
+        if (Array.isArray(items)) {
+          items.forEach((item) => list.push(typeof item === "string" ? item : item?.id));
+        }
+      });
+    }
+    const indexById = /* @__PURE__ */ new Map();
+    list.filter(Boolean).forEach((id) => {
+      if (!indexById.has(id)) {
+        indexById.set(id, indexById.size);
+      }
+    });
+    return {
+      list: Array.from(indexById.keys()),
+      indexById
+    };
+  }
+  function orderMap(nodes) {
+    return new Map(nodes.map((node, index) => [node, index]));
+  }
+  function summarizeEntries(entries) {
+    return entries.map((entry) => ({
+      id: entry.id,
+      order: entry.order,
+      source: entry.source
+    }));
+  }
+  var init_external_order = __esm({
+    "src/markfeyn/renderer/layout/external-order.js"() {
+      init_model();
+      init_incremental();
+    }
+  });
+
+  // src/markfeyn/renderer/layout/elk-compiler.js
+  function buildSemanticElkGraph(semantic, layoutOptions, nodeDimensions, externalOrdering) {
+    const vertices = semantic.vertices.slice().sort((a, b) => compareStable(a.id, b.id));
+    const useExplicitPorts = shouldUseExplicitPorts(semantic, layoutOptions);
+    const portsByNode = inferPorts(semantic, layoutOptions, externalOrdering, useExplicitPorts);
+    return {
+      id: "markfeyn-root",
+      layoutOptions: buildElkLayoutOptions(layoutOptions),
+      children: vertices.map((vertex) => ({
+        id: vertex.id,
+        ...nodeDimensions(vertex.id),
+        ports: useExplicitPorts ? (portsByNode.get(vertex.id) || []).map((port) => ({
+          id: port.id,
+          layoutOptions: {
+            [ELK_LAYOUT_OPTIONS.portSide]: port.side,
+            [ELK_LAYOUT_OPTIONS.portIndex]: String(port.order)
+          }
+        })) : [],
+        layoutOptions: nodeLayoutOptions(vertex, layoutOptions, useExplicitPorts, portsByNode.get(vertex.id) || [])
+      })),
+      edges: semantic.propagators.filter((edge) => edge.source !== edge.target).map((edge) => ({
+        id: edge.id,
+        sources: [useExplicitPorts ? portId(edge.id, edge.source, "source") : edge.source],
+        targets: [useExplicitPorts ? portId(edge.id, edge.target, "target") : edge.target],
+        layoutOptions: edgeLayoutOptions(edge, layoutOptions)
+      }))
+    };
+  }
+  function inferPorts(semantic, layoutOptions = {}, externalOrdering = null, useExplicitPorts = shouldUseExplicitPorts(semantic, layoutOptions)) {
+    const vertexById = semanticNodeById(semantic);
+    const ports = new Map(semantic.vertices.map((vertex) => [vertex.id, []]));
+    semantic.propagators.filter((edge) => edge.source !== edge.target).forEach((edge) => {
+      addPort(ports, edge.source, {
+        id: portId(edge.id, edge.source, "source"),
+        propagator: edge.id,
+        side: sideForEndpoint(edge, edge.source, vertexById, layoutOptions),
+        order: portOrder(edge, edge.source, vertexById, externalOrdering),
+        edgeIndex: edge.metadata.edgeIndex
+      });
+      addPort(ports, edge.target, {
+        id: portId(edge.id, edge.target, "target"),
+        propagator: edge.id,
+        side: sideForEndpoint(edge, edge.target, vertexById, layoutOptions),
+        order: portOrder(edge, edge.target, vertexById, externalOrdering),
+        edgeIndex: edge.metadata.edgeIndex
+      });
+    });
+    ports.forEach((nodePorts) => {
+      nodePorts.sort((left, right) => {
+        const sideOrder = sideRank(left.side) - sideRank(right.side);
+        return sideOrder || left.order - right.order || left.edgeIndex - right.edgeIndex || compareStable(left.id, right.id);
+      });
+      nodePorts.forEach((port, index) => {
+        port.order = index;
+      });
+    });
+    return ports;
+  }
+  function inferredPortDiagnostics(semantic, layoutOptions = {}, externalOrdering = null) {
+    const useExplicitPorts = shouldUseExplicitPorts(semantic, layoutOptions);
+    const ports = inferPorts(semantic, layoutOptions, externalOrdering, useExplicitPorts);
+    const constraints = {};
+    ports.forEach((nodePorts, node) => {
+      constraints[node] = nodePorts.map((port) => ({
+        id: port.id,
+        side: port.side,
+        order: port.order,
+        propagator: port.propagator
+      }));
+    });
+    return {
+      applied: useExplicitPorts,
+      layout: layoutOptions.layout || "spring",
+      direction: effectiveDirection(layoutOptions),
+      constraints
+    };
+  }
+  function nodeLayoutOptions(vertex, layoutOptions, useExplicitPorts, ports) {
+    const options = {};
+    if (layoutOptions.layout === "layered") {
+      if (vertex.externalRole === "incoming") {
+        options[ELK_LAYOUT_OPTIONS.layerConstraint] = "FIRST";
+      }
+      if (vertex.externalRole === "outgoing") {
+        options[ELK_LAYOUT_OPTIONS.layerConstraint] = "LAST";
+      }
+    }
+    if (useExplicitPorts && ports.length) {
+      options[ELK_LAYOUT_OPTIONS.portConstraints] = "FIXED_ORDER";
+    }
+    return options;
+  }
+  function edgeLayoutOptions(edge, layoutOptions) {
+    if (layoutOptions.layout === "spring-electrical") {
+      return {
+        [ELK_LAYOUT_OPTIONS.forceRepulsivePower]: "2"
+      };
+    }
+    return {};
+  }
+  function addPort(ports, node, port) {
+    if (!ports.has(node)) {
+      ports.set(node, []);
+    }
+    ports.get(node).push(port);
+  }
+  function sideForEndpoint(edge, node, vertexById, layoutOptions) {
+    const role = vertexById.get(node)?.externalRole;
+    const other = edge.source === node ? edge.target : edge.source;
+    const otherRole = vertexById.get(other)?.externalRole;
+    if (role === "incoming") {
+      return terminalSide("incoming", layoutOptions);
+    }
+    if (role === "outgoing") {
+      return terminalSide("outgoing", layoutOptions);
+    }
+    if (otherRole === "incoming") {
+      return internalSideForTerminal("incoming", layoutOptions);
+    }
+    if (otherRole === "outgoing") {
+      return internalSideForTerminal("outgoing", layoutOptions);
+    }
+    return edge.source === node ? forwardSide(layoutOptions) : backwardSide(layoutOptions);
+  }
+  function terminalSide(role, layoutOptions) {
+    if (role === "incoming") {
+      return forwardSide(layoutOptions);
+    }
+    return backwardSide(layoutOptions);
+  }
+  function internalSideForTerminal(role, layoutOptions) {
+    if (role === "incoming") {
+      return backwardSide(layoutOptions);
+    }
+    return forwardSide(layoutOptions);
+  }
+  function forwardSide(layoutOptions) {
+    return effectiveDirection(layoutOptions) === "LEFT" ? "WEST" : "EAST";
+  }
+  function backwardSide(layoutOptions) {
+    return effectiveDirection(layoutOptions) === "LEFT" ? "EAST" : "WEST";
+  }
+  function portOrder(edge, node, vertexById, externalOrdering) {
+    const role = vertexById.get(node)?.externalRole;
+    if (role === "incoming" || role === "outgoing" || role === "unclassified") {
+      return externalIndex(externalOrdering, node);
+    }
+    const other = edge.source === node ? edge.target : edge.source;
+    const otherRole = vertexById.get(other)?.externalRole;
+    if (otherRole === "incoming" || otherRole === "outgoing" || otherRole === "unclassified") {
+      return externalIndex(externalOrdering, other);
+    }
+    return edge.metadata.edgeIndex;
+  }
+  function externalIndex(externalOrdering, node) {
+    const index = (externalOrdering?.all || []).slice().sort((left, right) => compareExternalOrdering(externalOrdering, left.id, right.id)).findIndex((entry) => entry.id === node);
+    return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+  }
+  function shouldUseExplicitPorts(semantic, layoutOptions) {
+    return isLayeredLayout(layoutOptions.layout) && semantic.incoming.length > 0 && semantic.outgoing.length > 0;
+  }
+  function effectiveDirection(layoutOptions) {
+    const direction = String(layoutOptions.direction || "").toUpperCase();
+    if (direction === "LEFT" || direction === "RIGHT") {
+      return direction;
+    }
+    return layoutOptions.orientation?.endsWith("reverse") ? "LEFT" : "RIGHT";
+  }
+  function isLayeredLayout(layout) {
+    const normalized = String(layout || "spring").toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+    return normalized === "layered" || normalized === "layered layout";
+  }
+  function sideRank(side) {
+    return { WEST: 0, NORTH: 1, SOUTH: 2, EAST: 3 }[side] ?? 4;
+  }
+  function portId(edgeId, node, endpointKind) {
+    return `${node}__${endpointKind}__${edgeId}`.replace(/[^A-Za-z0-9_.-]/g, "_");
+  }
+  var init_elk_compiler = __esm({
+    "src/markfeyn/renderer/layout/elk-compiler.js"() {
+      init_elk_options();
+      init_model();
+      init_external_order();
+    }
+  });
+
+  // src/markfeyn/renderer/layout/parallel.js
+  function parallelPropagatorCurvePlan(topology) {
+    const assignments = [];
+    (topology.parallelEdgeGroups || []).forEach((group) => {
+      if (!group.internal || group.edges.length < 2) {
+        return;
+      }
+      const count = group.edges.length;
+      const center = (count - 1) / 2;
+      group.edges.forEach((edge, index) => {
+        const canonicalSide = index <= center ? "left" : "right";
+        const side = edge.source === group.nodes[0] ? canonicalSide : oppositeSide(canonicalSide);
+        const distance2 = Math.abs(index - center) + 0.5;
+        const amount = count === 2 ? 0.5 : Math.min(0.72, 0.26 + distance2 * 0.18);
+        assignments.push({
+          propagator: edge.id,
+          edgeIndex: edge.edgeIndex,
+          group: group.id,
+          side,
+          amount
+        });
+      });
+    });
+    return assignments;
+  }
+  function oppositeSide(side) {
+    return side === "left" ? "right" : "left";
+  }
+  var init_parallel = __esm({
+    "src/markfeyn/renderer/layout/parallel.js"() {
+    }
+  });
+
+  // src/markfeyn/renderer/layout/labels.js
+  function scoreLabelGeometry(layout, prepared, candidate = {}) {
+    return analyzeLabelGeometry(layout, prepared, candidate).breakdown;
+  }
+  function analyzeLabelGeometry(layout, prepared, candidate = {}) {
+    const curvePlan = curvePlanMap(prepared, candidate);
+    const loopRegions = buildLoopRegions2(layout, prepared, candidate, curvePlan);
+    const vertexBounds = buildVertexBounds(layout, prepared.semantic);
+    const edgeSamples = buildEdgeSamples(layout, prepared, curvePlan);
+    const boxes = buildLabelBoxes(layout, prepared, candidate, curvePlan);
+    const breakdown = {
+      nodeLabelOverlap: scoreNodeLabelOverlap(boxes, vertexBounds),
+      edgeLabelOverlap: scoreEdgeLabelOverlap(boxes, vertexBounds, edgeSamples),
+      labelLabelOverlap: scoreLabelLabelOverlap(boxes),
+      labelsInsideLoops: scoreLabelsInsideLoops(boxes, loopRegions, layout),
+      momentumLoopCollision: scoreMomentumLoopCollision(boxes, loopRegions, vertexBounds)
+    };
+    return {
+      boxes,
+      loopRegions,
+      breakdown,
+      details: {
+        labelCount: boxes.length,
+        loopRegionCount: loopRegions.length
+      }
+    };
+  }
+  function labelScoreTotal(scoreOrBreakdown = {}) {
+    const breakdown = scoreOrBreakdown.breakdown || scoreOrBreakdown;
+    return LABEL_SCORE_FIELDS.reduce((sum, field) => sum + (breakdown[field] || 0), 0);
+  }
+  function nonLabelScoreTotal(scoreOrBreakdown = {}) {
+    const breakdown = scoreOrBreakdown.breakdown || scoreOrBreakdown;
+    const labelFields = new Set(LABEL_SCORE_FIELDS);
+    return Object.entries(breakdown).reduce((sum, [field, value]) => labelFields.has(field) ? sum : sum + value, 0);
+  }
+  function resolveLabelPlacement(layout, prepared, candidate = {}) {
+    const curvePlan = curvePlanMap(prepared, candidate);
+    const loopRegions = buildLoopRegions2(layout, prepared, candidate, curvePlan);
+    const vertexBounds = buildVertexBounds(layout, prepared.semantic);
+    const edgeSamples = buildEdgeSamples(layout, prepared, curvePlan);
+    const specs = buildPlacementSpecs(layout, prepared, candidate, curvePlan);
+    const placedBoxes = [];
+    const entries = [];
+    specs.forEach((spec) => {
+      const selected = spec.candidates.map((placement, index) => scorePlacementCandidate(placement, {
+        edgeSamples,
+        loopRegions,
+        placedBoxes,
+        vertexBounds,
+        layout
+      }, index)).sort(comparePlacementCandidates)[0];
+      if (!selected) {
+        return;
+      }
+      const boxes = selected.boxes.map((box) => ({
+        ...box,
+        selected: true
+      }));
+      const labelBox = boxes.find((box) => box.type !== "momentum-arrow") || boxes[0];
+      const arrowBox = boxes.find((box) => box.type === "momentum-arrow");
+      placedBoxes.push(...boxes);
+      entries.push({
+        id: labelBox.id,
+        type: labelBox.type,
+        target: labelBox.target,
+        node: labelBox.node,
+        edgeId: labelBox.edgeId,
+        edgeIndex: labelBox.edgeIndex,
+        source: labelBox.source,
+        targetNode: labelBox.targetNode,
+        text: labelBox.text,
+        x: roundPlacement(labelBox.x),
+        y: roundPlacement(labelBox.y),
+        anchor: labelBox.anchor,
+        side: labelBox.side,
+        defaultSide: labelBox.defaultSide,
+        explicitSide: Boolean(labelBox.explicitSide),
+        bounds: roundBounds(labelBox.bounds),
+        score: roundPlacement(selected.rawScore),
+        hardInvalid: selected.hardInvalid,
+        collisionCount: selected.collisionCount,
+        fallback: selected.index !== 0,
+        ...arrowBox ? {
+          arrowBounds: roundBounds(arrowBox.bounds),
+          arrowPoints: (arrowBox.points || []).map((point) => ({
+            x: roundPlacement(point.x),
+            y: roundPlacement(point.y)
+          }))
+        } : {}
+      });
+    });
+    const finalBoxes = decorateLoopLabelBoxes(placedBoxes, prepared, candidate);
+    const breakdown = {
+      nodeLabelOverlap: scoreNodeLabelOverlap(finalBoxes, vertexBounds),
+      edgeLabelOverlap: scoreEdgeLabelOverlap(finalBoxes, vertexBounds, edgeSamples),
+      labelLabelOverlap: scoreLabelLabelOverlap(finalBoxes),
+      labelsInsideLoops: scoreLabelsInsideLoops(finalBoxes, loopRegions, layout),
+      momentumLoopCollision: scoreMomentumLoopCollision(finalBoxes, loopRegions, vertexBounds)
+    };
+    const byId = Object.fromEntries(entries.map((entry) => [entry.id, entry]));
+    const hardCollisionCount = entries.filter((entry) => entry.hardInvalid).length;
+    return {
+      applied: entries.length > 0,
+      entries,
+      byId,
+      summary: {
+        labelCount: specs.length,
+        placedCount: entries.length,
+        fallbackCount: entries.filter((entry) => entry.fallback).length,
+        hardCollisionCount,
+        residualScore: roundPlacement(labelScoreTotal(breakdown)),
+        breakdown: Object.fromEntries(
+          Object.entries(breakdown).map(([field, value]) => [field, roundPlacement(value)])
+        )
+      }
+    };
+  }
+  function labelPlacementDiagnostic(placement) {
+    const summary = placement?.summary || {};
+    const placedCount = summary.placedCount || 0;
+    const hardCollisionCount = summary.hardCollisionCount || 0;
+    const residualScore = summary.residualScore || 0;
+    return {
+      stage: "label-placement",
+      severity: hardCollisionCount || residualScore ? "warning" : "info",
+      message: hardCollisionCount ? `Placed ${placedCount} labels with ${hardCollisionCount} residual hard collisions` : `Placed ${placedCount} labels`,
+      data: {
+        ...summary,
+        entries: (placement?.entries || []).map((entry) => ({
+          id: entry.id,
+          type: entry.type,
+          target: entry.target,
+          side: entry.side,
+          x: entry.x,
+          y: entry.y,
+          score: entry.score,
+          hardInvalid: entry.hardInvalid,
+          fallback: entry.fallback
+        }))
+      }
+    };
+  }
+  function buildPlacementSpecs(layout, prepared, candidate, curvePlan) {
+    const labels = prepared.semantic.source.labels || {};
+    const specs = [];
+    Object.entries(labels).sort(([left], [right]) => compareStable(left, right)).forEach(([target, text]) => {
+      if (target.includes("->")) {
+        const edge = findEdgeByLabelTarget(target, prepared.semantic.propagators);
+        const spec2 = edgePlacementSpec(edge, text, layout, curvePlan, {
+          id: `declared-edge:${target}`,
+          target,
+          forceNormal: true,
+          declaredTarget: target,
+          explicitSide: Boolean(edge?.metadata?.labelSide)
+        });
+        if (spec2) {
+          specs.push(spec2);
+        }
+        return;
+      }
+      const spec = nodePlacementSpec(target, text, layout.positions?.[target]);
+      if (spec) {
+        specs.push(spec);
+      }
+    });
+    prepared.semantic.propagators.slice().sort((left, right) => left.metadata.edgeIndex - right.metadata.edgeIndex || compareStable(left.id, right.id)).forEach((edge) => {
+      if (edge.metadata.hidden) {
+        return;
+      }
+      const text = edge.momentumLabel || edge.particleLabel;
+      if (!text) {
+        return;
+      }
+      const spec = edgePlacementSpec(edge, text, layout, curvePlan, {
+        id: `edge:${edge.id}`,
+        target: edge.id,
+        explicitSide: Boolean(edge.metadata.labelSide)
+      });
+      if (spec) {
+        specs.push(spec);
+      }
+    });
+    return specs;
+  }
+  function nodePlacementSpec(target, text, position) {
+    if (!position) {
+      return null;
+    }
+    const id = `node:${target}`;
+    const defaultSide = normalizePlacementSide(position.labelSide || position.kind);
+    const candidates = orderedSides(defaultSide, ["top", "bottom", "left", "right"]).flatMap((side, sideIndex) => nodeSideShifts(side).map((shift, shiftIndex) => {
+      const offset = labelOffset(side);
+      const anchor = {
+        x: position.x + offset.x + shift.x,
+        y: position.y + offset.y + shift.y,
+        anchor: offset.anchor
+      };
+      const bounds = textBounds(anchor, text || target, METRICS.nodeFontSize);
+      const box = {
+        id,
+        type: "node-label",
+        target,
+        node: target,
+        text,
+        x: anchor.x,
+        y: anchor.y,
+        anchor: anchor.anchor,
+        side,
+        defaultSide,
+        bounds,
+        center: boundsCenter(bounds),
+        fontSize: METRICS.nodeFontSize
+      };
+      return {
+        id,
+        boxes: [box],
+        rank: sideIndex * 10 + shiftIndex,
+        defaultCandidate: sideIndex === 0 && shiftIndex === 0
+      };
+    }));
+    return { id, type: "node-label", candidates };
+  }
+  function edgePlacementSpec(edge, text, layout, curvePlan, options = {}) {
+    if (!edge) {
+      return null;
+    }
+    const from = layout.positions?.[edge.source];
+    const to = layout.positions?.[edge.target];
+    if (!from || !to) {
+      return null;
+    }
+    const id = options.id || `edge:${edge.id}`;
+    const defaultSide = normalizePlacementSide(edge.metadata.labelSide || "left");
+    const sides = options.explicitSide ? [defaultSide] : orderedSides(defaultSide, ["left", "right"]);
+    const geometry = edgeGeometry(edge, from, to, curvePlan);
+    const sample = geometrySample(geometry, 0.5);
+    const tangent = normalizeVector(sample.tangent.x, sample.tangent.y);
+    const candidates = sides.flatMap((side, sideIndex) => edgeTangentShifts().map((shift, shiftIndex) => {
+      const box = edgeLabelBox(edge, text, layout, curvePlan, {
+        ...options,
+        placementId: id,
+        sideOverride: side
+      });
+      if (!box) {
+        return null;
+      }
+      const shifted = shiftBoxWithAnchor(box, tangent.ux * shift, tangent.uy * shift);
+      const boxes = [shifted];
+      const arrow = !options.forceNormal && isMomentumEdge(edge) ? momentumArrowBox(edge, layout, curvePlan, { sideOverride: side }) : null;
+      if (arrow) {
+        boxes.push(arrow);
+      }
+      return {
+        id,
+        boxes,
+        rank: sideIndex * 10 + shiftIndex + Math.abs(shift) / 100,
+        defaultCandidate: sideIndex === 0 && shiftIndex === 0
+      };
+    }).filter(Boolean));
+    return { id, type: "edge-label", candidates };
+  }
+  function scorePlacementCandidate(candidate, context, index) {
+    let rawScore = candidate.rank * 0.08;
+    let collisionCount = 0;
+    candidate.boxes.forEach((box) => {
+      context.vertexBounds.forEach((vertex) => {
+        const overlap = overlapArea(box.bounds, vertex.bounds);
+        if (overlap <= 0) {
+          return;
+        }
+        rawScore += overlap / (box.type === "momentum-arrow" ? 20 : 8);
+        if (pointInsideBounds(box.center, vertex.bounds)) {
+          collisionCount += 1;
+        }
+      });
+      context.edgeSamples.forEach((edge) => {
+        if (box.type !== "node-label" && edge.edgeId === box.edgeId) {
+          return;
+        }
+        const hitCount = edge.samples.filter((point) => pointInsideBounds(point, expandBounds(box.bounds, 5))).length;
+        if (!hitCount) {
+          return;
+        }
+        rawScore += hitCount * (box.type === "node-label" ? 85 : 28);
+        if (box.type === "node-label") {
+          collisionCount += hitCount;
+        }
+      });
+    });
+    const labelBoxes = candidate.boxes.filter((box) => box.type !== "momentum-arrow");
+    labelBoxes.forEach((box) => {
+      context.placedBoxes.filter((placed) => placed.type !== "momentum-arrow").forEach((placed) => {
+        const overlap = overlapArea(box.bounds, placed.bounds);
+        if (overlap <= 0) {
+          return;
+        }
+        rawScore += 80 + overlap / 9;
+        collisionCount += 1;
+      });
+      context.loopRegions.forEach((region) => {
+        if (!pointInsideLoopRegion(box.center, region)) {
+          return;
+        }
+        if (outsidePlacementAvailable(box, region, context.layout)) {
+          rawScore += box.loopEdge ? 65 : 38;
+        }
+      });
+    });
+    candidate.boxes.filter((box) => box.type === "momentum-label" || box.type === "momentum-arrow").forEach((box) => {
+      context.loopRegions.forEach((region) => {
+        const centerInside = pointInsideLoopRegion(box.center, region);
+        const cornersInside = boundsCorners(box.bounds).some((corner) => pointInsideLoopRegion(corner, region));
+        const arrowInside = (box.points || []).some((point) => pointInsideLoopRegion(point, region));
+        if (centerInside || cornersInside || arrowInside) {
+          rawScore += box.type === "momentum-arrow" ? 90 : 70;
+          collisionCount += 1;
+        }
+      });
+    });
+    candidate.boxes.forEach((box) => {
+      const overflow = viewOverflow(box.bounds, context.layout);
+      if (overflow > 0) {
+        rawScore += overflow * 2;
+        if (overflow > 8) {
+          collisionCount += 1;
+        }
+      }
+    });
+    const hardInvalid = collisionCount > 0;
+    return {
+      ...candidate,
+      index,
+      rawScore,
+      score: rawScore + (hardInvalid ? collisionCount * 1e4 : 0),
+      hardInvalid,
+      collisionCount
+    };
+  }
+  function comparePlacementCandidates(left, right) {
+    return left.score - right.score || left.rank - right.rank || left.index - right.index || compareStable(left.id, right.id);
+  }
+  function buildLabelBoxes(layout, prepared, candidate, curvePlan) {
+    const placedBoxes = buildPlacedLabelBoxes(layout.labelPlacement);
+    if (placedBoxes) {
+      return decorateLoopLabelBoxes(placedBoxes, prepared, candidate);
+    }
+    const labels = prepared.semantic.source.labels || {};
+    const boxes = [];
+    Object.entries(labels).sort(([left], [right]) => compareStable(left, right)).forEach(([target, text]) => {
+      if (target.includes("->")) {
+        const edge = findEdgeByLabelTarget(target, prepared.semantic.propagators);
+        const placementId2 = `declared-edge:${target}`;
+        const box = edgeLabelBox(edge, text, layout, curvePlan, {
+          forceNormal: true,
+          declaredTarget: target,
+          placementId: placementId2,
+          placement: layout.labelPlacement?.byId?.[placementId2]
+        });
+        if (box) {
+          boxes.push(box);
+        }
+        return;
+      }
+      const position = layout.positions?.[target];
+      if (!position) {
+        return;
+      }
+      const placementId = `node:${target}`;
+      const placement = layout.labelPlacement?.byId?.[placementId];
+      const offset = labelOffset(position.labelSide || position.kind);
+      const anchor = {
+        x: placement?.x ?? position.x + offset.x,
+        y: placement?.y ?? position.y + offset.y,
+        anchor: placement?.anchor || offset.anchor
+      };
+      const bounds = textBounds(anchor, text || target, METRICS.nodeFontSize);
+      boxes.push({
+        id: placementId,
+        type: "node-label",
+        target,
+        node: target,
+        text,
+        x: anchor.x,
+        y: anchor.y,
+        anchor: anchor.anchor,
+        side: placement?.side || normalizePlacementSide(position.labelSide || position.kind),
+        bounds,
+        center: boundsCenter(bounds),
+        fontSize: METRICS.nodeFontSize
+      });
+    });
+    prepared.semantic.propagators.slice().sort((left, right) => left.metadata.edgeIndex - right.metadata.edgeIndex || compareStable(left.id, right.id)).forEach((edge) => {
+      if (edge.metadata.hidden) {
+        return;
+      }
+      if (edge.momentumLabel) {
+        const placementId = `edge:${edge.id}`;
+        const placement = layout.labelPlacement?.byId?.[placementId];
+        const labelBox = edgeLabelBox(edge, edge.momentumLabel, layout, curvePlan, {
+          placementId,
+          placement,
+          sideOverride: placement?.side
+        });
+        const arrowBox = momentumArrowBox(edge, layout, curvePlan, {
+          sideOverride: placement?.side
+        });
+        if (labelBox) {
+          boxes.push(labelBox);
+        }
+        if (arrowBox) {
+          boxes.push(arrowBox);
+        }
+        return;
+      }
+      if (edge.particleLabel) {
+        const placementId = `edge:${edge.id}`;
+        const box = edgeLabelBox(edge, edge.particleLabel, layout, curvePlan, {
+          placementId,
+          placement: layout.labelPlacement?.byId?.[placementId]
+        });
+        if (box) {
+          boxes.push(box);
+        }
+      }
+    });
+    return decorateLoopLabelBoxes(boxes, prepared, candidate);
+  }
+  function edgeLabelBox(edge, text, layout, curvePlan, options = {}) {
+    if (!edge) {
+      return null;
+    }
+    const from = layout.positions?.[edge.source];
+    const to = layout.positions?.[edge.target];
+    if (!from || !to) {
+      return null;
+    }
+    const id = options.placementId || `${options.declaredTarget ? "declared-edge" : "edge"}:${edge.id}`;
+    const side = normalizePlacementSide(options.placement?.side || options.sideOverride || edge.metadata.labelSide || "left");
+    const position = edgeLabelPosition(edge, from, to, side, curvePlan, options);
+    const anchor = options.placement ? {
+      x: options.placement.x,
+      y: options.placement.y,
+      anchor: options.placement.anchor || position.anchor
+    } : position;
+    const bounds = textBounds(anchor, text, METRICS.edgeFontSize);
+    const type = isMomentumEdge(edge) && !options.forceNormal ? "momentum-label" : "edge-label";
+    return {
+      id,
+      type,
+      target: options.declaredTarget || edge.id,
+      edgeId: edge.id,
+      edgeIndex: edge.metadata.edgeIndex,
+      source: edge.source,
+      targetNode: edge.target,
+      text,
+      x: anchor.x,
+      y: anchor.y,
+      anchor: anchor.anchor,
+      side,
+      defaultSide: normalizePlacementSide(edge.metadata.labelSide || "left"),
+      explicitSide: Boolean(options.explicitSide ?? edge.metadata.labelSide),
+      bounds,
+      center: boundsCenter(bounds),
+      fontSize: METRICS.edgeFontSize,
+      forceNormal: Boolean(options.forceNormal)
+    };
+  }
+  function momentumArrowBox(edge, layout, curvePlan, options = {}) {
+    const from = layout.positions?.[edge.source];
+    const to = layout.positions?.[edge.target];
+    if (!from || !to || !isMomentumEdge(edge)) {
+      return null;
+    }
+    const arrow = momentumArrowGeometry(edge, from, to, curvePlan, options);
+    const bounds = expandBounds(pointsBounds(arrow.points), Math.max(
+      METRICS.momentumArrowHeadLength,
+      METRICS.momentumArrowHeadWidth
+    ));
+    return {
+      id: `momentum-arrow:${edge.id}`,
+      type: "momentum-arrow",
+      edgeId: edge.id,
+      edgeIndex: edge.metadata.edgeIndex,
+      source: edge.source,
+      targetNode: edge.target,
+      bounds,
+      center: boundsCenter(bounds),
+      points: arrow.points
+    };
+  }
+  function buildLoopRegions2(layout, prepared, candidate, curvePlan) {
+    const regions = [];
+    const loop = candidate.loop || prepared.topology.loopCandidate;
+    if (loop) {
+      const loopRegion = loopRegionForLoop(layout, loop, candidate, curvePlan);
+      if (loopRegion) {
+        regions.push(loopRegion);
+      }
+    }
+    (prepared.topology.selfEnergyBubbles || []).slice().sort((left, right) => compareStable(left.id, right.id)).forEach((group) => {
+      const region = selfEnergyRegion(layout, group, curvePlan);
+      if (region) {
+        regions.push(region);
+      }
+    });
+    return regions;
+  }
+  function loopRegionForLoop(layout, loop, candidate, curvePlan) {
+    if (loop.type === "tadpole") {
+      const node = loop.nodes[0];
+      const position = layout.positions?.[node];
+      if (!position) {
+        return null;
+      }
+      const assignment = loop.edges.map((edge) => curvePlan.get(edge)).find(Boolean);
+      const side = assignment?.side || candidate.variant?.loopSide || "top";
+      const amount = assignment?.amount || 0.72;
+      const radius = 68 * amount;
+      const sideVector = selfLoopSideVector(side);
+      const center = {
+        x: position.x + sideVector.x * radius * 1.05,
+        y: position.y + sideVector.y * radius * 1.05
+      };
+      return {
+        id: loop.id,
+        type: "tadpole",
+        nodes: loop.nodes.slice(),
+        edges: new Set(loop.edges),
+        center,
+        radiusX: radius * 1.15,
+        radiusY: radius * 1.15,
+        bounds: {
+          x1: center.x - radius * 1.15,
+          x2: center.x + radius * 1.15,
+          y1: center.y - radius * 1.15,
+          y2: center.y + radius * 1.15
+        }
+      };
+    }
+    const points = loop.nodes.map((node) => layout.positions?.[node]).filter(Boolean);
+    if (points.length !== loop.nodes.length || points.length < 3) {
+      return null;
+    }
+    return {
+      id: loop.id,
+      type: "polygon",
+      nodes: loop.nodes.slice(),
+      edges: new Set(loop.edges),
+      points,
+      center: averagePoint(points),
+      bounds: pointsBounds(points)
+    };
+  }
+  function selfEnergyRegion(layout, group, curvePlan) {
+    const [firstNode, secondNode] = group.nodes;
+    const first = layout.positions?.[firstNode];
+    const second = layout.positions?.[secondNode];
+    if (!first || !second) {
+      return null;
+    }
+    const vector = lineVector(first, second);
+    const maxAmount = Math.max(
+      ...group.edges.map((edge) => curvePlan.get(edge.id)?.amount || edge.curveAmount || 0.5),
+      0.5
+    );
+    const center = {
+      x: (first.x + second.x) / 2,
+      y: (first.y + second.y) / 2
+    };
+    return {
+      id: `self-energy:${group.id}`,
+      type: "self-energy",
+      nodes: group.nodes.slice(),
+      edges: new Set(group.edges.map((edge) => edge.id)),
+      center,
+      axis: { x: vector.ux, y: vector.uy },
+      normal: { x: vector.px, y: vector.py },
+      radiusX: Math.max(24, vector.length / 2),
+      radiusY: Math.max(24, vector.length * maxAmount * 0.72),
+      bounds: expandBounds(pointsBounds([first, second]), vector.length * maxAmount)
+    };
+  }
+  function buildVertexBounds(layout, semantic) {
+    return semantic.vertices.map((vertex) => {
+      const position = layout.positions?.[vertex.id];
+      if (!position) {
+        return null;
+      }
+      const radii = vertexRadii(vertex);
+      return {
+        id: vertex.id,
+        bounds: {
+          x1: position.x - radii.rx,
+          x2: position.x + radii.rx,
+          y1: position.y - radii.ry,
+          y2: position.y + radii.ry
+        },
+        center: position,
+        radius: Math.max(radii.rx, radii.ry),
+        rx: radii.rx,
+        ry: radii.ry
+      };
+    }).filter(Boolean).sort((left, right) => compareStable(left.id, right.id));
+  }
+  function buildEdgeSamples(layout, prepared, curvePlan) {
+    return prepared.semantic.propagators.filter((edge) => !edge.metadata.hidden).map((edge) => {
+      const from = layout.positions?.[edge.source];
+      const to = layout.positions?.[edge.target];
+      if (!from || !to) {
+        return null;
+      }
+      const geometry = edgeGeometry(edge, from, to, curvePlan);
+      const samples = [];
+      const steps = geometry.kind === "cubic" ? 8 : 2;
+      for (let step = 0; step <= steps; step += 1) {
+        samples.push(geometryPoint(geometry, step / steps));
+      }
+      return {
+        edgeId: edge.id,
+        edgeIndex: edge.metadata.edgeIndex,
+        samples
+      };
+    }).filter(Boolean).sort((left, right) => left.edgeIndex - right.edgeIndex || compareStable(left.edgeId, right.edgeId));
+  }
+  function scoreNodeLabelOverlap(boxes, vertexBounds) {
+    let penalty = 0;
+    boxes.filter((box) => box.type === "node-label").forEach((box) => {
+      vertexBounds.forEach((vertex) => {
+        const overlap = overlapArea(box.bounds, vertex.bounds);
+        if (overlap > 0) {
+          penalty += overlap / 18;
+        }
+      });
+    });
+    return penalty;
+  }
+  function scoreEdgeLabelOverlap(boxes, vertexBounds, edgeSamples) {
+    let penalty = 0;
+    boxes.filter((box) => box.type === "node-label" || box.type === "edge-label" || box.type === "loop-edge-label" || box.type === "momentum-label" || box.type === "momentum-arrow").forEach((box) => {
+      vertexBounds.forEach((vertex) => {
+        const overlap = overlapArea(box.bounds, vertex.bounds);
+        if (overlap > 0) {
+          penalty += overlap / 18;
+        }
+      });
+      edgeSamples.forEach((edge) => {
+        if (box.type !== "node-label" && edge.edgeId === box.edgeId) {
+          return;
+        }
+        if (edge.samples.some((point) => pointInsideBounds(point, expandBounds(box.bounds, 4)))) {
+          penalty += box.type === "node-label" ? 22 : 10;
+        }
+      });
+    });
+    return penalty;
+  }
+  function scoreLabelLabelOverlap(boxes) {
+    const labelBoxes = boxes.filter((box) => box.type !== "momentum-arrow");
+    let penalty = 0;
+    for (let leftIndex = 0; leftIndex < labelBoxes.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < labelBoxes.length; rightIndex += 1) {
+        const overlap = overlapArea(labelBoxes[leftIndex].bounds, labelBoxes[rightIndex].bounds);
+        if (overlap > 0) {
+          penalty += overlap / 28;
+        }
+      }
+    }
+    return penalty;
+  }
+  function scoreLabelsInsideLoops(boxes, loopRegions, layout) {
+    if (!loopRegions.length) {
+      return 0;
+    }
+    let penalty = 0;
+    boxes.filter((box) => box.type !== "momentum-arrow").forEach((box) => {
+      loopRegions.forEach((region) => {
+        if (!pointInsideLoopRegion(box.center, region)) {
+          return;
+        }
+        if (outsidePlacementAvailable(box, region, layout)) {
+          penalty += box.loopEdge ? 65 : 38;
+        }
+      });
+    });
+    return penalty;
+  }
+  function scoreMomentumLoopCollision(boxes, loopRegions, vertexBounds) {
+    const momentumBoxes = boxes.filter((box) => box.type === "momentum-label" || box.type === "momentum-arrow");
+    let penalty = 0;
+    momentumBoxes.forEach((box) => {
+      loopRegions.forEach((region) => {
+        const centerInside = pointInsideLoopRegion(box.center, region);
+        const cornersInside = boundsCorners(box.bounds).some((corner) => pointInsideLoopRegion(corner, region));
+        const arrowInside = (box.points || []).some((point) => pointInsideLoopRegion(point, region));
+        if (centerInside || cornersInside || arrowInside) {
+          penalty += box.type === "momentum-arrow" ? 90 : 70;
+        }
+      });
+      vertexBounds.forEach((vertex) => {
+        const overlap = overlapArea(box.bounds, vertex.bounds);
+        const arrowNearVertex = (box.points || []).some((point) => Math.hypot(point.x - vertex.center.x, point.y - vertex.center.y) < vertex.radius + 8);
+        if (overlap > 0 || arrowNearVertex) {
+          penalty += 36 + overlap / 24;
+        }
+      });
+    });
+    return penalty;
+  }
+  function outsidePlacementAvailable(box, region, layout) {
+    const options = layout.options || {};
+    const marginX = Math.max(0, options.marginX ?? 0) / 2;
+    const marginY = Math.max(0, options.marginY ?? 0) / 2;
+    const width = layout.width ?? options.width ?? 0;
+    const height = layout.height ?? options.height ?? 0;
+    let dx = box.center.x - region.center.x;
+    let dy = box.center.y - region.center.y;
+    if (Math.hypot(dx, dy) < 1e-3) {
+      dx = 0;
+      dy = -1;
+    }
+    const length = Math.hypot(dx, dy) || 1;
+    const shift = Math.max(box.bounds.x2 - box.bounds.x1, box.bounds.y2 - box.bounds.y1, 32);
+    const moved = translateBounds(box.bounds, dx / length * shift, dy / length * shift);
+    return moved.x1 >= marginX && moved.y1 >= marginY && (!width || moved.x2 <= width - marginX) && (!height || moved.y2 <= height - marginY);
+  }
+  function edgeLabelPosition(edge, from, to, side, curvePlan, options = {}) {
+    const sample = geometrySample(edgeGeometry(edge, from, to, curvePlan), 0.5);
+    const tangent = normalizeVector(sample.tangent.x, sample.tangent.y);
+    const resolvedSide = normalizePlacementSide(options.sideOverride || side);
+    if (isMomentumEdge(edge)) {
+      if (!options.forceNormal) {
+        return momentumLabelPosition(edge, sample.point, tangent, resolvedSide);
+      }
+      const momentumNormal = momentumNormalForTangent(edge, tangent, resolvedSide);
+      return {
+        x: sample.point.x - momentumNormal.x * METRICS.edgeLabelOffset,
+        y: sample.point.y - momentumNormal.y * METRICS.edgeLabelOffset,
+        anchor: "middle"
+      };
+    }
+    const normalSign = resolvedSide === "right" ? 1 : -1;
+    return {
+      x: sample.point.x + tangent.px * METRICS.edgeLabelOffset * normalSign,
+      y: sample.point.y + tangent.py * METRICS.edgeLabelOffset * normalSign,
+      anchor: "middle"
+    };
+  }
+  function momentumLabelPosition(edge, point, tangent, sideOverride) {
+    const normal = momentumNormalForTangent(edge, tangent, sideOverride);
+    const offset = momentumArrowDistance(edge) + METRICS.momentumLabelGap + momentumLabelDistance(edge);
+    return {
+      x: point.x + normal.x * offset,
+      y: point.y + normal.y * offset,
+      anchor: "middle"
+    };
+  }
+  function momentumArrowGeometry(edge, from, to, curvePlan, options = {}) {
+    const geometry = edgeGeometry(edge, from, to, curvePlan);
+    const shorten = momentumArrowShorten(edge);
+    const reverse = edge.momentumDirection === "target-to-source";
+    const start = reverse ? 1 - shorten : shorten;
+    const end = reverse ? shorten : 1 - shorten;
+    const steps = geometry.kind === "cubic" ? 8 : 1;
+    const midpoint = geometrySample(geometry, 0.5);
+    const normal = momentumNormalForTangent(
+      edge,
+      normalizeVector(midpoint.tangent.x, midpoint.tangent.y),
+      options.sideOverride
+    );
+    const offset = momentumArrowDistance(edge);
+    const points = [];
+    for (let step = 0; step <= steps; step += 1) {
+      const t = start + (end - start) * step / steps;
+      const point = geometryPoint(geometry, t);
+      points.push({
+        x: point.x + normal.x * offset,
+        y: point.y + normal.y * offset
+      });
+    }
+    return { points };
+  }
+  function edgeGeometry(edge, from, to, curvePlan) {
+    const outAngle = Number(edge.metadata.outAngle);
+    const inAngle = Number(edge.metadata.inAngle);
+    if (samePoint(from, to)) {
+      return selfLoopGeometry(edge, from, outAngle, inAngle, curvePlan);
+    }
+    if (Number.isFinite(outAngle) || Number.isFinite(inAngle)) {
+      return angleCurveGeometry(edge, from, to, outAngle, inAngle);
+    }
+    const curve = edgeCurve(edge, curvePlan);
+    if (curve) {
+      return offsetCurveGeometry({ ...edge, curve }, from, to);
+    }
+    return {
+      kind: "line",
+      from,
+      to
+    };
+  }
+  function edgeCurve(edge, curvePlan) {
+    return edge.metadata.curve || curvePlan.get(edge.id) || null;
+  }
+  function selfLoopGeometry(edge, point, outAngle, inAngle, curvePlan) {
+    const curve = edgeCurve(edge, curvePlan);
+    const amount = clamp(curve?.amount ?? 0.72, 0.28, 1.1);
+    const radius = 68 * amount;
+    if (Number.isFinite(outAngle) || Number.isFinite(inAngle)) {
+      const outVector = angleUnitVector(Number.isFinite(outAngle) ? outAngle : 135);
+      const inVector = angleUnitVector(Number.isFinite(inAngle) ? inAngle : 45);
+      return {
+        kind: "cubic",
+        from: point,
+        c1: {
+          x: point.x + outVector.x * radius * 1.65,
+          y: point.y + outVector.y * radius * 1.65
+        },
+        c2: {
+          x: point.x + inVector.x * radius * 1.65,
+          y: point.y + inVector.y * radius * 1.65
+        },
+        to: point
+      };
+    }
+    const side = selfLoopSideVector(curve?.side);
+    const tangent = { x: -side.y, y: side.x };
+    return {
+      kind: "cubic",
+      from: point,
+      c1: {
+        x: point.x - tangent.x * radius + side.x * radius * 1.7,
+        y: point.y - tangent.y * radius + side.y * radius * 1.7
+      },
+      c2: {
+        x: point.x + tangent.x * radius + side.x * radius * 1.7,
+        y: point.y + tangent.y * radius + side.y * radius * 1.7
+      },
+      to: point
+    };
+  }
+  function offsetCurveGeometry(edge, from, to) {
+    const vector = lineVector(from, to);
+    const normal = leftNormalVector(vector);
+    const side = edge.curve.side === "right" ? -1 : 1;
+    const looseness = edge.metadata.looseness ?? 1;
+    const offset = vector.length * edge.curve.amount * looseness * side;
+    if (edge.curve.shape === "semicircle") {
+      return {
+        kind: "cubic",
+        from,
+        c1: {
+          x: from.x + normal.x * offset,
+          y: from.y + normal.y * offset
+        },
+        c2: {
+          x: to.x + normal.x * offset,
+          y: to.y + normal.y * offset
+        },
+        to
+      };
+    }
+    return {
+      kind: "cubic",
+      from,
+      c1: {
+        x: from.x + vector.dx * 0.33 + normal.x * offset,
+        y: from.y + vector.dy * 0.33 + normal.y * offset
+      },
+      c2: {
+        x: from.x + vector.dx * 0.67 + normal.x * offset,
+        y: from.y + vector.dy * 0.67 + normal.y * offset
+      },
+      to
+    };
+  }
+  function angleCurveGeometry(edge, from, to, outAngle, inAngle) {
+    const vector = lineVector(from, to);
+    const looseness = edge.metadata.looseness ?? 1;
+    const handle = vector.length * 0.46 * looseness;
+    const relativeBase = edge.metadata.relativeAngles ? vectorAngle(vector) : 0;
+    const resolvedOut = Number.isFinite(outAngle) ? relativeBase + outAngle : vectorAngle(vector);
+    const resolvedIn = Number.isFinite(inAngle) ? relativeBase + inAngle : vectorAngle(vector) + 180;
+    const outVector = angleUnitVector(resolvedOut);
+    const inVector = angleUnitVector(resolvedIn);
+    return {
+      kind: "cubic",
+      from,
+      c1: {
+        x: from.x + outVector.x * handle,
+        y: from.y + outVector.y * handle
+      },
+      c2: {
+        x: to.x + inVector.x * handle,
+        y: to.y + inVector.y * handle
+      },
+      to
+    };
+  }
+  function geometryPoint(geometry, t) {
+    if (geometry.kind === "cubic") {
+      return cubicPoint(geometry.from, geometry.c1, geometry.c2, geometry.to, t);
+    }
+    return {
+      x: geometry.from.x + (geometry.to.x - geometry.from.x) * t,
+      y: geometry.from.y + (geometry.to.y - geometry.from.y) * t
+    };
+  }
+  function geometryTangent(geometry, t) {
+    if (geometry.kind === "cubic") {
+      return cubicTangent(geometry.from, geometry.c1, geometry.c2, geometry.to, t);
+    }
+    return {
+      x: geometry.to.x - geometry.from.x,
+      y: geometry.to.y - geometry.from.y
+    };
+  }
+  function geometrySample(geometry, t) {
+    return {
+      point: geometryPoint(geometry, t),
+      tangent: geometryTangent(geometry, t)
+    };
+  }
+  function cubicPoint(p0, p1, p2, p3, t) {
+    const mt = 1 - t;
+    return {
+      x: mt ** 3 * p0.x + 3 * mt ** 2 * t * p1.x + 3 * mt * t ** 2 * p2.x + t ** 3 * p3.x,
+      y: mt ** 3 * p0.y + 3 * mt ** 2 * t * p1.y + 3 * mt * t ** 2 * p2.y + t ** 3 * p3.y
+    };
+  }
+  function cubicTangent(p0, p1, p2, p3, t) {
+    const mt = 1 - t;
+    return {
+      x: 3 * mt ** 2 * (p1.x - p0.x) + 6 * mt * t * (p2.x - p1.x) + 3 * t ** 2 * (p3.x - p2.x),
+      y: 3 * mt ** 2 * (p1.y - p0.y) + 6 * mt * t * (p2.y - p1.y) + 3 * t ** 2 * (p3.y - p2.y)
+    };
+  }
+  function labelOffset(kind) {
+    if (kind === "left" || kind === "incoming") {
+      return { x: -METRICS.labelHorizontalOffset, y: 0, anchor: "end" };
+    }
+    if (kind === "right" || kind === "outgoing") {
+      return { x: METRICS.labelHorizontalOffset, y: 0, anchor: "start" };
+    }
+    if (kind === "bottom") {
+      return { x: 0, y: METRICS.labelBottomOffset, anchor: "middle" };
+    }
+    return { x: 0, y: -METRICS.labelTopOffset, anchor: "middle" };
+  }
+  function textBounds(anchor, text, fontSize) {
+    const width = estimateTextWidth(text, fontSize);
+    const height = fontSize * 1.1;
+    let x1 = anchor.x - width / 2;
+    let x2 = anchor.x + width / 2;
+    if (anchor.anchor === "start") {
+      x1 = anchor.x;
+      x2 = anchor.x + width;
+    } else if (anchor.anchor === "end") {
+      x1 = anchor.x - width;
+      x2 = anchor.x;
+    }
+    return {
+      x1,
+      x2,
+      y1: anchor.y - height / 2,
+      y2: anchor.y + height / 2
+    };
+  }
+  function estimateTextWidth(text, fontSize) {
+    const plain = plainLabelText(text);
+    const chars = Array.from(plain).length;
+    const narrow = (plain.match(/[.,:+\-_=]/g) || []).length;
+    const wide = (plain.match(/[MWmw]/g) || []).length;
+    const units = Math.max(1, chars - narrow * 0.35 + wide * 0.25);
+    return units * fontSize * 0.56;
+  }
+  function plainLabelText(text) {
+    return String(text || "").replace(/\\overline\{([^}]*)\}/g, "$1").replace(/\\([A-Za-z]+)/g, "$1").replace(/[{}]/g, "").replace(/[_^]/g, "").trim();
+  }
+  function curvePlanMap(prepared, candidate) {
+    const map = /* @__PURE__ */ new Map();
+    (prepared.parallelCurvePlan || []).forEach((assignment) => {
+      map.set(assignment.propagator, {
+        side: assignment.side,
+        amount: assignment.amount,
+        shape: assignment.shape
+      });
+    });
+    (candidate.curvePlan || []).forEach((assignment) => {
+      map.set(assignment.edge, {
+        side: assignment.side,
+        amount: assignment.amount,
+        shape: assignment.shape
+      });
+    });
+    return map;
+  }
+  function findEdgeByLabelTarget(target, edges) {
+    const match = String(target || "").match(/^([A-Za-z0-9_.-]+)->([A-Za-z0-9_.-]+)(?:#([0-9]+))?$/);
+    if (!match) {
+      return null;
+    }
+    const [, from, to, rawIndex] = match;
+    const matches = edges.filter((edge) => edge.source === from && edge.target === to).sort((left, right) => left.metadata.edgeIndex - right.metadata.edgeIndex || compareStable(left.id, right.id));
+    const index = rawIndex ? Number(rawIndex) - 1 : 0;
+    return matches[index] || null;
+  }
+  function isLoopEdge(edgeId, prepared, candidate) {
+    const loop = candidate.loop || prepared.topology?.loopCandidate;
+    return Boolean(edgeId && loop?.edges?.includes(edgeId));
+  }
+  function vertexRadii(vertex) {
+    const definition = vertex.metadata.vertexShape;
+    const shape = typeof definition === "object" ? definition.shape : definition;
+    const defaultRadius = defaultVertexRadius(shape);
+    if (!definition || typeof definition !== "object") {
+      return { rx: defaultRadius, ry: defaultRadius };
+    }
+    const radius = Number.isFinite(definition.size) ? definition.size : defaultRadius;
+    return {
+      rx: Math.max(4, Number.isFinite(definition.rx) ? definition.rx : radius),
+      ry: Math.max(4, Number.isFinite(definition.ry) ? definition.ry : radius)
+    };
+  }
+  function defaultVertexRadius(shape) {
+    if (shape === "blob") {
+      return 18;
+    }
+    if (shape === "disk" || shape === "large-blob") {
+      return 44;
+    }
+    return 5;
+  }
+  function pointInsideLoopRegion(point, region) {
+    if (region.type === "polygon") {
+      return pointInsidePolygon(point, region.points);
+    }
+    if (region.type === "self-energy") {
+      const dx = point.x - region.center.x;
+      const dy = point.y - region.center.y;
+      const along = dx * region.axis.x + dy * region.axis.y;
+      const cross = dx * region.normal.x + dy * region.normal.y;
+      return (along / region.radiusX) ** 2 + (cross / region.radiusY) ** 2 <= 1;
+    }
+    const normalized = ((point.x - region.center.x) / region.radiusX) ** 2 + ((point.y - region.center.y) / region.radiusY) ** 2;
+    return normalized <= 1;
+  }
+  function pointInsidePolygon(point, polygon) {
+    let inside = false;
+    for (let index = 0, previousIndex = polygon.length - 1; index < polygon.length; previousIndex = index, index += 1) {
+      const current = polygon[index];
+      const previous = polygon[previousIndex];
+      const intersects = current.y > point.y !== previous.y > point.y && point.x < (previous.x - current.x) * (point.y - current.y) / (previous.y - current.y || 1) + current.x;
+      if (intersects) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+  function boundsCenter(bounds) {
+    return {
+      x: (bounds.x1 + bounds.x2) / 2,
+      y: (bounds.y1 + bounds.y2) / 2
+    };
+  }
+  function boundsCorners(bounds) {
+    return [
+      { x: bounds.x1, y: bounds.y1 },
+      { x: bounds.x2, y: bounds.y1 },
+      { x: bounds.x2, y: bounds.y2 },
+      { x: bounds.x1, y: bounds.y2 }
+    ];
+  }
+  function pointsBounds(points) {
+    return {
+      x1: Math.min(...points.map((point) => point.x)),
+      x2: Math.max(...points.map((point) => point.x)),
+      y1: Math.min(...points.map((point) => point.y)),
+      y2: Math.max(...points.map((point) => point.y))
+    };
+  }
+  function expandBounds(bounds, amount) {
+    return {
+      x1: bounds.x1 - amount,
+      x2: bounds.x2 + amount,
+      y1: bounds.y1 - amount,
+      y2: bounds.y2 + amount
+    };
+  }
+  function translateBounds(bounds, dx, dy) {
+    return {
+      x1: bounds.x1 + dx,
+      x2: bounds.x2 + dx,
+      y1: bounds.y1 + dy,
+      y2: bounds.y2 + dy
+    };
+  }
+  function shiftBoxWithAnchor(box, dx, dy) {
+    return {
+      ...box,
+      x: box.x + dx,
+      y: box.y + dy,
+      bounds: translateBounds(box.bounds, dx, dy),
+      center: {
+        x: box.center.x + dx,
+        y: box.center.y + dy
+      }
+    };
+  }
+  function buildPlacedLabelBoxes(placement) {
+    if (!placement?.entries?.length) {
+      return null;
+    }
+    return placement.entries.flatMap((entry) => {
+      const labelBox = {
+        id: entry.id,
+        type: entry.type,
+        target: entry.target,
+        node: entry.node,
+        edgeId: entry.edgeId,
+        edgeIndex: entry.edgeIndex,
+        source: entry.source,
+        targetNode: entry.targetNode,
+        text: entry.text,
+        x: entry.x,
+        y: entry.y,
+        anchor: entry.anchor,
+        side: entry.side,
+        defaultSide: entry.defaultSide,
+        explicitSide: entry.explicitSide,
+        bounds: cloneBounds(entry.bounds),
+        center: boundsCenter(entry.bounds),
+        fontSize: entry.type === "node-label" ? METRICS.nodeFontSize : METRICS.edgeFontSize
+      };
+      if (!entry.arrowBounds) {
+        return [labelBox];
+      }
+      return [
+        labelBox,
+        {
+          id: `momentum-arrow:${entry.edgeId}`,
+          type: "momentum-arrow",
+          edgeId: entry.edgeId,
+          edgeIndex: entry.edgeIndex,
+          source: entry.source,
+          targetNode: entry.targetNode,
+          bounds: cloneBounds(entry.arrowBounds),
+          center: boundsCenter(entry.arrowBounds),
+          points: (entry.arrowPoints || []).map((point) => ({ ...point }))
+        }
+      ];
+    });
+  }
+  function decorateLoopLabelBoxes(boxes, prepared, candidate) {
+    return boxes.map((box) => {
+      const loopEdge = isLoopEdge(box.edgeId, prepared, candidate);
+      return {
+        ...box,
+        type: loopEdge && box.type === "edge-label" ? "loop-edge-label" : box.type,
+        loopEdge
+      };
+    });
+  }
+  function cloneBounds(bounds) {
+    return {
+      x1: bounds.x1,
+      x2: bounds.x2,
+      y1: bounds.y1,
+      y2: bounds.y2
+    };
+  }
+  function orderedSides(preferred, sides) {
+    const normalized = normalizePlacementSide(preferred);
+    return [
+      normalized,
+      ...sides.filter((side) => side !== normalized)
+    ];
+  }
+  function normalizePlacementSide(side) {
+    if (side === "incoming" || side === "left") {
+      return "left";
+    }
+    if (side === "outgoing" || side === "right") {
+      return "right";
+    }
+    if (side === "bottom") {
+      return "bottom";
+    }
+    return "top";
+  }
+  function nodeSideShifts(side) {
+    if (side === "left" || side === "right") {
+      return [
+        { x: 0, y: 0 },
+        { x: 0, y: -16 },
+        { x: 0, y: 16 }
+      ];
+    }
+    return [
+      { x: 0, y: 0 },
+      { x: -18, y: 0 },
+      { x: 18, y: 0 }
+    ];
+  }
+  function edgeTangentShifts() {
+    return [0, -18, 18];
+  }
+  function viewOverflow(bounds, layout) {
+    const width = layout.width ?? layout.options?.width ?? 0;
+    const height = layout.height ?? layout.options?.height ?? 0;
+    if (!width || !height) {
+      return 0;
+    }
+    return Math.max(0, -bounds.x1) + Math.max(0, -bounds.y1) + Math.max(0, bounds.x2 - width) + Math.max(0, bounds.y2 - height);
+  }
+  function roundBounds(bounds) {
+    return {
+      x1: roundPlacement(bounds.x1),
+      x2: roundPlacement(bounds.x2),
+      y1: roundPlacement(bounds.y1),
+      y2: roundPlacement(bounds.y2)
+    };
+  }
+  function roundPlacement(value) {
+    return Number(value.toFixed(6));
+  }
+  function pointInsideBounds(point, bounds) {
+    return point.x >= bounds.x1 && point.x <= bounds.x2 && point.y >= bounds.y1 && point.y <= bounds.y2;
+  }
+  function overlapArea(left, right) {
+    const width = Math.max(0, Math.min(left.x2, right.x2) - Math.max(left.x1, right.x1));
+    const height = Math.max(0, Math.min(left.y2, right.y2) - Math.max(left.y1, right.y1));
+    return width * height;
+  }
+  function averagePoint(points) {
+    return {
+      x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+      y: points.reduce((sum, point) => sum + point.y, 0) / points.length
+    };
+  }
+  function samePoint(from, to) {
+    return Math.abs(from.x - to.x) < 1e-3 && Math.abs(from.y - to.y) < 1e-3;
+  }
+  function isMomentumEdge(edge) {
+    return edge.metadata.labelPlacement === "momentum" || edge.metadata.labelPlacement === "momentum-prime";
+  }
+  function momentumNormalForTangent(edge, tangent, sideOverride) {
+    const normal = canonicalMomentumNormal(tangent);
+    const normalSign = normalizePlacementSide(sideOverride || (edge.metadata.labelPlacement === "momentum-prime" ? "right" : "left")) === "right" ? 1 : -1;
+    return {
+      x: normal.x * normalSign,
+      y: normal.y * normalSign
+    };
+  }
+  function canonicalMomentumNormal(tangent) {
+    let ux = tangent.ux;
+    let uy = tangent.uy;
+    if (Math.abs(ux) >= Math.abs(uy)) {
+      if (ux < 0) {
+        ux *= -1;
+        uy *= -1;
+      }
+    } else if (uy < 0) {
+      ux *= -1;
+      uy *= -1;
+    }
+    return {
+      x: -uy,
+      y: ux
+    };
+  }
+  function momentumArrowDistance(edge) {
+    return edge.metadata.momentum?.arrowDistance ?? METRICS.momentumArrowOffset;
+  }
+  function momentumLabelDistance(edge) {
+    return edge.metadata.momentum?.labelDistance ?? 0;
+  }
+  function momentumArrowShorten(edge) {
+    return edge.metadata.momentum?.arrowShorten ?? METRICS.momentumArrowShorten;
+  }
+  function lineVector(from, to) {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const length = Math.hypot(dx, dy) || 1;
+    return {
+      dx,
+      dy,
+      length,
+      ux: dx / length,
+      uy: dy / length,
+      px: -dy / length,
+      py: dx / length
+    };
+  }
+  function normalizeVector(dx, dy) {
+    const length = Math.hypot(dx, dy) || 1;
+    return {
+      ux: dx / length,
+      uy: dy / length,
+      px: -dy / length,
+      py: dx / length
+    };
+  }
+  function leftNormalVector(vector) {
+    return {
+      x: vector.dy / vector.length,
+      y: -vector.dx / vector.length
+    };
+  }
+  function vectorAngle(vector) {
+    return Math.atan2(-vector.dy, vector.dx) * 180 / Math.PI;
+  }
+  function angleUnitVector(degrees) {
+    const radians = degrees * Math.PI / 180;
+    return {
+      x: Math.cos(radians),
+      y: -Math.sin(radians)
+    };
+  }
+  function selfLoopSideVector(side) {
+    if (side === "right") {
+      return { x: 1, y: 0 };
+    }
+    if (side === "bottom") {
+      return { x: 0, y: 1 };
+    }
+    if (side === "left") {
+      return { x: -1, y: 0 };
+    }
+    return { x: 0, y: -1 };
+  }
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
+  var METRICS, LABEL_SCORE_FIELDS;
+  var init_labels = __esm({
+    "src/markfeyn/renderer/layout/labels.js"() {
+      init_model();
+      METRICS = Object.freeze({
+        nodeFontSize: 32,
+        edgeFontSize: 26,
+        labelHorizontalOffset: 20,
+        labelTopOffset: 24,
+        labelBottomOffset: 30,
+        edgeLabelOffset: 32,
+        momentumArrowOffset: 19,
+        momentumLabelGap: 20,
+        momentumArrowShorten: 0.22,
+        momentumArrowHeadLength: 8,
+        momentumArrowHeadWidth: 7
+      });
+      LABEL_SCORE_FIELDS = Object.freeze([
+        "nodeLabelOverlap",
+        "edgeLabelOverlap",
+        "labelLabelOverlap",
+        "labelsInsideLoops",
+        "momentumLoopCollision"
+      ]);
+    }
+  });
+
+  // src/markfeyn/renderer/layout/score.js
+  function scoreLayout(layout, prepared) {
+    const labelBreakdown = scoreLabelGeometry(layout, prepared);
+    const breakdown = {
+      missingCoordinates: scoreMissingCoordinates(layout, prepared.semantic),
+      nonFiniteCoordinates: scoreNonFiniteCoordinates(layout),
+      externalBoundaryRoleViolations: scoreExternalBoundaryRoles(layout, prepared),
+      parallelEdgeOverlap: scoreParallelEdgeOverlap(prepared),
+      externalAlignment: scoreExternalAlignment(layout, prepared),
+      symmetry: scoreSymmetry(layout, prepared),
+      symmetricUnclassifiedBranchLengths: scoreSymmetricUnclassifiedBranchLengths(layout, prepared),
+      symmetricUnclassifiedBranchAngles: scoreSymmetricUnclassifiedBranchAngles(layout, prepared),
+      symmetricUnclassifiedMirrorDeviation: scoreSymmetricUnclassifiedMirrorDeviation(layout, prepared),
+      symmetricUnclassifiedCenteredInteraction: scoreSymmetricUnclassifiedCenteredInteraction(layout, prepared),
+      symmetricUnclassifiedExternalLegBalance: scoreSymmetricUnclassifiedExternalLegBalance(layout, prepared),
+      multiloopRegionOverlap: scoreMultiloopRegionOverlap(layout, prepared),
+      multiloopContainmentViolation: scoreMultiloopContainmentViolation(layout, prepared),
+      multiloopInterleaving: scoreMultiloopInterleaving(layout, prepared),
+      topologyRecognizability: scoreTopologyRecognizability(layout, prepared),
+      layoutInstability: layoutInstabilityScore(layout, prepared.incremental),
+      edgeOverlap: scoreCandidateEdgeOverlap(layout, prepared),
+      loopReadability: scoreCandidateLoopReadability(layout, prepared, layout.loopCandidate),
+      loopSymmetry: scoreLoopSymmetryRefinement(layout, prepared, layout.loopCandidate),
+      externalLegStraightness: scoreCandidateExternalLegStraightness(layout, prepared),
+      ...labelBreakdown
+    };
+    const total = Object.values(breakdown).reduce((sum, value) => sum + value, 0);
+    return {
+      total,
+      breakdown,
+      summary: {
+        missingCoordinates: breakdown.missingCoordinates,
+        nonFiniteCoordinates: breakdown.nonFiniteCoordinates,
+        externalBoundaryRoleViolations: breakdown.externalBoundaryRoleViolations,
+        parallelEdgeOverlap: breakdown.parallelEdgeOverlap,
+        multiloopRegionOverlap: breakdown.multiloopRegionOverlap,
+        multiloopContainmentViolation: breakdown.multiloopContainmentViolation,
+        multiloopInterleaving: breakdown.multiloopInterleaving,
+        topologyRecognizability: breakdown.topologyRecognizability,
+        layoutInstability: breakdown.layoutInstability,
+        edgeOverlap: breakdown.edgeOverlap,
+        loopReadability: breakdown.loopReadability,
+        loopSymmetry: breakdown.loopSymmetry,
+        externalLegStraightness: breakdown.externalLegStraightness,
+        nodeLabelOverlap: breakdown.nodeLabelOverlap,
+        edgeLabelOverlap: breakdown.edgeLabelOverlap,
+        labelLabelOverlap: breakdown.labelLabelOverlap,
+        labelsInsideLoops: breakdown.labelsInsideLoops,
+        momentumLoopCollision: breakdown.momentumLoopCollision
+      }
+    };
+  }
+  function scoreLoopCandidate(layout, prepared, candidate = {}) {
+    const labelBreakdown = scoreLabelGeometry(layout, prepared, candidate);
+    const breakdown = {
+      missingCoordinates: scoreMissingCoordinates(layout, prepared.semantic),
+      nonFiniteCoordinates: scoreNonFiniteCoordinates(layout),
+      externalBoundaryRoleViolations: scoreExternalBoundaryRoles(layout, prepared),
+      externalAlignment: scoreExternalAlignment(layout, prepared),
+      edgeOverlap: scoreCandidateEdgeOverlap(layout, prepared),
+      loopReadability: scoreCandidateLoopReadability(layout, prepared, candidate),
+      loopSymmetry: scoreLoopSymmetryRefinement(layout, prepared, candidate),
+      externalLegStraightness: scoreCandidateExternalLegStraightness(layout, prepared),
+      ...labelBreakdown
+    };
+    const total = Object.values(breakdown).reduce((sum, value) => sum + value, 0);
+    return {
+      total,
+      breakdown
+    };
+  }
+  function scoreDiagnostic(score) {
+    return {
+      stage: "score",
+      severity: score.total > 0 ? "warning" : "info",
+      message: `Layout score: ${roundScore(score.total)}`,
+      data: {
+        total: roundScore(score.total),
+        breakdown: Object.fromEntries(
+          Object.entries(score.breakdown).map(([key, value]) => [key, roundScore(value)])
+        )
+      }
+    };
+  }
+  function scoreMissingCoordinates(layout, semantic) {
+    return semantic.vertices.filter((vertex) => !layout.positions?.[vertex.id]).length * 100;
+  }
+  function scoreNonFiniteCoordinates(layout) {
+    return Object.values(layout.positions || {}).filter((position) => !Number.isFinite(position.x) || !Number.isFinite(position.y)).length * 100;
+  }
+  function scoreExternalBoundaryRoles(layout, prepared) {
+    if (prepared.orientation.mode !== "process" || layout.options?.tikzOrientation) {
+      return 0;
+    }
+    const options = layout.options || {};
+    const tolerance = 4;
+    const incomingLayer = options.orientation?.endsWith("reverse") ? options.width - options.marginX : options.marginX;
+    const outgoingLayer = options.orientation?.endsWith("reverse") ? options.marginX : options.width - options.marginX;
+    let penalty = 0;
+    prepared.semantic.incoming.forEach((node) => {
+      const position = layout.positions?.[node];
+      if (position) {
+        penalty += outsideTolerance(Math.abs(position.x - incomingLayer), tolerance);
+      }
+    });
+    prepared.semantic.outgoing.forEach((node) => {
+      const position = layout.positions?.[node];
+      if (position) {
+        penalty += outsideTolerance(Math.abs(position.x - outgoingLayer), tolerance);
+      }
+    });
+    return penalty;
+  }
+  function scoreParallelEdgeOverlap(prepared) {
+    const plannedByEdge = new Map((prepared.parallelCurvePlan || []).map((entry) => [entry.propagator, entry]));
+    return (prepared.topology.parallelEdgeGroups || []).reduce((penalty, group) => {
+      if (!group.internal || group.edges.length < 2) {
+        return penalty;
+      }
+      const signatures = /* @__PURE__ */ new Set();
+      let groupPenalty = 0;
+      group.edges.forEach((edge) => {
+        const planned = plannedByEdge.get(edge.id);
+        const signature = planned ? `${planned.side}:${planned.amount}` : edge.curveSide ? `${edge.curveSide}:${edge.curveAmount}` : "line";
+        if (signatures.has(signature)) {
+          groupPenalty += 25;
+        }
+        signatures.add(signature);
+        if (signature === "line") {
+          groupPenalty += 25;
+        }
+      });
+      return penalty + groupPenalty;
+    }, 0);
+  }
+  function scoreExternalAlignment(layout, prepared) {
+    const ordering = prepared.externalOrdering;
+    if (!ordering || prepared.orientation.mode !== "process" || layout.options?.tikzOrientation) {
+      return 0;
+    }
+    return scoreOrderedCross(layout, ordering.incoming) + scoreOrderedCross(layout, ordering.outgoing);
+  }
+  function scoreOrderedCross(layout, entries) {
+    const positions = entries.map((entry) => layout.positions?.[entry.id]).filter((position) => position && Number.isFinite(position.x) && Number.isFinite(position.y));
+    if (positions.length <= 1) {
+      return 0;
+    }
+    const centerX = Number.isFinite(layout.width) ? layout.width / 2 : positions.reduce((sum, position) => sum + position.x, 0) / positions.length;
+    const averageX = positions.reduce((sum, position) => sum + position.x, 0) / positions.length;
+    const bottomToTop = averageX <= centerX;
+    return bottomToTop ? scoreDescendingCross(positions) : scoreAscendingCross(positions);
+  }
+  function scoreAscendingCross(positions) {
+    let penalty = 0;
+    let previous = -Infinity;
+    positions.forEach((position) => {
+      if (position.y + 1e-3 < previous) {
+        penalty += previous - position.y;
+      }
+      previous = Math.max(previous, position.y);
+    });
+    return penalty;
+  }
+  function scoreDescendingCross(positions) {
+    let penalty = 0;
+    let previous = Infinity;
+    positions.forEach((position) => {
+      if (position.y + 1e-3 < previous) {
+        previous = Math.min(previous, position.y);
+        return;
+      }
+      penalty += position.y - previous;
+      previous = Math.min(previous, position.y);
+    });
+    return penalty;
+  }
+  function scoreSymmetry(layout, prepared) {
+    if (prepared.orientation.mode !== "symmetric" || !prepared.semantic.unclassified.length) {
+      return 0;
+    }
+    const center = centerOfPositions(layout.positions || {});
+    const distances = prepared.semantic.unclassified.map((node) => layout.positions?.[node]).filter(Boolean).map((position) => Math.hypot(position.x - center.x, position.y - center.y));
+    if (distances.length < 2) {
+      return 0;
+    }
+    return (Math.max(...distances) - Math.min(...distances)) / 20;
+  }
+  function symmetricUnclassifiedRefinement(prepared) {
+    return prepared.symmetricUnclassified?.applicable ? prepared.symmetricUnclassified : null;
+  }
+  function scoreSymmetricUnclassifiedBranchLengths(layout, prepared) {
+    const refinement = symmetricUnclassifiedRefinement(prepared);
+    if (!refinement) {
+      return 0;
+    }
+    if (refinement.kind === "twoCenterTree") {
+      const leftLengths = branchLengths(layout, refinement.leftCenter, refinement.leftLeaves);
+      const rightLengths = branchLengths(layout, refinement.rightCenter, refinement.rightLeaves);
+      return range(leftLengths) / 24 + range(rightLengths) / 24 + Math.abs(average(leftLengths) - average(rightLengths)) / 28;
+    }
+    if (refinement.kind === "twoPointLoop") {
+      const lengths = (refinement.externalLegs || []).map((leg) => distance(layout.positions?.[leg.external], layout.positions?.[leg.internal])).filter((value) => Number.isFinite(value));
+      return lengths.length >= 2 ? range(lengths) / 24 : 0;
+    }
+    return 0;
+  }
+  function scoreSymmetricUnclassifiedBranchAngles(layout, prepared) {
+    const refinement = symmetricUnclassifiedRefinement(prepared);
+    if (!refinement || refinement.kind !== "twoCenterTree") {
+      return 0;
+    }
+    const axis = backboneAxis(layout, refinement.leftCenter, refinement.rightCenter);
+    if (!axis) {
+      return 0;
+    }
+    const leftAngles = signedCrossAxisAngles(layout, refinement.leftCenter, refinement.leftLeaves, axis);
+    const rightAngles = signedCrossAxisAngles(layout, refinement.rightCenter, refinement.rightLeaves, axis);
+    return mirrorAnglePenalty(leftAngles, rightAngles);
+  }
+  function scoreSymmetricUnclassifiedMirrorDeviation(layout, prepared) {
+    const refinement = symmetricUnclassifiedRefinement(prepared);
+    if (!refinement || refinement.kind !== "twoCenterTree") {
+      return 0;
+    }
+    const axis = backboneAxis(layout, refinement.leftCenter, refinement.rightCenter);
+    const midpoint = midpointOf(layout.positions?.[refinement.leftCenter], layout.positions?.[refinement.rightCenter]);
+    if (!axis || !midpoint) {
+      return 0;
+    }
+    let penalty = 0;
+    const pairCount = Math.min(refinement.leftLeaves.length, refinement.rightLeaves.length);
+    for (let index = 0; index < pairCount; index += 1) {
+      const left = layout.positions?.[refinement.leftLeaves[index]];
+      const right = layout.positions?.[refinement.rightLeaves[index]];
+      if (!left || !right) {
+        continue;
+      }
+      const mirrored = reflectAcrossAxis(left, midpoint, axis);
+      penalty += distance(mirrored, right) / 36;
+    }
+    return penalty;
+  }
+  function scoreSymmetricUnclassifiedCenteredInteraction(layout, prepared) {
+    const refinement = symmetricUnclassifiedRefinement(prepared);
+    if (!refinement) {
+      return 0;
+    }
+    const options = layout.options || {};
+    const canvasCenter = {
+      x: (layout.width ?? options.width ?? 0) / 2,
+      y: (layout.height ?? options.height ?? 0) / 2
+    };
+    let penalty = 0;
+    if (refinement.kind === "twoCenterTree") {
+      const left = layout.positions?.[refinement.leftCenter];
+      const right = layout.positions?.[refinement.rightCenter];
+      const interactionCenter = midpointOf(left, right);
+      if (interactionCenter) {
+        penalty += distance(interactionCenter, canvasCenter) / 40;
+      }
+    }
+    if (refinement.kind === "twoPointLoop") {
+      const [endpointA, endpointB] = refinement.loopEndpoints || [];
+      const center = midpointOf(layout.positions?.[endpointA], layout.positions?.[endpointB]);
+      if (center) {
+        penalty += distance(center, canvasCenter) / 40;
+      }
+    }
+    return penalty;
+  }
+  function scoreSymmetricUnclassifiedExternalLegBalance(layout, prepared) {
+    const refinement = symmetricUnclassifiedRefinement(prepared);
+    if (!refinement || refinement.kind !== "twoPointLoop") {
+      return 0;
+    }
+    const [endpointA, endpointB] = refinement.loopEndpoints || [];
+    const positionA = layout.positions?.[endpointA];
+    const positionB = layout.positions?.[endpointB];
+    const axis = backboneAxis(layout, endpointA, endpointB);
+    if (!positionA || !positionB || !axis) {
+      return 0;
+    }
+    let penalty = 0;
+    (refinement.externalLegs || []).forEach((leg) => {
+      const external = layout.positions?.[leg.external];
+      const internal = layout.positions?.[leg.internal];
+      if (!external || !internal) {
+        return;
+      }
+      const axialOffset = (external.x - internal.x) * axis.x + (external.y - internal.y) * axis.y;
+      if (Math.abs(axialOffset) < 8) {
+        penalty += (8 - Math.abs(axialOffset)) * 2;
+      }
+    });
+    const axialOffsets = (refinement.externalLegs || []).map((leg) => {
+      const external = layout.positions?.[leg.external];
+      const internal = layout.positions?.[leg.internal];
+      if (!external || !internal) {
+        return null;
+      }
+      return (external.x - internal.x) * axis.x + (external.y - internal.y) * axis.y;
+    }).filter((value) => Number.isFinite(value));
+    if (axialOffsets.length === 2 && axialOffsets[0] * axialOffsets[1] >= 0) {
+      penalty += Math.abs(axialOffsets[0]) + Math.abs(axialOffsets[1]);
+    }
+    return penalty;
+  }
+  function scoreMultiloopRegionOverlap(layout, prepared) {
+    const regions = scoredMultiloopRegions(layout, prepared);
+    if (prepared.topology.detectedTopology !== "multiLoop" || regions.length < 2) {
+      return 0;
+    }
+    const boxes = regions.map((region) => ({
+      region,
+      box: boundingBox(region.nodes.map((node) => layout.positions?.[node]).filter(Boolean))
+    })).filter((entry) => entry.box);
+    let penalty = 0;
+    for (let leftIndex = 0; leftIndex < boxes.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < boxes.length; rightIndex += 1) {
+        const left = boxes[leftIndex];
+        const right = boxes[rightIndex];
+        if (!sharedCount(left.region.nodes, right.region.nodes) && boxesOverlap(left.box, right.box, 10)) {
+          penalty += 60;
+        }
+      }
+    }
+    return penalty;
+  }
+  function scoreMultiloopContainmentViolation(layout, prepared) {
+    const regions = prepared.topology.loopRegions || [];
+    if (prepared.topology.multiLoop?.kind !== "nested") {
+      return 0;
+    }
+    const byId = new Map(regions.map((region) => [region.id, region]));
+    let penalty = 0;
+    regions.forEach((outer) => {
+      const outerBox = boundingBox(outer.nodes.map((node) => layout.positions?.[node]).filter(Boolean));
+      (outer.contains || []).forEach((childId) => {
+        const child = byId.get(childId);
+        const childBox = boundingBox((child?.nodes || []).map((node) => layout.positions?.[node]).filter(Boolean));
+        if (outerBox && childBox && !boxContains(outerBox, childBox, 4)) {
+          penalty += 80;
+        }
+      });
+    });
+    return penalty;
+  }
+  function scoreMultiloopInterleaving(layout, prepared) {
+    const selection = layout.multiloopCandidate;
+    if (!selection || prepared.topology.detectedTopology !== "multiLoop") {
+      return 0;
+    }
+    const centers = (prepared.topology.loopRegions || []).filter((region) => selection.regions?.includes(region.id)).map((region) => centerForNodes(layout, region.nodes)).filter(Boolean).sort((left, right) => left.x - right.x);
+    if (centers.length < 3) {
+      return 0;
+    }
+    return centers.reduce((penalty, center, index) => {
+      if (index === 0) {
+        return penalty;
+      }
+      return center.x < centers[index - 1].x ? penalty + 40 : penalty;
+    }, 0);
+  }
+  function scoreTopologyRecognizability(layout, prepared) {
+    if (prepared.topology.detectedTopology !== "multiLoop") {
+      return 0;
+    }
+    return scoredMultiloopRegions(layout, prepared).reduce((penalty, region) => {
+      const points = region.nodes.map((node) => layout.positions?.[node]).filter(Boolean);
+      if (region.nodes.length >= 3 && Math.abs(polygonArea(points)) < 200) {
+        return penalty + 100;
+      }
+      if (region.kind === "box" && points.length === 4 && !isConvexPolygon(points)) {
+        return penalty + 120;
+      }
+      return penalty;
+    }, 0);
+  }
+  function branchLengths(layout, center, leaves) {
+    const centerPosition = layout.positions?.[center];
+    return leaves.map((leaf) => layout.positions?.[leaf]).filter(Boolean).map((position) => distance(centerPosition, position));
+  }
+  function backboneAxis(layout, left, right) {
+    const leftPosition = layout.positions?.[left];
+    const rightPosition = layout.positions?.[right];
+    if (!leftPosition || !rightPosition) {
+      return null;
+    }
+    const dx = rightPosition.x - leftPosition.x;
+    const dy = rightPosition.y - leftPosition.y;
+    const length = Math.hypot(dx, dy);
+    if (!length) {
+      return null;
+    }
+    return { x: dx / length, y: dy / length };
+  }
+  function signedCrossAxisAngles(layout, center, leaves, axis) {
+    const centerPosition = layout.positions?.[center];
+    const normal = { x: -axis.y, y: axis.x };
+    return leaves.map((leaf) => layout.positions?.[leaf]).filter(Boolean).map((position) => (position.x - centerPosition.x) * normal.x + (position.y - centerPosition.y) * normal.y).sort((left, right) => left - right);
+  }
+  function mirrorAnglePenalty(leftValues, rightValues) {
+    const pairCount = Math.min(leftValues.length, rightValues.length);
+    let penalty = 0;
+    for (let index = 0; index < pairCount; index += 1) {
+      penalty += Math.abs(leftValues[index] + rightValues[index]) / 24;
+    }
+    return penalty + range(leftValues) / 30 + range(rightValues) / 30;
+  }
+  function midpointOf(left, right) {
+    if (!left || !right) {
+      return null;
+    }
+    return {
+      x: (left.x + right.x) / 2,
+      y: (left.y + right.y) / 2
+    };
+  }
+  function reflectAcrossAxis(point, midpoint, axis) {
+    const relative = {
+      x: point.x - midpoint.x,
+      y: point.y - midpoint.y
+    };
+    const along = relative.x * axis.x + relative.y * axis.y;
+    const alongVector = { x: axis.x * along, y: axis.y * along };
+    const normalVector = {
+      x: relative.x - alongVector.x,
+      y: relative.y - alongVector.y
+    };
+    return {
+      x: midpoint.x + alongVector.x - normalVector.x,
+      y: midpoint.y + alongVector.y - normalVector.y
+    };
+  }
+  function average(values) {
+    if (!values.length) {
+      return 0;
+    }
+    return values.reduce((sum, value) => sum + value, 0) / values.length;
+  }
+  function scoreCandidateEdgeOverlap(layout, prepared) {
+    if (!layout.loopCandidate && !prepared.topology.loopCandidate) {
+      return 0;
+    }
+    const segments = prepared.semantic.propagators.filter((edge) => !edge.metadata.hidden && edge.source !== edge.target).map((edge) => ({
+      edge,
+      from: layout.positions?.[edge.source],
+      to: layout.positions?.[edge.target]
+    })).filter((entry) => entry.from && entry.to);
+    let penalty = 0;
+    for (let leftIndex = 0; leftIndex < segments.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < segments.length; rightIndex += 1) {
+        const left = segments[leftIndex];
+        const right = segments[rightIndex];
+        if (shareEndpoint(left.edge, right.edge)) {
+          continue;
+        }
+        if (segmentsIntersect(left.from, left.to, right.from, right.to)) {
+          penalty += 35;
+        }
+      }
+    }
+    return penalty;
+  }
+  function scoreCandidateLoopReadability(layout, prepared, candidate = {}) {
+    const loop = candidate?.loop || prepared.topology.loopCandidate;
+    if (!loop) {
+      return 0;
+    }
+    const positions = loop.nodes.map((node) => layout.positions?.[node]).filter(Boolean);
+    if (positions.length !== loop.nodes.length) {
+      return 100;
+    }
+    if (positions.some((position) => !Number.isFinite(position.x) || !Number.isFinite(position.y))) {
+      return 100;
+    }
+    if (loop.type === "tadpole") {
+      const position = positions[0];
+      const minClearance = Math.min(
+        position.x - (layout.options?.marginX ?? 0),
+        (layout.width ?? 0) - (layout.options?.marginX ?? 0) - position.x,
+        position.y - (layout.options?.marginY ?? 0),
+        (layout.height ?? 0) - (layout.options?.marginY ?? 0) - position.y
+      );
+      return minClearance < 42 ? 42 - minClearance : 0;
+    }
+    const area = Math.abs(polygonArea(positions));
+    const minArea = Math.max(900, loop.nodes.length * 420);
+    const edgeLengths = positions.map((position, index) => distance(position, positions[(index + 1) % positions.length]));
+    const minEdge = Math.min(...edgeLengths);
+    const maxEdge = Math.max(...edgeLengths);
+    let penalty = 0;
+    if (area < minArea) {
+      penalty += (minArea - area) / 20;
+    }
+    if (minEdge < 42) {
+      penalty += 42 - minEdge;
+    }
+    if (maxEdge > 0 && minEdge > 0) {
+      penalty += Math.max(0, maxEdge / minEdge - 2.4) * 15;
+    }
+    return penalty;
+  }
+  function scoreLoopSymmetryRefinement(layout, prepared, candidate = {}) {
+    const loop = candidate?.loop || prepared.topology.loopCandidate;
+    if (!loop || loop.type === "tadpole") {
+      return 0;
+    }
+    const positions = loop.nodes.map((node) => layout.positions?.[node]).filter(Boolean);
+    if (positions.length !== loop.nodes.length || positions.length < 3) {
+      return 0;
+    }
+    const center = averagePosition(positions);
+    const edgeLengths = positions.map((position, index) => distance(position, positions[(index + 1) % positions.length]));
+    const radii = positions.map((position) => distance(position, center));
+    let penalty = 0;
+    penalty += range(edgeLengths) / 36;
+    penalty += range(radii) / 42;
+    if (loop.nodes.length === 3) {
+      const area = Math.abs(polygonArea(positions));
+      const perimeter = edgeLengths.reduce((sum, value) => sum + value, 0);
+      const idealArea = perimeter > 0 ? Math.sqrt(3) / 36 * perimeter * perimeter : 0;
+      if (idealArea > 0 && area < idealArea * 0.55) {
+        penalty += (idealArea * 0.55 - area) / 180;
+      }
+    }
+    if (loop.nodes.length === 4) {
+      if (!isConvexPolygon(positions)) {
+        penalty += 55;
+      }
+      const firstDiagonal = distance(positions[0], positions[2]);
+      const secondDiagonal = distance(positions[1], positions[3]);
+      const maxDiagonal = Math.max(firstDiagonal, secondDiagonal);
+      const minDiagonal = Math.min(firstDiagonal, secondDiagonal);
+      if (minDiagonal > 0) {
+        penalty += Math.max(0, maxDiagonal / minDiagonal - 1.7) * 18;
+      }
+    }
+    penalty += scoreEquivalentExternalLegLengths(layout, prepared, loop);
+    return penalty;
+  }
+  function scoreEquivalentExternalLegLengths(layout, prepared, loop) {
+    const groups = /* @__PURE__ */ new Map();
+    (loop.externalLegs || []).forEach((leg) => {
+      const externalPosition = layout.positions?.[leg.external];
+      const internalPosition = layout.positions?.[leg.internal];
+      if (!externalPosition || !internalPosition) {
+        return;
+      }
+      const role = roleFor(prepared, leg.external);
+      if (role === "none") {
+        return;
+      }
+      if (!groups.has(role)) {
+        groups.set(role, []);
+      }
+      groups.get(role).push(distance(externalPosition, internalPosition));
+    });
+    let penalty = 0;
+    groups.forEach((lengths) => {
+      if (lengths.length >= 2) {
+        penalty += range(lengths) / 28;
+      }
+    });
+    return penalty;
+  }
+  function scoreCandidateExternalLegStraightness(layout, prepared) {
+    if (!layout.loopCandidate && !prepared.topology.loopCandidate) {
+      return 0;
+    }
+    const external = new Set(prepared.semantic.externalVertices);
+    const internals = new Set(prepared.semantic.internalVertices);
+    const terminalsByRole = {
+      incoming: [],
+      outgoing: []
+    };
+    let penalty = 0;
+    prepared.semantic.propagators.filter((edge) => !edge.metadata.hidden).forEach((edge) => {
+      const externalNode = external.has(edge.source) ? edge.source : external.has(edge.target) ? edge.target : null;
+      const internalNode = internals.has(edge.source) ? edge.source : internals.has(edge.target) ? edge.target : null;
+      if (!externalNode || !internalNode) {
+        return;
+      }
+      const externalPosition = layout.positions?.[externalNode];
+      const internalPosition = layout.positions?.[internalNode];
+      if (!externalPosition || !internalPosition) {
+        return;
+      }
+      const role = roleFor(prepared, externalNode);
+      if (role === "incoming" || role === "outgoing") {
+        penalty += Math.abs(externalPosition.y - internalPosition.y) / 8;
+      }
+    });
+    prepared.semantic.externalVertices.forEach((node) => {
+      const role = roleFor(prepared, node);
+      const position = layout.positions?.[node];
+      if ((role === "incoming" || role === "outgoing") && position) {
+        terminalsByRole[role].push(position);
+      }
+    });
+    Object.values(terminalsByRole).forEach((positions) => {
+      positions.sort((left, right) => left.y - right.y).forEach((position, index) => {
+        if (index === 0) {
+          return;
+        }
+        const gap = position.y - positions[index - 1].y;
+        if (gap < 28) {
+          penalty += (28 - gap) / 2;
+        }
+      });
+    });
+    return penalty;
+  }
+  function roleFor(prepared, node) {
+    const vertex = prepared.semantic.vertices.find((entry) => entry.id === node);
+    return vertex?.externalRole || "none";
+  }
+  function shareEndpoint(left, right) {
+    return left.source === right.source || left.source === right.target || left.target === right.source || left.target === right.target;
+  }
+  function segmentsIntersect(a, b, c, d) {
+    const abC = orientation(a, b, c);
+    const abD = orientation(a, b, d);
+    const cdA = orientation(c, d, a);
+    const cdB = orientation(c, d, b);
+    return abC * abD < -1e-6 && cdA * cdB < -1e-6;
+  }
+  function orientation(a, b, c) {
+    return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+  }
+  function polygonArea(points) {
+    let area = 0;
+    points.forEach((point, index) => {
+      const next = points[(index + 1) % points.length];
+      area += point.x * next.y - next.x * point.y;
+    });
+    return area / 2;
+  }
+  function distance(left, right) {
+    return Math.hypot(left.x - right.x, left.y - right.y);
+  }
+  function averagePosition(points) {
+    return {
+      x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+      y: points.reduce((sum, point) => sum + point.y, 0) / points.length
+    };
+  }
+  function centerForNodes(layout, nodes) {
+    const points = nodes.map((node) => layout.positions?.[node]).filter(Boolean);
+    return points.length ? averagePosition(points) : null;
+  }
+  function boundingBox(points) {
+    if (!points.length) {
+      return null;
+    }
+    return {
+      minX: Math.min(...points.map((point) => point.x)),
+      maxX: Math.max(...points.map((point) => point.x)),
+      minY: Math.min(...points.map((point) => point.y)),
+      maxY: Math.max(...points.map((point) => point.y))
+    };
+  }
+  function boxesOverlap(left, right, padding = 0) {
+    return left.minX - padding <= right.maxX && left.maxX + padding >= right.minX && left.minY - padding <= right.maxY && left.maxY + padding >= right.minY;
+  }
+  function boxContains(outer, inner, padding = 0) {
+    return inner.minX >= outer.minX - padding && inner.maxX <= outer.maxX + padding && inner.minY >= outer.minY - padding && inner.maxY <= outer.maxY + padding;
+  }
+  function sharedCount(left, right) {
+    const rightSet = new Set(right);
+    return left.filter((value) => rightSet.has(value)).length;
+  }
+  function range(values) {
+    if (values.length < 2) {
+      return 0;
+    }
+    return Math.max(...values) - Math.min(...values);
+  }
+  function isConvexPolygon(points) {
+    let sign = 0;
+    for (let index = 0; index < points.length; index += 1) {
+      const previous = points[index];
+      const current = points[(index + 1) % points.length];
+      const next = points[(index + 2) % points.length];
+      const cross = orientation(previous, current, next);
+      if (Math.abs(cross) < 1e-3) {
+        continue;
+      }
+      const currentSign = Math.sign(cross);
+      if (!sign) {
+        sign = currentSign;
+      } else if (sign !== currentSign) {
+        return false;
+      }
+    }
+    return true;
+  }
+  function scoredMultiloopRegions(layout, prepared) {
+    const regions = prepared.topology.loopRegions || [];
+    const selectedIds = new Set(layout.multiloopCandidate?.regions || []);
+    const selected = selectedIds.size ? regions.filter((region) => selectedIds.has(region.id)) : [];
+    const primitive = regions.filter((region) => region.loopOrder === 1 && !(region.contains || []).length);
+    return selected.length ? selected : primitive.length ? primitive : regions;
+  }
+  function centerOfPositions(positions) {
+    const values = Object.values(positions).filter((position) => Number.isFinite(position.x) && Number.isFinite(position.y));
+    if (!values.length) {
+      return { x: 0, y: 0 };
+    }
+    return {
+      x: values.reduce((sum, position) => sum + position.x, 0) / values.length,
+      y: values.reduce((sum, position) => sum + position.y, 0) / values.length
+    };
+  }
+  function outsideTolerance(value, tolerance) {
+    return Math.max(0, value - tolerance);
+  }
+  function roundScore(value) {
+    return Math.round(value * 1e3) / 1e3;
+  }
+  var init_score = __esm({
+    "src/markfeyn/renderer/layout/score.js"() {
+      init_labels();
+      init_incremental();
+    }
+  });
+
+  // src/markfeyn/renderer/layout/symmetric-unclassified.js
+  function analyzeSymmetricUnclassifiedRefinement(semantic, topology, orientation2) {
+    if (orientation2.mode !== "symmetric") {
+      return skipped("orientation is not symmetric");
+    }
+    if (semantic.incoming.length || semantic.outgoing.length) {
+      return skipped("explicit incoming or outgoing roles are declared");
+    }
+    const visibleEdges = semantic.propagators.filter((propagator) => !propagator.metadata.hidden);
+    const adjacency = adjacencyMap(
+      semantic.vertices.map((vertex) => vertex.id),
+      visibleEdges
+    );
+    const twoCenterTree = detectTwoCenterUnclassifiedTree(semantic, topology, adjacency);
+    if (twoCenterTree) {
+      return {
+        applicable: true,
+        kind: "twoCenterTree",
+        ...twoCenterTree,
+        scope: "focused two-center unclassified tree heuristic"
+      };
+    }
+    const twoPointLoop = detectSymmetricTwoPointLoop(semantic, topology, adjacency);
+    if (twoPointLoop) {
+      return {
+        applicable: true,
+        kind: "twoPointLoop",
+        ...twoPointLoop,
+        scope: "focused symmetric two-point self-energy heuristic"
+      };
+    }
+    return skipped("topology does not match focused symmetric unclassified patterns");
+  }
+  function symmetricUnclassifiedDiagnostic(refinement) {
+    const message = refinement.applicable ? `Applied symmetric unclassified refinement: ${refinement.kind}` : `Skipped symmetric unclassified refinement: ${refinement.reason}`;
+    return {
+      stage: "symmetric-unclassified",
+      severity: "info",
+      message,
+      data: {
+        applicable: refinement.applicable,
+        kind: refinement.kind || null,
+        reason: refinement.reason || null,
+        scope: refinement.scope || "focused tree and two-point-loop heuristic, not full automorphism solving",
+        leftCenter: refinement.leftCenter || null,
+        rightCenter: refinement.rightCenter || null,
+        leftLeaves: refinement.leftLeaves || null,
+        rightLeaves: refinement.rightLeaves || null,
+        centerExternal: refinement.centerExternal || null,
+        centerAttachedCenter: refinement.centerAttachedCenter || null,
+        loopEndpoints: refinement.loopEndpoints || null,
+        externalLegs: refinement.externalLegs || null
+      }
+    };
+  }
+  function skipped(reason) {
+    return {
+      applicable: false,
+      reason,
+      scope: "focused tree and two-point-loop heuristic, not full automorphism solving"
+    };
+  }
+  function detectTwoCenterUnclassifiedTree(semantic, topology, adjacency) {
+    if (topology.detectedTopology !== "tree") {
+      return null;
+    }
+    const internals = semantic.internalVertices.slice().sort(compareStable);
+    if (internals.length !== 2) {
+      return null;
+    }
+    const [centerA, centerB] = internals;
+    const unclassified = new Set(semantic.unclassified);
+    if (!adjacency.get(centerA)?.has(centerB)) {
+      return null;
+    }
+    const leavesA = unclassifiedNeighbors(adjacency, centerA, centerB, unclassified);
+    const leavesB = unclassifiedNeighbors(adjacency, centerB, centerA, unclassified);
+    if (!leavesA.length || !leavesB.length) {
+      return null;
+    }
+    if (Math.abs(leavesA.length - leavesB.length) > 1) {
+      return null;
+    }
+    if (!onlyAllowedNeighbors(adjacency, centerA, centerB, unclassified, leavesA)) {
+      return null;
+    }
+    if (!onlyAllowedNeighbors(adjacency, centerB, centerA, unclassified, leavesB)) {
+      return null;
+    }
+    let ordered = orderTwoCenterSides(semantic, centerA, centerB, leavesA, leavesB);
+    const allLeaves = [...ordered.leftLeaves, ...ordered.rightLeaves];
+    let centerExternal = null;
+    let centerAttachedCenter = null;
+    if (allLeaves.length % 2 === 1) {
+      centerExternal = medianExternalLeaf(semantic, allLeaves);
+      centerAttachedCenter = ordered.leftLeaves.includes(centerExternal) ? ordered.leftCenter : ordered.rightCenter;
+      ordered = {
+        ...ordered,
+        leftLeaves: ordered.leftLeaves.filter((leaf) => leaf !== centerExternal),
+        rightLeaves: ordered.rightLeaves.filter((leaf) => leaf !== centerExternal)
+      };
+    }
+    return {
+      leftCenter: ordered.leftCenter,
+      rightCenter: ordered.rightCenter,
+      leftLeaves: ordered.leftLeaves,
+      rightLeaves: ordered.rightLeaves,
+      centerExternal,
+      centerAttachedCenter,
+      backbone: [ordered.leftCenter, ordered.rightCenter]
+    };
+  }
+  function detectSymmetricTwoPointLoop(semantic, topology, adjacency) {
+    if (topology.detectedTopology !== "selfEnergy") {
+      return null;
+    }
+    const bubble = (topology.selfEnergyBubbles || []).find((group) => group.internal && group.edges.length >= 2);
+    if (!bubble) {
+      return null;
+    }
+    const [endpointA, endpointB] = bubble.nodes.slice().sort(compareStable);
+    const internals = new Set(semantic.internalVertices);
+    const unclassified = new Set(semantic.unclassified);
+    if (internals.size !== 2) {
+      return null;
+    }
+    const legA = externalLegForEndpoint(adjacency, endpointA, endpointB, unclassified, internals);
+    const legB = externalLegForEndpoint(adjacency, endpointB, endpointA, unclassified, internals);
+    if (!legA || !legB) {
+      return null;
+    }
+    if (unclassified.size !== 2) {
+      return null;
+    }
+    return {
+      loopEndpoints: [endpointA, endpointB],
+      externalLegs: [
+        { external: legA, internal: endpointA },
+        { external: legB, internal: endpointB }
+      ],
+      bubbleId: bubble.id
+    };
+  }
+  function unclassifiedNeighbors(adjacency, center, otherInternal, unclassified) {
+    return Array.from(adjacency.get(center) || []).filter((neighbor) => neighbor !== otherInternal && unclassified.has(neighbor)).sort(compareStable);
+  }
+  function orderTwoCenterSides(semantic, centerA, centerB, leavesA, leavesB) {
+    const orderA = earliestDeclarationIndex(semantic, leavesA);
+    const orderB = earliestDeclarationIndex(semantic, leavesB);
+    if (orderA <= orderB) {
+      return {
+        leftCenter: centerA,
+        rightCenter: centerB,
+        leftLeaves: leavesA,
+        rightLeaves: leavesB
+      };
+    }
+    return {
+      leftCenter: centerB,
+      rightCenter: centerA,
+      leftLeaves: leavesB,
+      rightLeaves: leavesA
+    };
+  }
+  function earliestDeclarationIndex(semantic, leaves) {
+    const indices = leaves.map((id) => declarationIndexFor(semantic, id));
+    return Math.min(...indices);
+  }
+  function declarationIndexFor(semantic, id) {
+    const vertex = semantic.vertices.find((entry) => entry.id === id);
+    return vertex?.metadata?.declarationIndex ?? Number.MAX_SAFE_INTEGER;
+  }
+  function medianExternalLeaf(semantic, leaves) {
+    const sorted = leaves.slice().sort((left, right) => declarationIndexFor(semantic, left) - declarationIndexFor(semantic, right) || compareStable(left, right));
+    return sorted[Math.floor(sorted.length / 2)];
+  }
+  function onlyAllowedNeighbors(adjacency, center, otherInternal, unclassified, leaves) {
+    const allowed = /* @__PURE__ */ new Set([otherInternal, ...leaves]);
+    return Array.from(adjacency.get(center) || []).every((neighbor) => allowed.has(neighbor));
+  }
+  function externalLegForEndpoint(adjacency, endpoint, otherEndpoint, unclassified, internals) {
+    const neighbors = Array.from(adjacency.get(endpoint) || []).filter((neighbor2) => neighbor2 !== otherEndpoint);
+    if (neighbors.length !== 1) {
+      return null;
+    }
+    const [neighbor] = neighbors;
+    if (!unclassified.has(neighbor) || internals.has(neighbor)) {
+      return null;
+    }
+    return neighbor;
+  }
+  var init_symmetric_unclassified = __esm({
+    "src/markfeyn/renderer/layout/symmetric-unclassified.js"() {
+      init_topology();
+      init_model();
+    }
+  });
+
+  // src/markfeyn/renderer/layout/multiloop.js
+  function analyzeMultiloop(semantic, topology) {
+    const regions = (topology.loopRegions || []).filter((region) => region.loopOrder > 0).sort(compareRegion);
+    return {
+      applicable: topology.loopOrder > 1 && regions.length > 0,
+      kind: topology.multiLoop?.kind || "unknown",
+      loopOrder: topology.loopOrder,
+      regions,
+      principalSkeleton: topology.principalSkeleton || null,
+      diagnostics: regions.length ? [] : [{
+        code: "no-loop-regions",
+        message: "No loop regions were available for multiloop candidate placement."
+      }]
+    };
+  }
+  function multiloopDiagnostic(multiloop) {
+    return {
+      stage: "multiloop",
+      severity: multiloop?.applicable ? "info" : "warning",
+      message: multiloop?.applicable ? `Multiloop decomposition: ${multiloop.kind}` : "Multiloop decomposition unavailable",
+      data: {
+        applicable: Boolean(multiloop?.applicable),
+        kind: multiloop?.kind || null,
+        loopOrder: multiloop?.loopOrder || 0,
+        regions: (multiloop?.regions || []).map((region) => ({
+          id: region.id,
+          kind: region.kind,
+          loopOrder: region.loopOrder,
+          nodes: region.nodes,
+          cycles: region.cycles
+        })),
+        diagnostics: multiloop?.diagnostics || []
+      }
+    };
+  }
+  function hasMultiloopLayout(prepared) {
+    return Boolean(prepared?.multiloop?.applicable && prepared.topology.detectedTopology === "multiLoop");
+  }
+  function selectMultiloopLayout(prepared, layoutOptions = {}) {
+    if (!hasMultiloopLayout(prepared)) {
+      return null;
+    }
+    const candidates = generateMultiloopCandidates(prepared, layoutOptions).map((candidate) => ({
+      ...candidate,
+      score: scoreMultiloopCandidate(candidate.layout, prepared, candidate)
+    })).sort(compareScoredCandidates);
+    if (!candidates.length) {
+      return null;
+    }
+    const selected = candidates[0];
+    const selectedSummary = summarizeCandidate(selected, true);
+    selected.layout.multiloopCandidate = selectedSummary;
+    return {
+      layout: selected.layout,
+      selection: {
+        selected: selectedSummary,
+        candidates: candidates.map((candidate) => summarizeCandidate(candidate, candidate === selected))
+      }
+    };
+  }
+  function generateMultiloopCandidates(prepared, layoutOptions) {
+    const limit = candidateLimit(layoutOptions.quality);
+    const variants = [
+      { id: "canonical", laneSign: 1, reflected: false },
+      { id: "reflected", laneSign: -1, reflected: true },
+      { id: "upper-first", laneSign: 1, reflected: true },
+      { id: "lower-first", laneSign: -1, reflected: false }
+    ].slice(0, limit);
+    return variants.map((variant) => buildCandidate(prepared, layoutOptions, variant));
+  }
+  function buildCandidate(prepared, layoutOptions, variant) {
+    const positions = initialPositions(prepared, layoutOptions);
+    const regions = primaryRegions(prepared.multiloop.regions);
+    const sharedNodes = sharedCycleNodes(regions);
+    const center = { x: layoutOptions.width / 2, y: layoutOptions.height / 2 };
+    const radius = regionRadius(layoutOptions, regions);
+    const regionGap = regionGapFor(prepared, layoutOptions, regions, radius);
+    sharedNodes.forEach((node) => {
+      if (prepared.multiloop.kind !== "overlapping" || sharedNodes.length === 1) {
+        positions[node] = positionForKind(center.x, center.y, "internal", layoutOptions);
+      }
+    });
+    placeNestedSharedPointRegions(prepared, positions, regions, sharedNodes, center, layoutOptions);
+    placeOverlappingSharedPointRegions(prepared, positions, regions, sharedNodes, center, layoutOptions);
+    regions.forEach((region, index) => {
+      const regionCenter = regionCenterFor(
+        prepared,
+        layoutOptions,
+        regions,
+        index,
+        radius,
+        regionGap,
+        variant,
+        center
+      );
+      const orderedNodes = orderedRegionNodes(region, variant);
+      const angles = regionAngles(region, orderedNodes.length, variant);
+      orderedNodes.forEach((node, nodeIndex) => {
+        if (positions[node]) {
+          return;
+        }
+        positions[node] = positionForKind(
+          regionCenter.x + Math.cos(angles[nodeIndex]) * radius.x,
+          regionCenter.y + Math.sin(angles[nodeIndex]) * radius.y,
+          "internal",
+          layoutOptions
+        );
+      });
+    });
+    placeRemainingInternals(prepared, positions, center, layoutOptions);
+    placeExternalVertices(prepared, positions, center, layoutOptions);
+    return {
+      id: `multiloop:${prepared.multiloop.kind}:${variant.id}`,
+      variant,
+      regions,
+      layout: {
+        width: layoutOptions.width,
+        height: layoutOptions.height,
+        positions,
+        options: layoutOptions,
+        multiloopCandidate: {
+          id: `multiloop:${prepared.multiloop.kind}:${variant.id}`,
+          kind: prepared.multiloop.kind,
+          regions: regions.map((region) => region.id)
+        }
+      }
+    };
+  }
+  function placeOverlappingSharedPointRegions(prepared, positions, regions, sharedNodes, center, layoutOptions) {
+    if (prepared.multiloop.kind !== "overlapping" || sharedNodes.length !== 1 || regions.length < 2) {
+      return;
+    }
+    const shared = sharedNodes[0];
+    const verticalGap = Math.max(70, layoutOptions.height * 0.22);
+    const horizontalGap = Math.max(96, layoutOptions.width * 0.17);
+    regions.forEach((region, index) => {
+      if (!region.nodes.includes(shared)) {
+        return;
+      }
+      const nonShared = region.nodes.filter((node) => node !== shared).sort(compareStable);
+      const y = center.y + (index - (regions.length - 1) / 2) * verticalGap;
+      const slots = [
+        { x: center.x - horizontalGap, y },
+        { x: center.x + horizontalGap, y },
+        { x: center.x, y: y + (index === 0 ? -verticalGap * 0.55 : verticalGap * 0.55) }
+      ];
+      const usedSlots = /* @__PURE__ */ new Set();
+      nonShared.forEach((node, nodeIndex) => {
+        if (positions[node]) {
+          return;
+        }
+        const slotIndex = nestedSlotIndex(prepared, node, usedSlots, nodeIndex);
+        usedSlots.add(slotIndex);
+        const slot = slots[Math.min(slotIndex, slots.length - 1)];
+        positions[node] = positionForKind(slot.x, slot.y, "internal", layoutOptions);
+      });
+    });
+  }
+  function placeNestedSharedPointRegions(prepared, positions, regions, sharedNodes, center, layoutOptions) {
+    if (prepared.multiloop.kind !== "nested" || sharedNodes.length !== 1 || regions.length < 2) {
+      return;
+    }
+    const shared = sharedNodes[0];
+    const verticalGap = Math.max(70, layoutOptions.height * 0.22);
+    const horizontalGap = Math.max(96, layoutOptions.width * 0.17);
+    regions.forEach((region, index) => {
+      if (!region.nodes.includes(shared)) {
+        return;
+      }
+      const nonShared = region.nodes.filter((node) => node !== shared).sort(compareStable);
+      const y = center.y + (index - (regions.length - 1) / 2) * verticalGap;
+      const slots = [
+        { x: center.x - horizontalGap, y },
+        { x: center.x + horizontalGap, y },
+        { x: center.x, y: y + (index === 0 ? -verticalGap * 0.55 : verticalGap * 0.55) }
+      ];
+      const usedSlots = /* @__PURE__ */ new Set();
+      nonShared.forEach((node, nodeIndex) => {
+        if (positions[node]) {
+          return;
+        }
+        const slotIndex = nestedSlotIndex(prepared, node, usedSlots, nodeIndex);
+        usedSlots.add(slotIndex);
+        const slot = slots[Math.min(slotIndex, slots.length - 1)];
+        positions[node] = positionForKind(slot.x, slot.y, "internal", layoutOptions);
+      });
+    });
+  }
+  function primaryRegions(regions) {
+    const primitiveCycles = regions.filter((region) => region.loopOrder === 1 && !(region.contains || []).length).sort(compareRegion);
+    const cycles = regions.filter((region) => region.loopOrder === 1).sort(compareRegion);
+    const candidates = primitiveCycles.length ? primitiveCycles : cycles;
+    return (candidates.length ? candidates : regions).slice(0, 8);
+  }
+  function regionRadius(layoutOptions, regions) {
+    const availableWidth = Math.max(120, layoutOptions.width - 2 * layoutOptions.marginX);
+    const availableHeight = Math.max(100, layoutOptions.height - 2 * layoutOptions.marginY);
+    const count = Math.max(1, regions.length);
+    if (count >= 3) {
+      return {
+        x: Math.max(40, Math.min(70, availableWidth / (count * 2.55))),
+        y: Math.max(36, Math.min(58, availableHeight / 4.2))
+      };
+    }
+    return {
+      x: Math.max(46, Math.min(86, layoutOptions.width / 6)),
+      y: Math.max(42, Math.min(72, layoutOptions.height / 4))
+    };
+  }
+  function regionGapFor(prepared, layoutOptions, regions, radius) {
+    const count = regions.length;
+    if (count <= 1) {
+      return 0;
+    }
+    const availableWidth = Math.max(0, layoutOptions.width - 2 * layoutOptions.marginX - 2 * radius.x);
+    const evenGap = availableWidth / (count - 1);
+    if (prepared.multiloop.kind === "disjoint" || count >= 3) {
+      return evenGap;
+    }
+    return Math.max(radius.x * 1.2, layoutOptions.width / Math.max(4, count + 2));
+  }
+  function regionCenterFor(prepared, layoutOptions, regions, index, radius, regionGap, variant, center) {
+    const count = regions.length;
+    const region = regions[index];
+    const y = center.y + variant.laneSign * laneOffset(prepared, region, index, radius.y);
+    if (count <= 1) {
+      return { x: center.x, y };
+    }
+    if (prepared.multiloop.kind === "disjoint" || count >= 3) {
+      const left = layoutOptions.marginX + radius.x;
+      return {
+        x: left + regionGap * index,
+        y
+      };
+    }
+    return {
+      x: center.x + (index - (count - 1) / 2) * regionGap,
+      y
+    };
+  }
+  function initialPositions(prepared, layoutOptions) {
+    const positions = {};
+    prepared.semantic.vertices.forEach((vertex) => {
+      if (!vertex.positionHint) {
+        return;
+      }
+      positions[vertex.id] = positionForKind(
+        vertex.positionHint.x,
+        vertex.positionHint.y,
+        kindForRole(vertex.externalRole),
+        layoutOptions
+      );
+    });
+    return positions;
+  }
+  function sharedCycleNodes(regions) {
+    const counts = /* @__PURE__ */ new Map();
+    regions.forEach((region) => {
+      region.nodes.forEach((node) => counts.set(node, (counts.get(node) || 0) + 1));
+    });
+    return Array.from(counts.entries()).filter(([, count]) => count > 1).map(([node]) => node).sort(compareStable);
+  }
+  function orderedRegionNodes(region, variant) {
+    const nodes = region.nodes.slice().sort(compareStable);
+    return variant.reflected ? nodes.reverse() : nodes;
+  }
+  function regionAngles(region, count, variant) {
+    if (region.kind === "box" && count === 4) {
+      const base = [-0.72 * Math.PI, -0.28 * Math.PI, 0.28 * Math.PI, 0.72 * Math.PI];
+      return variant.reflected ? base.slice().reverse() : base;
+    }
+    const start = region.kind === "triangle" ? -Math.PI / 2 : -Math.PI;
+    return Array.from({ length: count }, (_, index) => start + 2 * Math.PI * index / count);
+  }
+  function laneOffset(prepared, region, index, radiusY) {
+    if (prepared.multiloop.kind === "disjoint") {
+      return 0;
+    }
+    if (prepared.multiloop.kind === "nested") {
+      return index % 2 === 0 ? -radiusY * 0.45 : radiusY * 0.45;
+    }
+    return (index % 2 === 0 ? -1 : 1) * radiusY * 0.35;
+  }
+  function placeRemainingInternals(prepared, positions, center, layoutOptions) {
+    const placed = new Set(Object.keys(positions));
+    const internals = prepared.semantic.internalVertices.filter((node) => !placed.has(node)).sort(compareStable);
+    const gap = Math.max(54, Math.min(layoutOptions.width, layoutOptions.height) * 0.16);
+    internals.forEach((node, index) => {
+      const angle = -Math.PI / 2 + Math.PI * (index + 1) / (internals.length + 1);
+      positions[node] = positionForKind(
+        center.x + Math.cos(angle) * gap,
+        center.y + Math.sin(angle) * gap,
+        "internal",
+        layoutOptions
+      );
+    });
+  }
+  function placeExternalVertices(prepared, positions, center, layoutOptions) {
+    const external = prepared.semantic.externalVertices.slice().sort((left, right) => compareExternal(prepared, left, right));
+    const byNeighbor = /* @__PURE__ */ new Map();
+    external.forEach((node) => {
+      if (positions[node]) {
+        return;
+      }
+      const neighbor = firstPositionedNeighbor(prepared, positions, node);
+      const key = neighbor || "unanchored";
+      if (!byNeighbor.has(key)) {
+        byNeighbor.set(key, []);
+      }
+      byNeighbor.get(key).push(node);
+    });
+    byNeighbor.forEach((nodes, neighbor) => {
+      const anchor = positions[neighbor] || center;
+      nodes.slice().sort((left, right) => compareExternal(prepared, left, right)).forEach((node, index) => {
+        const role = roleFor2(prepared, node);
+        const offset = stackOffset(index, nodes.length);
+        let point;
+        if (role === "incoming") {
+          point = { x: layoutOptions.marginX, y: anchor.y + offset };
+        } else if (role === "outgoing") {
+          point = { x: layoutOptions.width - layoutOptions.marginX, y: anchor.y + offset };
+        } else {
+          const direction = outwardUnit(anchor, center, fallbackAngle(node));
+          point = {
+            x: anchor.x + direction.x * Math.max(72, layoutOptions.width * 0.2),
+            y: anchor.y + direction.y * Math.max(56, layoutOptions.height * 0.22) + offset
+          };
+        }
+        positions[node] = positionForKind(point.x, point.y, kindForRole(role), layoutOptions);
+      });
+    });
+  }
+  function firstPositionedNeighbor(prepared, positions, node) {
+    const edge = prepared.semantic.propagators.filter((propagator) => !propagator.metadata.hidden).find((propagator) => propagator.source === node && positions[propagator.target] || propagator.target === node && positions[propagator.source]);
+    if (!edge) {
+      return null;
+    }
+    return edge.source === node ? edge.target : edge.source;
+  }
+  function compareExternal(prepared, left, right) {
+    const order = new Map((prepared.externalOrdering?.all || []).map((entry, index) => [entry.id, index]));
+    if (order.has(left) && order.has(right)) {
+      return order.get(left) - order.get(right);
+    }
+    return compareStable(left, right);
+  }
+  function nestedSlotIndex(prepared, node, usedSlots, fallbackIndex) {
+    const roles = attachedExternalRoles(prepared, node);
+    if (roles.has("incoming") && !usedSlots.has(0)) {
+      return 0;
+    }
+    if (roles.has("outgoing") && !usedSlots.has(1)) {
+      return 1;
+    }
+    return [0, 1, 2].find((slot) => !usedSlots.has(slot)) ?? fallbackIndex;
+  }
+  function attachedExternalRoles(prepared, node) {
+    const roles = /* @__PURE__ */ new Set();
+    const external = new Set(prepared.semantic.externalVertices);
+    prepared.semantic.propagators.filter((propagator) => !propagator.metadata.hidden).forEach((propagator) => {
+      const neighbor = propagator.source === node ? propagator.target : propagator.target === node ? propagator.source : null;
+      if (neighbor && external.has(neighbor)) {
+        roles.add(roleFor2(prepared, neighbor));
+      }
+    });
+    return roles;
+  }
+  function roleFor2(prepared, node) {
+    return prepared.semantic.vertices.find((vertex) => vertex.id === node)?.externalRole || "unclassified";
+  }
+  function kindForRole(role) {
+    if (role === "incoming" || role === "outgoing") {
+      return role;
+    }
+    if (role === "unclassified") {
+      return "external";
+    }
+    return "internal";
+  }
+  function positionForKind(x, y, kind, layoutOptions) {
+    return {
+      x: Math.max(layoutOptions.marginX, Math.min(layoutOptions.width - layoutOptions.marginX, x)),
+      y: Math.max(layoutOptions.marginY, Math.min(layoutOptions.height - layoutOptions.marginY, y)),
+      kind
+    };
+  }
+  function stackOffset(index, count) {
+    return (index - (count - 1) / 2) * 38;
+  }
+  function outwardUnit(anchor, center, fallbackAngleValue) {
+    const dx = anchor.x - center.x;
+    const dy = anchor.y - center.y;
+    const length = Math.hypot(dx, dy);
+    if (length > 1e-6) {
+      return { x: dx / length, y: dy / length };
+    }
+    return { x: Math.cos(fallbackAngleValue), y: Math.sin(fallbackAngleValue) };
+  }
+  function fallbackAngle(node) {
+    const text = String(node);
+    let hash = 0;
+    for (let index = 0; index < text.length; index += 1) {
+      hash = (hash * 31 + text.charCodeAt(index)) % 997;
+    }
+    return 2 * Math.PI * hash / 997;
+  }
+  function scoreMultiloopCandidate(layout, prepared, candidate) {
+    const finitePenalty = Object.values(layout.positions).filter((position) => !Number.isFinite(position.x) || !Number.isFinite(position.y)).length * 1e3;
+    const regionPenalty = candidate.regions.reduce((sum, region) => {
+      const points = region.nodes.map((node) => layout.positions[node]).filter(Boolean);
+      return sum + (Math.abs(polygonArea2(points)) < 200 ? 250 : 0);
+    }, 0);
+    const overlapPenalty = sharedCycleNodes(candidate.regions).length && prepared.multiloop.kind === "overlapping" ? 0 : 10;
+    const externalPenalty = prepared.semantic.externalVertices.reduce((sum, node) => layout.positions[node] ? sum : sum + 100, 0);
+    return {
+      total: finitePenalty + regionPenalty + overlapPenalty + externalPenalty,
+      breakdown: {
+        finitePenalty,
+        regionPenalty,
+        overlapPenalty,
+        externalPenalty
+      }
+    };
+  }
+  function polygonArea2(points) {
+    if (points.length < 3) {
+      return 0;
+    }
+    let area = 0;
+    points.forEach((point, index) => {
+      const next = points[(index + 1) % points.length];
+      area += point.x * next.y - next.x * point.y;
+    });
+    return area / 2;
+  }
+  function candidateLimit(quality) {
+    if (quality === "high") {
+      return 4;
+    }
+    if (quality === "fast") {
+      return 1;
+    }
+    return 2;
+  }
+  function compareScoredCandidates(left, right) {
+    return left.score.total - right.score.total || compareStable(left.id, right.id);
+  }
+  function summarizeCandidate(candidate, selected) {
+    return {
+      id: candidate.id,
+      selected,
+      kind: candidate.layout.multiloopCandidate.kind,
+      regions: candidate.layout.multiloopCandidate.regions,
+      variant: candidate.variant,
+      score: candidate.score
+    };
+  }
+  function compareRegion(left, right) {
+    return left.loopOrder - right.loopOrder || left.nodes.length - right.nodes.length || compareStable(left.id, right.id);
+  }
+  var init_multiloop = __esm({
+    "src/markfeyn/renderer/layout/multiloop.js"() {
+      init_model();
+    }
+  });
+
+  // src/markfeyn/renderer/layout/layout.js
+  function prepareFeynmanLayout(diagram, options = {}) {
+    const profile = createProfile(options);
+    const semantic = profile.measure("semantic", () => createSemanticDiagram(diagram));
+    const validation = profile.measure("validation", () => validateSemanticDiagram(semantic));
+    const topology = profile.measure("topology", () => analyzeTopology(semantic));
+    const orientation2 = profile.measure("orientation", () => analyzeOrientation(semantic, topology, options));
+    const incremental = analyzeIncrementalStability(semantic, options);
+    const externalOrdering = profile.measure("external-order", () => analyzeExternalOrdering(semantic, {
+      ...options,
+      previousLayout: incremental.previousLayout
+    }));
+    const layoutOptionsHint = { ...semantic.source.options || {}, ...options };
+    const inferredPorts = profile.measure("port-constraints", () => inferredPortDiagnostics(semantic, layoutOptionsHint, externalOrdering, orientation2));
+    const parallelCurvePlan = profile.measure("parallel-edges", () => parallelPropagatorCurvePlan(topology));
+    const symmetricUnclassified = profile.measure("symmetric-unclassified", () => analyzeSymmetricUnclassifiedRefinement(semantic, topology, orientation2));
+    const multiloop = profile.measure("multiloop", () => analyzeMultiloop(semantic, topology));
+    const diagnostics = [
+      ...parseWarningDiagnostics(semantic.source.warnings),
+      ...validation.diagnostics,
+      info(`Detected topology: ${topology.detectedTopology}`, "topology", {
+        topology: topology.detectedTopology,
+        confidence: topology.confidence,
+        loopOrder: topology.loopOrder,
+        cycles: topology.cycles,
+        loopCandidate: topology.loopCandidate,
+        parallelEdgeGroups: topology.parallelEdgeGroups,
+        selfEnergyBubbles: topology.selfEnergyBubbles,
+        limitations: topology.limitations
+      }),
+      ...topologyLimitDiagnostics(topology),
+      info(`Orientation mode: ${orientation2.mode}`, "orientation", {
+        mode: orientation2.mode,
+        evidence: orientation2.evidence,
+        ambiguities: orientation2.ambiguities
+      }),
+      externalOrderingDiagnostic(externalOrdering),
+      info("Layered port constraints prepared", "port-constraints", inferredPorts),
+      info("Parallel propagator groups prepared", "parallel-edges", {
+        groups: topology.parallelEdgeGroups,
+        curvePlan: parallelCurvePlan
+      }),
+      multiloopDiagnostic(multiloop),
+      incrementalDiagnostic(incremental),
+      symmetricUnclassifiedDiagnostic(symmetricUnclassified)
+    ];
+    return {
+      semantic,
+      validation,
+      topology,
+      orientation: orientation2,
+      externalOrdering,
+      diagnostics,
+      compatibleDiagram: createCompatibilityDiagram(diagram, semantic),
+      inferredPorts,
+      parallelCurvePlan,
+      symmetricUnclassified,
+      multiloop,
+      incremental,
+      profile
+    };
+  }
+  function shouldUseSymmetricContactLayout(prepared) {
+    const fixedTikzNoRoleContact = prepared.orientation.mode === "fixed" && prepared.orientation.evidence?.includes("explicit TikZ-Feynman orientation command") && !prepared.semantic.incoming.length && !prepared.semantic.outgoing.length;
+    return (prepared.orientation.mode === "symmetric" || fixedTikzNoRoleContact) && prepared.topology.detectedTopology === "contactInteraction";
+  }
+  function shouldUseSymmetricUnclassifiedLayout(prepared) {
+    return Boolean(prepared.symmetricUnclassified?.applicable);
+  }
+  function shouldUseSymmetricTreeLayout(prepared) {
+    return prepared.orientation.mode === "symmetric" && (prepared.topology.detectedTopology === "tree" || prepared.topology.detectedTopology === "decay") && !shouldUseSymmetricUnclassifiedLayout(prepared);
+  }
+  function attachLayoutAnalysis(layout, prepared, debug = {}) {
+    const labelPlacementStartedAt = now();
+    const labelPlacement = resolveLabelPlacement(layout, prepared);
+    prepared.profile?.push("label-placement", now() - labelPlacementStartedAt);
+    layout.labelPlacement = labelPlacement;
+    const scoreStartedAt = now();
+    const score = scoreLayout(layout, prepared);
+    prepared.profile?.push("score", now() - scoreStartedAt);
+    layout.analysis = {
+      topology: prepared.topology,
+      orientation: prepared.orientation,
+      externalOrdering: prepared.externalOrdering,
+      validation: prepared.validation
+    };
+    layout.score = score;
+    layout.diagnostics = [
+      ...prepared.diagnostics,
+      ...loopCandidateDiagnostics(prepared),
+      labelPlacementDiagnostic(labelPlacement),
+      scoreDiagnostic(score)
+    ];
+    if (debug.enabled) {
+      layout.debug = {
+        semanticGraph: prepared.semantic,
+        compiledElkGraph: debug.elkGraph || null,
+        elkGraph: debug.elkGraph || null,
+        inferredPorts: prepared.inferredPorts.constraints,
+        portConstraints: prepared.inferredPorts,
+        externalOrdering: prepared.externalOrdering,
+        parallelCurvePlan: prepared.parallelCurvePlan,
+        loopCandidates: prepared.loopCandidateSelection || null,
+        multiloopCandidates: prepared.multiloopCandidateSelection || null,
+        labelPlacement,
+        profile: prepared.profile?.entries || null,
+        constraints: {
+          ports: prepared.inferredPorts.constraints,
+          portConstraints: prepared.inferredPorts
+        }
+      };
+    }
+    return layout;
+  }
+  function info(message, stage, data = {}) {
+    return {
+      stage,
+      severity: "info",
+      message,
+      data
+    };
+  }
+  function parseWarningDiagnostics(warnings = []) {
+    return warnings.map((warning2) => ({
+      stage: "parse",
+      severity: "warning",
+      message: warning2,
+      data: {}
+    }));
+  }
+  function loopCandidateDiagnostics(prepared) {
+    const selected = prepared.loopCandidateSelection?.selected;
+    if (!selected) {
+      return [];
+    }
+    return [
+      info(
+        selected.labelAware ? `Selected label-aware loop candidate: ${selected.id}${selected.labelInfluenced ? " (label score changed baseline choice)" : ""}` : `Selected loop candidate: ${selected.id}`,
+        "loop-candidate",
+        selected
+      )
+    ];
+  }
+  function createProfile(options) {
+    const enabled = Boolean(options.debug || options.profile);
+    const entries = [];
+    return {
+      entries,
+      measure(stage, callback) {
+        if (!enabled) {
+          return callback();
+        }
+        const startedAt = now();
+        const result = callback();
+        entries.push({ stage, ms: roundMs(now() - startedAt) });
+        return result;
+      },
+      push(stage, ms) {
+        if (enabled) {
+          entries.push({ stage, ms: roundMs(ms) });
+        }
+      }
+    };
+  }
+  function now() {
+    return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+  }
+  function roundMs(value) {
+    return Number(value.toFixed(3));
+  }
+  function topologyLimitDiagnostics(topology) {
+    return (topology.limitations || []).map((limitation) => ({
+      stage: "topology",
+      severity: "warning",
+      message: limitation.message,
+      data: limitation
+    }));
+  }
+  var init_layout = __esm({
+    "src/markfeyn/renderer/layout/layout.js"() {
+      init_model();
+      init_validate();
+      init_topology();
+      init_orientation();
+      init_elk_compiler();
+      init_external_order();
+      init_parallel();
+      init_score();
+      init_symmetric_unclassified();
+      init_multiloop();
+      init_incremental();
+      init_labels();
+    }
+  });
+
+  // src/markfeyn/renderer/layout-engine.js
+  function createLayoutEngine(helpers) {
+    return {
+      async layoutFeynman(diagram, options) {
+        const prepared = prepareFeynmanLayout(diagram, options);
+        const layoutDiagram = prepared.compatibleDiagram;
+        const layoutOptions = helpers.resolveLayoutOptions(layoutDiagram, options);
+        let rawLayout;
+        helpers.applyParallelPropagatorCurves(layoutDiagram, prepared);
+        try {
+          const layoutStartedAt = helpers.profileNow();
+          rawLayout = await helpers.layoutFeynmanPreparedRaw(layoutDiagram, layoutOptions, prepared);
+          prepared.profile?.push("layout", helpers.profileNow() - layoutStartedAt);
+        } catch (error2) {
+          const fallbackStartedAt = helpers.profileNow();
+          rawLayout = helpers.layoutFeynmanPreparedFallbackRaw(layoutDiagram, layoutOptions, prepared);
+          prepared.profile?.push("layout-fallback", helpers.profileNow() - fallbackStartedAt);
+        }
+        const finalLayout = applyIncrementalStability(
+          helpers.finalizeLayout(layoutDiagram, rawLayout, layoutOptions),
+          prepared.incremental
+        );
+        return attachLayoutAnalysis(
+          finalLayout,
+          prepared,
+          { enabled: layoutOptions.debug || layoutOptions.profile, elkGraph: prepared.compiledElkGraph }
+        );
+      },
+      layoutFeynmanFallbackSync(diagram, options) {
+        const prepared = prepareFeynmanLayout(diagram, options);
+        const layoutDiagram = prepared.compatibleDiagram;
+        const layoutOptions = helpers.resolveLayoutOptions(layoutDiagram, options);
+        helpers.applyParallelPropagatorCurves(layoutDiagram, prepared);
+        const fallbackStartedAt = helpers.profileNow();
+        const rawLayout = helpers.layoutFeynmanPreparedFallbackRaw(layoutDiagram, layoutOptions, prepared);
+        prepared.profile?.push("layout-fallback", helpers.profileNow() - fallbackStartedAt);
+        return attachLayoutAnalysis(
+          applyIncrementalStability(
+            helpers.finalizeLayout(layoutDiagram, rawLayout, layoutOptions),
+            prepared.incremental
+          ),
+          prepared,
+          { enabled: layoutOptions.debug || layoutOptions.profile, elkGraph: prepared.compiledElkGraph }
+        );
+      }
+    };
+  }
+  var init_layout_engine = __esm({
+    "src/markfeyn/renderer/layout-engine.js"() {
+      init_incremental();
+      init_layout();
+    }
+  });
+
   // node_modules/elkjs/lib/elk.bundled.js
   var require_elk_bundled = __commonJS({
     "node_modules/elkjs/lib/elk.bundled.js"(exports, module) {
@@ -130,11 +4807,11 @@
             }
             return ("string" === r ? String : Number)(t);
           }
-          var ELK = exports3["default"] = /* @__PURE__ */ (function() {
-            function ELK2() {
+          var ELK2 = exports3["default"] = /* @__PURE__ */ (function() {
+            function ELK3() {
               var _this = this;
               var _ref = arguments.length > 0 && arguments[0] !== void 0 ? arguments[0] : {}, _ref$defaultLayoutOpt = _ref.defaultLayoutOptions, defaultLayoutOptions = _ref$defaultLayoutOpt === void 0 ? {} : _ref$defaultLayoutOpt, _ref$algorithms = _ref.algorithms, algorithms = _ref$algorithms === void 0 ? ["layered", "stress", "mrtree", "radial", "force", "disco", "sporeOverlap", "sporeCompaction", "rectpacking"] : _ref$algorithms, workerFactory = _ref.workerFactory, workerUrl = _ref.workerUrl;
-              _classCallCheck(this, ELK2);
+              _classCallCheck(this, ELK3);
               this.defaultLayoutOptions = defaultLayoutOptions;
               this.initialized = false;
               if (typeof workerUrl === "undefined" && typeof workerFactory === "undefined") {
@@ -158,7 +4835,7 @@
                 return _this.initialized = true;
               })["catch"](console.err);
             }
-            return _createClass(ELK2, [{
+            return _createClass(ELK3, [{
               key: "layout",
               value: function layout(graph) {
                 var _ref2 = arguments.length > 1 && arguments[1] !== void 0 ? arguments[1] : {}, _ref2$layoutOptions = _ref2.layoutOptions, layoutOptions = _ref2$layoutOptions === void 0 ? this.defaultLayoutOptions : _ref2$layoutOptions, _ref2$logging = _ref2.logging, logging = _ref2$logging === void 0 ? false : _ref2$logging, _ref2$measureExecutio = _ref2.measureExecutionTime, measureExecutionTime = _ref2$measureExecutio === void 0 ? false : _ref2$measureExecutio;
@@ -92045,7 +96722,7 @@
               return t2.__proto__ = e2, t2;
             }, _setPrototypeOf(t, e);
           }
-          var ELK = require2("./elk-api.js")["default"];
+          var ELK2 = require2("./elk-api.js")["default"];
           var ELKNode = /* @__PURE__ */ (function(_ELK) {
             function ELKNode2() {
               var options = arguments.length > 0 && arguments[0] !== void 0 ? arguments[0] : {};
@@ -92077,7 +96754,7 @@
             }
             _inherits(ELKNode2, _ELK);
             return _createClass(ELKNode2);
-          })(ELK);
+          })(ELK2);
           Object.defineProperty(module3.exports, "__esModule", {
             value: true
           });
@@ -92092,2741 +96769,32 @@
     }
   });
 
-  // src/markfeyn/renderer/layout/elk-options.js
-  function buildElkLayoutOptions(layoutOptions) {
-    const options = {
-      [ELK_LAYOUT_OPTIONS.algorithm]: elkAlgorithmForLayout(layoutOptions.layout),
-      [ELK_LAYOUT_OPTIONS.direction]: directionForLayout(layoutOptions),
-      [ELK_LAYOUT_OPTIONS.randomSeed]: String(layoutOptions.deterministicSeed ?? 1),
-      [ELK_LAYOUT_OPTIONS.separateConnectedComponents]: "true",
-      [ELK_LAYOUT_OPTIONS.spacingNodeNode]: String(layoutOptions.layout === "spring-electrical" ? 96 : 64),
-      [ELK_LAYOUT_OPTIONS.padding]: `[top=${layoutOptions.marginY},left=${layoutOptions.marginX},bottom=${layoutOptions.marginY},right=${layoutOptions.marginX}]`
-    };
-    if (layoutOptions.layout === "layered") {
-      options[ELK_LAYOUT_OPTIONS.layeredNodeNodeBetweenLayers] = "96";
-      options[ELK_LAYOUT_OPTIONS.layeredEdgeNodeBetweenLayers] = "42";
-      options[ELK_LAYOUT_OPTIONS.layeredFavorStraightEdges] = "true";
-    }
-    if (layoutOptions.layout === "tree") {
-      options[ELK_LAYOUT_OPTIONS.mrtreeSearchOrder] = "DFS";
-      options[ELK_LAYOUT_OPTIONS.mrtreeWeighting] = "DESCENDANTS";
-    }
-    if (layoutOptions.layout === "spring" || layoutOptions.layout === "spring-electrical") {
-      options[ELK_LAYOUT_OPTIONS.forceIterations] = layoutOptions.layout === "spring-electrical" ? "160" : "100";
-      options[ELK_LAYOUT_OPTIONS.forceRepulsion] = layoutOptions.layout === "spring-electrical" ? "1.2" : "0.6";
-    }
-    return options;
-  }
-  function elkAlgorithmForLayout(layout) {
-    if (layout === "tree") {
-      return "mrtree";
-    }
-    if (layout === "spring" || layout === "spring-electrical") {
-      return "force";
-    }
-    return "layered";
-  }
-  function directionForLayout(layoutOptions) {
-    if (layoutOptions.direction) {
-      return layoutOptions.direction;
-    }
-    if (layoutOptions.orientation?.endsWith("reverse")) {
-      return "LEFT";
-    }
-    return "RIGHT";
-  }
-  var ELK_LAYOUT_OPTIONS;
-  var init_elk_options = __esm({
-    "src/markfeyn/renderer/layout/elk-options.js"() {
-      ELK_LAYOUT_OPTIONS = Object.freeze({
-        algorithm: "elk.algorithm",
-        direction: "elk.direction",
-        randomSeed: "elk.randomSeed",
-        separateConnectedComponents: "elk.separateConnectedComponents",
-        spacingNodeNode: "elk.spacing.nodeNode",
-        padding: "elk.padding",
-        layeredNodeNodeBetweenLayers: "elk.layered.spacing.nodeNodeBetweenLayers",
-        layeredEdgeNodeBetweenLayers: "elk.layered.spacing.edgeNodeBetweenLayers",
-        layeredFavorStraightEdges: "elk.layered.nodePlacement.favorStraightEdges",
-        layerConstraint: "elk.layered.layering.layerConstraint",
-        portConstraints: "elk.portConstraints",
-        portSide: "elk.port.side",
-        portIndex: "elk.port.index",
-        forceRepulsivePower: "elk.force.repulsivePower",
-        forceIterations: "elk.force.iterations",
-        forceRepulsion: "elk.force.repulsion",
-        mrtreeSearchOrder: "elk.mrtree.searchOrder",
-        mrtreeWeighting: "elk.mrtree.weighting"
-      });
-    }
-  });
-
-  // src/markfeyn/renderer/layout/model.js
-  function createSemanticDiagram(diagram) {
-    const nodes = collectSemanticNodes(diagram);
-    const explicitIncoming = uniqueList(diagram.incoming || []);
-    const explicitOutgoing = uniqueList(diagram.outgoing || []);
-    const incoming = new Set(explicitIncoming);
-    const outgoing = new Set(explicitOutgoing);
-    const degree = visibleDegreeByNode(diagram);
-    const vertices = Array.from(nodes).sort(compareStable).map((id) => {
-      const externalRole = externalRoleForNode(id, incoming, outgoing, degree);
-      return {
-        id,
-        kind: externalRole === "none" ? "interaction" : "external",
-        externalRole,
-        fixed: Boolean(diagram.manualPositions?.[id]),
-        positionHint: diagram.manualPositions?.[id] || null,
-        metadata: {
-          declarationIndex: declarationIndexForNode(diagram, id),
-          vertexShape: diagram.vertices?.[id]
-        }
-      };
-    });
-    return {
-      id: diagram.id || "markfeyn-diagram",
-      source: diagram,
-      vertices,
-      propagators: (diagram.edges || []).map((edge, index) => semanticPropagator(edge, index)),
-      process: {
-        initialState: explicitIncoming,
-        finalState: explicitOutgoing,
-        preferredFlow: explicitIncoming.length && explicitOutgoing.length ? "left-to-right" : void 0
-      },
-      layoutHints: {
-        topology: diagram.options?.topology || "auto",
-        orientationMode: diagram.options?.orientationMode || "auto"
-      },
-      externalVertices: vertices.filter((vertex) => vertex.externalRole !== "none").map((vertex) => vertex.id),
-      internalVertices: vertices.filter((vertex) => vertex.externalRole === "none").map((vertex) => vertex.id),
-      incoming: explicitIncoming,
-      outgoing: explicitOutgoing,
-      unclassified: vertices.filter((vertex) => vertex.externalRole === "unclassified").map((vertex) => vertex.id)
-    };
-  }
-  function createCompatibilityDiagram(diagram, semantic) {
-    return {
-      ...diagram,
-      incoming: semantic.incoming.slice(),
-      outgoing: semantic.outgoing.slice(),
-      unclassified: semantic.unclassified.slice(),
-      semantic
-    };
-  }
-  function semanticNodeById(semantic) {
-    return new Map(semantic.vertices.map((vertex) => [vertex.id, vertex]));
-  }
-  function collectSemanticNodes(diagram) {
-    const nodes = /* @__PURE__ */ new Set([
-      ...diagram.incoming || [],
-      ...diagram.outgoing || [],
-      ...diagram.unclassified || []
-    ]);
-    (diagram.edges || []).forEach((edge) => {
-      nodes.add(edge.from);
-      nodes.add(edge.to);
-    });
-    Object.keys(diagram.labels || {}).forEach((target) => {
-      if (!target.includes("->")) {
-        nodes.add(target);
-      }
-    });
-    (diagram.braces || []).forEach((brace) => {
-      nodes.add(brace.from);
-      nodes.add(brace.to);
-    });
-    Object.keys(diagram.manualPositions || {}).forEach((node) => nodes.add(node));
-    Object.keys(diagram.vertices || {}).forEach((node) => nodes.add(node));
-    return nodes;
-  }
-  function visibleDegreeByNode(diagram) {
-    const degree = /* @__PURE__ */ new Map();
-    (diagram.edges || []).filter((edge) => !edge.hidden && edge.from !== edge.to).forEach((edge) => {
-      degree.set(edge.from, (degree.get(edge.from) || 0) + 1);
-      degree.set(edge.to, (degree.get(edge.to) || 0) + 1);
-    });
-    return degree;
-  }
-  function uniqueList(values) {
-    const seen = /* @__PURE__ */ new Set();
-    const result = [];
-    values.forEach((value) => {
-      if (!seen.has(value)) {
-        seen.add(value);
-        result.push(value);
-      }
-    });
-    return result;
-  }
-  function compareStable(left, right) {
-    return String(left).localeCompare(String(right));
-  }
-  function semanticPropagator(edge, index) {
-    return {
-      id: edge.id || `${edge.from}->${edge.to}#${index + 1}`,
-      source: edge.from,
-      target: edge.to,
-      style: edge.type || "plain",
-      layoutDirection: edge.layoutDirection || "unspecified",
-      momentumDirection: semanticMomentumDirection(edge),
-      fermionFlow: semanticFermionFlow(edge),
-      momentumLabel: edge.labelPlacement?.startsWith("momentum") ? edge.label : void 0,
-      particleLabel: edge.labelPlacement?.startsWith("momentum") ? void 0 : edge.label,
-      routingHint: edge.curve ? "arc" : "automatic",
-      metadata: {
-        edgeIndex: index,
-        hidden: Boolean(edge.hidden),
-        arrow: edge.arrow,
-        labelSide: edge.labelSide,
-        labelPlacement: edge.labelPlacement,
-        momentum: edge.momentum ? { ...edge.momentum } : null,
-        curve: edge.curve ? { ...edge.curve } : null,
-        outAngle: edge.outAngle,
-        inAngle: edge.inAngle,
-        looseness: edge.looseness,
-        relativeAngles: edge.relativeAngles
-      }
-    };
-  }
-  function semanticMomentumDirection(edge) {
-    if (edge.momentumDirection === "forward") {
-      return "source-to-target";
-    }
-    if (edge.momentumDirection === "reverse") {
-      return "target-to-source";
-    }
-    return "unspecified";
-  }
-  function semanticFermionFlow(edge) {
-    if (edge.type !== "fermion") {
-      return edge.arrow ? "unspecified" : "none";
-    }
-    if (edge.arrow === "reverse") {
-      return "target-to-source";
-    }
-    if (edge.arrow === "forward") {
-      return "source-to-target";
-    }
-    return "unspecified";
-  }
-  function externalRoleForNode(node, incoming, outgoing, degree) {
-    if (incoming.has(node) && outgoing.has(node)) {
-      return "incoming";
-    }
-    if (incoming.has(node)) {
-      return "incoming";
-    }
-    if (outgoing.has(node)) {
-      return "outgoing";
-    }
-    if ((degree.get(node) || 0) === 1) {
-      return "unclassified";
-    }
-    return "none";
-  }
-  function declarationIndexForNode(diagram, node) {
-    const candidates = [];
-    (diagram.edges || []).forEach((edge, index) => {
-      if (edge.from === node || edge.to === node) {
-        candidates.push(index);
-      }
-    });
-    return candidates.length ? Math.min(...candidates) : Number.MAX_SAFE_INTEGER;
-  }
-  var init_model = __esm({
-    "src/markfeyn/renderer/layout/model.js"() {
-    }
-  });
-
-  // src/markfeyn/renderer/layout/incremental.js
-  function analyzeIncrementalStability(semantic, options = {}) {
-    const previousLayout = normalizePreviousLayout(options.previousLayout || semantic.source.previousLayout);
-    const enabled = Boolean(options.preservePreviousLayout || semantic.source.preservePreviousLayout);
-    const sharedVertices = enabled ? semantic.vertices.map((vertex) => vertex.id).filter((id) => previousLayout.positions[id]).sort() : [];
-    return {
-      enabled,
-      previousLayout,
-      sharedVertices
-    };
-  }
-  function applyIncrementalStability(layout, incremental) {
-    if (!incremental?.enabled || !incremental.sharedVertices.length) {
-      return layout;
-    }
-    const positions = { ...layout.positions || {} };
-    incremental.sharedVertices.forEach((node) => {
-      const previous = incremental.previousLayout.positions[node];
-      const current = positions[node] || {};
-      positions[node] = {
-        ...current,
-        x: previous.x,
-        y: previous.y,
-        kind: current.kind || previous.kind || "internal"
-      };
-    });
-    layout.positions = positions;
-    layout.incremental = {
-      preserved: true,
-      sharedVertexCount: incremental.sharedVertices.length,
-      nodes: incremental.sharedVertices.slice()
-    };
-    return layout;
-  }
-  function incrementalDiagnostic(incremental) {
-    return {
-      stage: "incremental",
-      severity: incremental?.enabled ? "info" : "info",
-      message: incremental?.enabled ? `Incremental stability enabled for ${incremental.sharedVertices.length} shared vertices` : "Incremental stability disabled",
-      data: {
-        enabled: Boolean(incremental?.enabled),
-        sharedVertexCount: incremental?.sharedVertices?.length || 0,
-        previousExternalOrder: externalOrderFromPreviousLayout(incremental?.previousLayout)
-      }
-    };
-  }
-  function layoutInstabilityScore(layout, incremental) {
-    if (!incremental?.enabled || !incremental.sharedVertices.length) {
-      return 0;
-    }
-    const current = normalizedPositions(layout.positions || {}, incremental.sharedVertices);
-    const previous = normalizedPositions(incremental.previousLayout.positions || {}, incremental.sharedVertices);
-    if (!current || !previous) {
-      return 0;
-    }
-    const total = incremental.sharedVertices.reduce((sum, node) => {
-      const dx = current[node].x - previous[node].x;
-      const dy = current[node].y - previous[node].y;
-      return sum + dx * dx + dy * dy;
-    }, 0);
-    return total / incremental.sharedVertices.length / 20;
-  }
-  function previousOrderFromLayout(previousLayout) {
-    return externalOrderFromPreviousLayout(normalizePreviousLayout(previousLayout));
-  }
-  function normalizePreviousLayout(value) {
-    const positions = {};
-    if (value?.positions && typeof value.positions === "object") {
-      Object.entries(value.positions).forEach(([node, position]) => {
-        if (Number.isFinite(position?.x) && Number.isFinite(position?.y)) {
-          positions[node] = {
-            x: position.x,
-            y: position.y,
-            kind: position.kind
-          };
-        }
-      });
-    }
-    return {
-      ...value,
-      positions
-    };
-  }
-  function externalOrderFromPreviousLayout(previousLayout) {
-    const ordering = previousLayout?.analysis?.externalOrdering || previousLayout?.externalOrdering;
-    if (!ordering) {
-      return null;
-    }
-    return {
-      incoming: idsFromOrder(ordering.incoming),
-      outgoing: idsFromOrder(ordering.outgoing),
-      unclassified: idsFromOrder(ordering.unclassified),
-      all: idsFromOrder(ordering.all)
-    };
-  }
-  function idsFromOrder(values) {
-    return Array.isArray(values) ? values.map((value) => typeof value === "string" ? value : value?.id).filter(Boolean) : [];
-  }
-  function normalizedPositions(positions, nodes) {
-    const points = nodes.map((node) => positions[node]).filter((position) => Number.isFinite(position?.x) && Number.isFinite(position?.y));
-    if (points.length !== nodes.length) {
-      return null;
-    }
-    const center = {
-      x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
-      y: points.reduce((sum, point) => sum + point.y, 0) / points.length
-    };
-    const scale = Math.max(
-      1,
-      Math.sqrt(points.reduce((sum, point) => sum + (point.x - center.x) ** 2 + (point.y - center.y) ** 2, 0) / points.length)
+  // src/markfeyn/renderer/layout/elk-runner.js
+  async function layoutWithElk(diagram, layoutOptions, prepared, helpers) {
+    const elk = getElk();
+    const graph = helpers.buildSemanticElkGraph(
+      prepared.semantic,
+      layoutOptions,
+      (node) => helpers.elkNodeDimensions(node, diagram),
+      prepared.externalOrdering
     );
-    return Object.fromEntries(nodes.map((node) => [
-      node,
-      {
-        x: (positions[node].x - center.x) / scale,
-        y: (positions[node].y - center.y) / scale
-      }
-    ]));
+    prepared.compiledElkGraph = graph;
+    const result = await elk.layout(graph);
+    return helpers.normalizeElkLayout(diagram, layoutOptions, result);
   }
-  var init_incremental = __esm({
-    "src/markfeyn/renderer/layout/incremental.js"() {
-    }
-  });
-
-  // src/markfeyn/renderer/layout/external-order.js
-  function analyzeExternalOrdering(semantic, options = {}) {
-    const previousOrder = normalizePreviousOrder(
-      options.previousSemanticOrder || options.previousExternalOrder || previousOrderFromLayout(options.previousLayout) || semantic.source.previousSemanticOrder || semantic.source.externalOrder
-    );
-    const orderFor = makeOrderResolver(semantic, previousOrder);
-    const incoming = orderRole(semantic.incoming, "incoming", orderFor);
-    const outgoing = orderRole(semantic.outgoing, "outgoing", orderFor);
-    const unclassified = orderRole(semantic.unclassified, "unclassified", orderFor);
-    const byId = new Map([...incoming, ...outgoing, ...unclassified].map((entry) => [entry.id, entry]));
-    const all = semantic.externalVertices.map((id) => byId.get(id) || orderFor(id, "unclassified")).sort(compareExternalOrder);
-    return {
-      mode: semantic.incoming.length && semantic.outgoing.length ? "process" : "symmetric",
-      incoming,
-      outgoing,
-      unclassified,
-      all,
-      previousOrder: previousOrder.list
-    };
-  }
-  function compareExternalOrdering(ordering, left, right) {
-    const indexById = new Map((ordering?.all || []).map((entry, index) => [entry.id, index]));
-    const leftIndex = indexById.get(left);
-    const rightIndex = indexById.get(right);
-    if (leftIndex !== void 0 && rightIndex !== void 0) {
-      return leftIndex - rightIndex;
-    }
-    if (leftIndex !== void 0) {
-      return -1;
-    }
-    if (rightIndex !== void 0) {
-      return 1;
-    }
-    return compareStable(left, right);
-  }
-  function externalOrderingDiagnostic(ordering) {
-    return {
-      stage: "external-order",
-      severity: "info",
-      message: `External ordering: ${ordering.mode}`,
-      data: {
-        mode: ordering.mode,
-        incoming: summarizeEntries(ordering.incoming),
-        outgoing: summarizeEntries(ordering.outgoing),
-        unclassified: summarizeEntries(ordering.unclassified)
-      }
-    };
-  }
-  function orderRole(nodes, role, orderFor) {
-    return nodes.map((id) => orderFor(id, role)).sort(compareExternalOrder).map((entry, index) => ({
-      ...entry,
-      order: index
-    }));
-  }
-  function makeOrderResolver(semantic, previousOrder) {
-    const vertexById = new Map(semantic.vertices.map((vertex) => [vertex.id, vertex]));
-    const explicitIncoming = orderMap(semantic.incoming);
-    const explicitOutgoing = orderMap(semantic.outgoing);
-    return (id, role) => {
-      const explicitIndex = role === "incoming" ? explicitIncoming.get(id) : role === "outgoing" ? explicitOutgoing.get(id) : void 0;
-      const previousIndex = previousOrder.indexById.get(id);
-      const declarationIndex = vertexById.get(id)?.metadata?.declarationIndex ?? Number.MAX_SAFE_INTEGER;
-      if (explicitIndex !== void 0) {
-        return orderEntry(id, role, 0, explicitIndex, "explicit");
-      }
-      if (previousIndex !== void 0) {
-        return orderEntry(id, role, 1, previousIndex, "previous");
-      }
-      if (declarationIndex !== Number.MAX_SAFE_INTEGER) {
-        return orderEntry(id, role, 2, declarationIndex, "declaration");
-      }
-      return orderEntry(id, role, 3, 0, "stable-id");
-    };
-  }
-  function orderEntry(id, role, priority, value, source) {
-    return {
-      id,
-      role,
-      priority,
-      value,
-      source
-    };
-  }
-  function compareExternalOrder(left, right) {
-    return left.priority - right.priority || left.value - right.value || compareStable(left.id, right.id);
-  }
-  function normalizePreviousOrder(value) {
-    const list = [];
-    if (Array.isArray(value)) {
-      list.push(...value);
-    } else if (value && typeof value === "object") {
-      [
-        value.incoming,
-        value.outgoing,
-        value.unclassified,
-        value.externalVertices,
-        value.all
-      ].forEach((items) => {
-        if (Array.isArray(items)) {
-          items.forEach((item) => list.push(typeof item === "string" ? item : item?.id));
-        }
+  function getElk() {
+    if (!elkInstance) {
+      elkInstance = new import_elk_bundled.default({
+        algorithms: ["layered", "mrtree", "force"]
       });
     }
-    const indexById = /* @__PURE__ */ new Map();
-    list.filter(Boolean).forEach((id) => {
-      if (!indexById.has(id)) {
-        indexById.set(id, indexById.size);
-      }
-    });
-    return {
-      list: Array.from(indexById.keys()),
-      indexById
-    };
-  }
-  function orderMap(nodes) {
-    return new Map(nodes.map((node, index) => [node, index]));
-  }
-  function summarizeEntries(entries) {
-    return entries.map((entry) => ({
-      id: entry.id,
-      order: entry.order,
-      source: entry.source
-    }));
-  }
-  var init_external_order = __esm({
-    "src/markfeyn/renderer/layout/external-order.js"() {
-      init_model();
-      init_incremental();
-    }
-  });
-
-  // src/markfeyn/renderer/layout/elk-compiler.js
-  function buildSemanticElkGraph(semantic, layoutOptions, nodeDimensions, externalOrdering) {
-    const vertices = semantic.vertices.slice().sort((a, b) => compareStable(a.id, b.id));
-    const useExplicitPorts = shouldUseExplicitPorts(semantic, layoutOptions);
-    const portsByNode = inferPorts(semantic, layoutOptions, externalOrdering, useExplicitPorts);
-    return {
-      id: "markfeyn-root",
-      layoutOptions: buildElkLayoutOptions(layoutOptions),
-      children: vertices.map((vertex) => ({
-        id: vertex.id,
-        ...nodeDimensions(vertex.id),
-        ports: useExplicitPorts ? (portsByNode.get(vertex.id) || []).map((port) => ({
-          id: port.id,
-          layoutOptions: {
-            [ELK_LAYOUT_OPTIONS.portSide]: port.side,
-            [ELK_LAYOUT_OPTIONS.portIndex]: String(port.order)
-          }
-        })) : [],
-        layoutOptions: nodeLayoutOptions(vertex, layoutOptions, useExplicitPorts, portsByNode.get(vertex.id) || [])
-      })),
-      edges: semantic.propagators.filter((edge) => edge.source !== edge.target).map((edge) => ({
-        id: edge.id,
-        sources: [useExplicitPorts ? portId(edge.id, edge.source, "source") : edge.source],
-        targets: [useExplicitPorts ? portId(edge.id, edge.target, "target") : edge.target],
-        layoutOptions: edgeLayoutOptions(edge, layoutOptions)
-      }))
-    };
-  }
-  function inferPorts(semantic, layoutOptions = {}, externalOrdering = null, useExplicitPorts = shouldUseExplicitPorts(semantic, layoutOptions)) {
-    const vertexById = semanticNodeById(semantic);
-    const ports = new Map(semantic.vertices.map((vertex) => [vertex.id, []]));
-    semantic.propagators.filter((edge) => edge.source !== edge.target).forEach((edge) => {
-      addPort(ports, edge.source, {
-        id: portId(edge.id, edge.source, "source"),
-        propagator: edge.id,
-        side: sideForEndpoint(edge, edge.source, vertexById, layoutOptions),
-        order: portOrder(edge, edge.source, vertexById, externalOrdering),
-        edgeIndex: edge.metadata.edgeIndex
-      });
-      addPort(ports, edge.target, {
-        id: portId(edge.id, edge.target, "target"),
-        propagator: edge.id,
-        side: sideForEndpoint(edge, edge.target, vertexById, layoutOptions),
-        order: portOrder(edge, edge.target, vertexById, externalOrdering),
-        edgeIndex: edge.metadata.edgeIndex
-      });
-    });
-    ports.forEach((nodePorts) => {
-      nodePorts.sort((left, right) => {
-        const sideOrder = sideRank(left.side) - sideRank(right.side);
-        return sideOrder || left.order - right.order || left.edgeIndex - right.edgeIndex || compareStable(left.id, right.id);
-      });
-      nodePorts.forEach((port, index) => {
-        port.order = index;
-      });
-    });
-    return ports;
-  }
-  function inferredPortDiagnostics(semantic, layoutOptions = {}, externalOrdering = null) {
-    const useExplicitPorts = shouldUseExplicitPorts(semantic, layoutOptions);
-    const ports = inferPorts(semantic, layoutOptions, externalOrdering, useExplicitPorts);
-    const constraints = {};
-    ports.forEach((nodePorts, node) => {
-      constraints[node] = nodePorts.map((port) => ({
-        id: port.id,
-        side: port.side,
-        order: port.order,
-        propagator: port.propagator
-      }));
-    });
-    return {
-      applied: useExplicitPorts,
-      layout: layoutOptions.layout || "spring",
-      direction: effectiveDirection(layoutOptions),
-      constraints
-    };
-  }
-  function nodeLayoutOptions(vertex, layoutOptions, useExplicitPorts, ports) {
-    const options = {};
-    if (layoutOptions.layout === "layered") {
-      if (vertex.externalRole === "incoming") {
-        options[ELK_LAYOUT_OPTIONS.layerConstraint] = "FIRST";
-      }
-      if (vertex.externalRole === "outgoing") {
-        options[ELK_LAYOUT_OPTIONS.layerConstraint] = "LAST";
-      }
-    }
-    if (useExplicitPorts && ports.length) {
-      options[ELK_LAYOUT_OPTIONS.portConstraints] = "FIXED_ORDER";
-    }
-    return options;
-  }
-  function edgeLayoutOptions(edge, layoutOptions) {
-    if (layoutOptions.layout === "spring-electrical") {
-      return {
-        [ELK_LAYOUT_OPTIONS.forceRepulsivePower]: "2"
-      };
-    }
-    return {};
-  }
-  function addPort(ports, node, port) {
-    if (!ports.has(node)) {
-      ports.set(node, []);
-    }
-    ports.get(node).push(port);
-  }
-  function sideForEndpoint(edge, node, vertexById, layoutOptions) {
-    const role = vertexById.get(node)?.externalRole;
-    const other = edge.source === node ? edge.target : edge.source;
-    const otherRole = vertexById.get(other)?.externalRole;
-    if (role === "incoming") {
-      return terminalSide("incoming", layoutOptions);
-    }
-    if (role === "outgoing") {
-      return terminalSide("outgoing", layoutOptions);
-    }
-    if (otherRole === "incoming") {
-      return internalSideForTerminal("incoming", layoutOptions);
-    }
-    if (otherRole === "outgoing") {
-      return internalSideForTerminal("outgoing", layoutOptions);
-    }
-    return edge.source === node ? forwardSide(layoutOptions) : backwardSide(layoutOptions);
-  }
-  function terminalSide(role, layoutOptions) {
-    if (role === "incoming") {
-      return forwardSide(layoutOptions);
-    }
-    return backwardSide(layoutOptions);
-  }
-  function internalSideForTerminal(role, layoutOptions) {
-    if (role === "incoming") {
-      return backwardSide(layoutOptions);
-    }
-    return forwardSide(layoutOptions);
-  }
-  function forwardSide(layoutOptions) {
-    return effectiveDirection(layoutOptions) === "LEFT" ? "WEST" : "EAST";
-  }
-  function backwardSide(layoutOptions) {
-    return effectiveDirection(layoutOptions) === "LEFT" ? "EAST" : "WEST";
-  }
-  function portOrder(edge, node, vertexById, externalOrdering) {
-    const role = vertexById.get(node)?.externalRole;
-    if (role === "incoming" || role === "outgoing" || role === "unclassified") {
-      return externalIndex(externalOrdering, node);
-    }
-    const other = edge.source === node ? edge.target : edge.source;
-    const otherRole = vertexById.get(other)?.externalRole;
-    if (otherRole === "incoming" || otherRole === "outgoing" || otherRole === "unclassified") {
-      return externalIndex(externalOrdering, other);
-    }
-    return edge.metadata.edgeIndex;
-  }
-  function externalIndex(externalOrdering, node) {
-    const index = (externalOrdering?.all || []).slice().sort((left, right) => compareExternalOrdering(externalOrdering, left.id, right.id)).findIndex((entry) => entry.id === node);
-    return index === -1 ? Number.MAX_SAFE_INTEGER : index;
-  }
-  function shouldUseExplicitPorts(semantic, layoutOptions) {
-    return isLayeredLayout(layoutOptions.layout) && semantic.incoming.length > 0 && semantic.outgoing.length > 0;
-  }
-  function effectiveDirection(layoutOptions) {
-    const direction = String(layoutOptions.direction || "").toUpperCase();
-    if (direction === "LEFT" || direction === "RIGHT") {
-      return direction;
-    }
-    return layoutOptions.orientation?.endsWith("reverse") ? "LEFT" : "RIGHT";
-  }
-  function isLayeredLayout(layout) {
-    const normalized = String(layout || "spring").toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
-    return normalized === "layered" || normalized === "layered layout";
-  }
-  function sideRank(side) {
-    return { WEST: 0, NORTH: 1, SOUTH: 2, EAST: 3 }[side] ?? 4;
-  }
-  function portId(edgeId, node, endpointKind) {
-    return `${node}__${endpointKind}__${edgeId}`.replace(/[^A-Za-z0-9_.-]/g, "_");
-  }
-  var init_elk_compiler = __esm({
-    "src/markfeyn/renderer/layout/elk-compiler.js"() {
-      init_elk_options();
-      init_model();
-      init_external_order();
-    }
-  });
-
-  // src/markfeyn/renderer/layout/labels.js
-  function scoreLabelGeometry(layout, prepared, candidate = {}) {
-    return analyzeLabelGeometry(layout, prepared, candidate).breakdown;
-  }
-  function analyzeLabelGeometry(layout, prepared, candidate = {}) {
-    const curvePlan = curvePlanMap(prepared, candidate);
-    const loopRegions = buildLoopRegions(layout, prepared, candidate, curvePlan);
-    const vertexBounds = buildVertexBounds(layout, prepared.semantic);
-    const edgeSamples = buildEdgeSamples(layout, prepared, curvePlan);
-    const boxes = buildLabelBoxes(layout, prepared, candidate, curvePlan);
-    const breakdown = {
-      nodeLabelOverlap: scoreNodeLabelOverlap(boxes, vertexBounds),
-      edgeLabelOverlap: scoreEdgeLabelOverlap(boxes, vertexBounds, edgeSamples),
-      labelLabelOverlap: scoreLabelLabelOverlap(boxes),
-      labelsInsideLoops: scoreLabelsInsideLoops(boxes, loopRegions, layout),
-      momentumLoopCollision: scoreMomentumLoopCollision(boxes, loopRegions, vertexBounds)
-    };
-    return {
-      boxes,
-      loopRegions,
-      breakdown,
-      details: {
-        labelCount: boxes.length,
-        loopRegionCount: loopRegions.length
-      }
-    };
-  }
-  function labelScoreTotal(scoreOrBreakdown = {}) {
-    const breakdown = scoreOrBreakdown.breakdown || scoreOrBreakdown;
-    return LABEL_SCORE_FIELDS.reduce((sum, field) => sum + (breakdown[field] || 0), 0);
-  }
-  function nonLabelScoreTotal(scoreOrBreakdown = {}) {
-    const breakdown = scoreOrBreakdown.breakdown || scoreOrBreakdown;
-    const labelFields = new Set(LABEL_SCORE_FIELDS);
-    return Object.entries(breakdown).reduce((sum, [field, value]) => labelFields.has(field) ? sum : sum + value, 0);
-  }
-  function resolveLabelPlacement(layout, prepared, candidate = {}) {
-    const curvePlan = curvePlanMap(prepared, candidate);
-    const loopRegions = buildLoopRegions(layout, prepared, candidate, curvePlan);
-    const vertexBounds = buildVertexBounds(layout, prepared.semantic);
-    const edgeSamples = buildEdgeSamples(layout, prepared, curvePlan);
-    const specs = buildPlacementSpecs(layout, prepared, candidate, curvePlan);
-    const placedBoxes = [];
-    const entries = [];
-    specs.forEach((spec) => {
-      const selected = spec.candidates.map((placement, index) => scorePlacementCandidate(placement, {
-        edgeSamples,
-        loopRegions,
-        placedBoxes,
-        vertexBounds,
-        layout
-      }, index)).sort(comparePlacementCandidates)[0];
-      if (!selected) {
-        return;
-      }
-      const boxes = selected.boxes.map((box) => ({
-        ...box,
-        selected: true
-      }));
-      const labelBox = boxes.find((box) => box.type !== "momentum-arrow") || boxes[0];
-      const arrowBox = boxes.find((box) => box.type === "momentum-arrow");
-      placedBoxes.push(...boxes);
-      entries.push({
-        id: labelBox.id,
-        type: labelBox.type,
-        target: labelBox.target,
-        node: labelBox.node,
-        edgeId: labelBox.edgeId,
-        edgeIndex: labelBox.edgeIndex,
-        source: labelBox.source,
-        targetNode: labelBox.targetNode,
-        text: labelBox.text,
-        x: roundPlacement(labelBox.x),
-        y: roundPlacement(labelBox.y),
-        anchor: labelBox.anchor,
-        side: labelBox.side,
-        defaultSide: labelBox.defaultSide,
-        explicitSide: Boolean(labelBox.explicitSide),
-        bounds: roundBounds(labelBox.bounds),
-        score: roundPlacement(selected.rawScore),
-        hardInvalid: selected.hardInvalid,
-        collisionCount: selected.collisionCount,
-        fallback: selected.index !== 0,
-        ...arrowBox ? {
-          arrowBounds: roundBounds(arrowBox.bounds),
-          arrowPoints: (arrowBox.points || []).map((point) => ({
-            x: roundPlacement(point.x),
-            y: roundPlacement(point.y)
-          }))
-        } : {}
-      });
-    });
-    const finalBoxes = decorateLoopLabelBoxes(placedBoxes, prepared, candidate);
-    const breakdown = {
-      nodeLabelOverlap: scoreNodeLabelOverlap(finalBoxes, vertexBounds),
-      edgeLabelOverlap: scoreEdgeLabelOverlap(finalBoxes, vertexBounds, edgeSamples),
-      labelLabelOverlap: scoreLabelLabelOverlap(finalBoxes),
-      labelsInsideLoops: scoreLabelsInsideLoops(finalBoxes, loopRegions, layout),
-      momentumLoopCollision: scoreMomentumLoopCollision(finalBoxes, loopRegions, vertexBounds)
-    };
-    const byId = Object.fromEntries(entries.map((entry) => [entry.id, entry]));
-    const hardCollisionCount = entries.filter((entry) => entry.hardInvalid).length;
-    return {
-      applied: entries.length > 0,
-      entries,
-      byId,
-      summary: {
-        labelCount: specs.length,
-        placedCount: entries.length,
-        fallbackCount: entries.filter((entry) => entry.fallback).length,
-        hardCollisionCount,
-        residualScore: roundPlacement(labelScoreTotal(breakdown)),
-        breakdown: Object.fromEntries(
-          Object.entries(breakdown).map(([field, value]) => [field, roundPlacement(value)])
-        )
-      }
-    };
-  }
-  function labelPlacementDiagnostic(placement) {
-    const summary = placement?.summary || {};
-    const placedCount = summary.placedCount || 0;
-    const hardCollisionCount = summary.hardCollisionCount || 0;
-    const residualScore = summary.residualScore || 0;
-    return {
-      stage: "label-placement",
-      severity: hardCollisionCount || residualScore ? "warning" : "info",
-      message: hardCollisionCount ? `Placed ${placedCount} labels with ${hardCollisionCount} residual hard collisions` : `Placed ${placedCount} labels`,
-      data: {
-        ...summary,
-        entries: (placement?.entries || []).map((entry) => ({
-          id: entry.id,
-          type: entry.type,
-          target: entry.target,
-          side: entry.side,
-          x: entry.x,
-          y: entry.y,
-          score: entry.score,
-          hardInvalid: entry.hardInvalid,
-          fallback: entry.fallback
-        }))
-      }
-    };
-  }
-  function buildPlacementSpecs(layout, prepared, candidate, curvePlan) {
-    const labels = prepared.semantic.source.labels || {};
-    const specs = [];
-    Object.entries(labels).sort(([left], [right]) => compareStable(left, right)).forEach(([target, text]) => {
-      if (target.includes("->")) {
-        const edge = findEdgeByLabelTarget(target, prepared.semantic.propagators);
-        const spec2 = edgePlacementSpec(edge, text, layout, curvePlan, {
-          id: `declared-edge:${target}`,
-          target,
-          forceNormal: true,
-          declaredTarget: target,
-          explicitSide: Boolean(edge?.metadata?.labelSide)
-        });
-        if (spec2) {
-          specs.push(spec2);
-        }
-        return;
-      }
-      const spec = nodePlacementSpec(target, text, layout.positions?.[target]);
-      if (spec) {
-        specs.push(spec);
-      }
-    });
-    prepared.semantic.propagators.slice().sort((left, right) => left.metadata.edgeIndex - right.metadata.edgeIndex || compareStable(left.id, right.id)).forEach((edge) => {
-      if (edge.metadata.hidden) {
-        return;
-      }
-      const text = edge.momentumLabel || edge.particleLabel;
-      if (!text) {
-        return;
-      }
-      const spec = edgePlacementSpec(edge, text, layout, curvePlan, {
-        id: `edge:${edge.id}`,
-        target: edge.id,
-        explicitSide: Boolean(edge.metadata.labelSide)
-      });
-      if (spec) {
-        specs.push(spec);
-      }
-    });
-    return specs;
-  }
-  function nodePlacementSpec(target, text, position) {
-    if (!position) {
-      return null;
-    }
-    const id = `node:${target}`;
-    const defaultSide = normalizePlacementSide(position.labelSide || position.kind);
-    const candidates = orderedSides(defaultSide, ["top", "bottom", "left", "right"]).flatMap((side, sideIndex) => nodeSideShifts(side).map((shift, shiftIndex) => {
-      const offset = labelOffset(side);
-      const anchor = {
-        x: position.x + offset.x + shift.x,
-        y: position.y + offset.y + shift.y,
-        anchor: offset.anchor
-      };
-      const bounds = textBounds(anchor, text || target, METRICS.nodeFontSize);
-      const box = {
-        id,
-        type: "node-label",
-        target,
-        node: target,
-        text,
-        x: anchor.x,
-        y: anchor.y,
-        anchor: anchor.anchor,
-        side,
-        defaultSide,
-        bounds,
-        center: boundsCenter(bounds),
-        fontSize: METRICS.nodeFontSize
-      };
-      return {
-        id,
-        boxes: [box],
-        rank: sideIndex * 10 + shiftIndex,
-        defaultCandidate: sideIndex === 0 && shiftIndex === 0
-      };
-    }));
-    return { id, type: "node-label", candidates };
-  }
-  function edgePlacementSpec(edge, text, layout, curvePlan, options = {}) {
-    if (!edge) {
-      return null;
-    }
-    const from = layout.positions?.[edge.source];
-    const to = layout.positions?.[edge.target];
-    if (!from || !to) {
-      return null;
-    }
-    const id = options.id || `edge:${edge.id}`;
-    const defaultSide = normalizePlacementSide(edge.metadata.labelSide || "left");
-    const sides = options.explicitSide ? [defaultSide] : orderedSides(defaultSide, ["left", "right"]);
-    const geometry = edgeGeometry(edge, from, to, curvePlan);
-    const sample = geometrySample(geometry, 0.5);
-    const tangent = normalizeVector(sample.tangent.x, sample.tangent.y);
-    const candidates = sides.flatMap((side, sideIndex) => edgeTangentShifts().map((shift, shiftIndex) => {
-      const box = edgeLabelBox(edge, text, layout, curvePlan, {
-        ...options,
-        placementId: id,
-        sideOverride: side
-      });
-      if (!box) {
-        return null;
-      }
-      const shifted = shiftBoxWithAnchor(box, tangent.ux * shift, tangent.uy * shift);
-      const boxes = [shifted];
-      const arrow = !options.forceNormal && isMomentumEdge(edge) ? momentumArrowBox(edge, layout, curvePlan, { sideOverride: side }) : null;
-      if (arrow) {
-        boxes.push(arrow);
-      }
-      return {
-        id,
-        boxes,
-        rank: sideIndex * 10 + shiftIndex + Math.abs(shift) / 100,
-        defaultCandidate: sideIndex === 0 && shiftIndex === 0
-      };
-    }).filter(Boolean));
-    return { id, type: "edge-label", candidates };
-  }
-  function scorePlacementCandidate(candidate, context, index) {
-    let rawScore = candidate.rank * 0.08;
-    let collisionCount = 0;
-    candidate.boxes.forEach((box) => {
-      context.vertexBounds.forEach((vertex) => {
-        const overlap = overlapArea(box.bounds, vertex.bounds);
-        if (overlap <= 0) {
-          return;
-        }
-        rawScore += overlap / (box.type === "momentum-arrow" ? 20 : 8);
-        if (pointInsideBounds(box.center, vertex.bounds)) {
-          collisionCount += 1;
-        }
-      });
-      context.edgeSamples.forEach((edge) => {
-        if (box.type !== "node-label" && edge.edgeId === box.edgeId) {
-          return;
-        }
-        const hitCount = edge.samples.filter((point) => pointInsideBounds(point, expandBounds(box.bounds, 5))).length;
-        if (!hitCount) {
-          return;
-        }
-        rawScore += hitCount * (box.type === "node-label" ? 85 : 28);
-        if (box.type === "node-label") {
-          collisionCount += hitCount;
-        }
-      });
-    });
-    const labelBoxes = candidate.boxes.filter((box) => box.type !== "momentum-arrow");
-    labelBoxes.forEach((box) => {
-      context.placedBoxes.filter((placed) => placed.type !== "momentum-arrow").forEach((placed) => {
-        const overlap = overlapArea(box.bounds, placed.bounds);
-        if (overlap <= 0) {
-          return;
-        }
-        rawScore += 80 + overlap / 9;
-        collisionCount += 1;
-      });
-      context.loopRegions.forEach((region) => {
-        if (!pointInsideLoopRegion(box.center, region)) {
-          return;
-        }
-        if (outsidePlacementAvailable(box, region, context.layout)) {
-          rawScore += box.loopEdge ? 65 : 38;
-        }
-      });
-    });
-    candidate.boxes.filter((box) => box.type === "momentum-label" || box.type === "momentum-arrow").forEach((box) => {
-      context.loopRegions.forEach((region) => {
-        const centerInside = pointInsideLoopRegion(box.center, region);
-        const cornersInside = boundsCorners(box.bounds).some((corner) => pointInsideLoopRegion(corner, region));
-        const arrowInside = (box.points || []).some((point) => pointInsideLoopRegion(point, region));
-        if (centerInside || cornersInside || arrowInside) {
-          rawScore += box.type === "momentum-arrow" ? 90 : 70;
-          collisionCount += 1;
-        }
-      });
-    });
-    candidate.boxes.forEach((box) => {
-      const overflow = viewOverflow(box.bounds, context.layout);
-      if (overflow > 0) {
-        rawScore += overflow * 2;
-        if (overflow > 8) {
-          collisionCount += 1;
-        }
-      }
-    });
-    const hardInvalid = collisionCount > 0;
-    return {
-      ...candidate,
-      index,
-      rawScore,
-      score: rawScore + (hardInvalid ? collisionCount * 1e4 : 0),
-      hardInvalid,
-      collisionCount
-    };
-  }
-  function comparePlacementCandidates(left, right) {
-    return left.score - right.score || left.rank - right.rank || left.index - right.index || compareStable(left.id, right.id);
-  }
-  function buildLabelBoxes(layout, prepared, candidate, curvePlan) {
-    const placedBoxes = buildPlacedLabelBoxes(layout.labelPlacement);
-    if (placedBoxes) {
-      return decorateLoopLabelBoxes(placedBoxes, prepared, candidate);
-    }
-    const labels = prepared.semantic.source.labels || {};
-    const boxes = [];
-    Object.entries(labels).sort(([left], [right]) => compareStable(left, right)).forEach(([target, text]) => {
-      if (target.includes("->")) {
-        const edge = findEdgeByLabelTarget(target, prepared.semantic.propagators);
-        const placementId2 = `declared-edge:${target}`;
-        const box = edgeLabelBox(edge, text, layout, curvePlan, {
-          forceNormal: true,
-          declaredTarget: target,
-          placementId: placementId2,
-          placement: layout.labelPlacement?.byId?.[placementId2]
-        });
-        if (box) {
-          boxes.push(box);
-        }
-        return;
-      }
-      const position = layout.positions?.[target];
-      if (!position) {
-        return;
-      }
-      const placementId = `node:${target}`;
-      const placement = layout.labelPlacement?.byId?.[placementId];
-      const offset = labelOffset(position.labelSide || position.kind);
-      const anchor = {
-        x: placement?.x ?? position.x + offset.x,
-        y: placement?.y ?? position.y + offset.y,
-        anchor: placement?.anchor || offset.anchor
-      };
-      const bounds = textBounds(anchor, text || target, METRICS.nodeFontSize);
-      boxes.push({
-        id: placementId,
-        type: "node-label",
-        target,
-        node: target,
-        text,
-        x: anchor.x,
-        y: anchor.y,
-        anchor: anchor.anchor,
-        side: placement?.side || normalizePlacementSide(position.labelSide || position.kind),
-        bounds,
-        center: boundsCenter(bounds),
-        fontSize: METRICS.nodeFontSize
-      });
-    });
-    prepared.semantic.propagators.slice().sort((left, right) => left.metadata.edgeIndex - right.metadata.edgeIndex || compareStable(left.id, right.id)).forEach((edge) => {
-      if (edge.metadata.hidden) {
-        return;
-      }
-      if (edge.momentumLabel) {
-        const placementId = `edge:${edge.id}`;
-        const placement = layout.labelPlacement?.byId?.[placementId];
-        const labelBox = edgeLabelBox(edge, edge.momentumLabel, layout, curvePlan, {
-          placementId,
-          placement,
-          sideOverride: placement?.side
-        });
-        const arrowBox = momentumArrowBox(edge, layout, curvePlan, {
-          sideOverride: placement?.side
-        });
-        if (labelBox) {
-          boxes.push(labelBox);
-        }
-        if (arrowBox) {
-          boxes.push(arrowBox);
-        }
-        return;
-      }
-      if (edge.particleLabel) {
-        const placementId = `edge:${edge.id}`;
-        const box = edgeLabelBox(edge, edge.particleLabel, layout, curvePlan, {
-          placementId,
-          placement: layout.labelPlacement?.byId?.[placementId]
-        });
-        if (box) {
-          boxes.push(box);
-        }
-      }
-    });
-    return decorateLoopLabelBoxes(boxes, prepared, candidate);
-  }
-  function edgeLabelBox(edge, text, layout, curvePlan, options = {}) {
-    if (!edge) {
-      return null;
-    }
-    const from = layout.positions?.[edge.source];
-    const to = layout.positions?.[edge.target];
-    if (!from || !to) {
-      return null;
-    }
-    const id = options.placementId || `${options.declaredTarget ? "declared-edge" : "edge"}:${edge.id}`;
-    const side = normalizePlacementSide(options.placement?.side || options.sideOverride || edge.metadata.labelSide || "left");
-    const position = edgeLabelPosition(edge, from, to, side, curvePlan, options);
-    const anchor = options.placement ? {
-      x: options.placement.x,
-      y: options.placement.y,
-      anchor: options.placement.anchor || position.anchor
-    } : position;
-    const bounds = textBounds(anchor, text, METRICS.edgeFontSize);
-    const type = isMomentumEdge(edge) && !options.forceNormal ? "momentum-label" : "edge-label";
-    return {
-      id,
-      type,
-      target: options.declaredTarget || edge.id,
-      edgeId: edge.id,
-      edgeIndex: edge.metadata.edgeIndex,
-      source: edge.source,
-      targetNode: edge.target,
-      text,
-      x: anchor.x,
-      y: anchor.y,
-      anchor: anchor.anchor,
-      side,
-      defaultSide: normalizePlacementSide(edge.metadata.labelSide || "left"),
-      explicitSide: Boolean(options.explicitSide ?? edge.metadata.labelSide),
-      bounds,
-      center: boundsCenter(bounds),
-      fontSize: METRICS.edgeFontSize,
-      forceNormal: Boolean(options.forceNormal)
-    };
-  }
-  function momentumArrowBox(edge, layout, curvePlan, options = {}) {
-    const from = layout.positions?.[edge.source];
-    const to = layout.positions?.[edge.target];
-    if (!from || !to || !isMomentumEdge(edge)) {
-      return null;
-    }
-    const arrow = momentumArrowGeometry(edge, from, to, curvePlan, options);
-    const bounds = expandBounds(pointsBounds(arrow.points), Math.max(
-      METRICS.momentumArrowHeadLength,
-      METRICS.momentumArrowHeadWidth
-    ));
-    return {
-      id: `momentum-arrow:${edge.id}`,
-      type: "momentum-arrow",
-      edgeId: edge.id,
-      edgeIndex: edge.metadata.edgeIndex,
-      source: edge.source,
-      targetNode: edge.target,
-      bounds,
-      center: boundsCenter(bounds),
-      points: arrow.points
-    };
-  }
-  function buildLoopRegions(layout, prepared, candidate, curvePlan) {
-    const regions = [];
-    const loop = candidate.loop || prepared.topology.loopCandidate;
-    if (loop) {
-      const loopRegion = loopRegionForLoop(layout, loop, candidate, curvePlan);
-      if (loopRegion) {
-        regions.push(loopRegion);
-      }
-    }
-    (prepared.topology.selfEnergyBubbles || []).slice().sort((left, right) => compareStable(left.id, right.id)).forEach((group) => {
-      const region = selfEnergyRegion(layout, group, curvePlan);
-      if (region) {
-        regions.push(region);
-      }
-    });
-    return regions;
-  }
-  function loopRegionForLoop(layout, loop, candidate, curvePlan) {
-    if (loop.type === "tadpole") {
-      const node = loop.nodes[0];
-      const position = layout.positions?.[node];
-      if (!position) {
-        return null;
-      }
-      const assignment = loop.edges.map((edge) => curvePlan.get(edge)).find(Boolean);
-      const side = assignment?.side || candidate.variant?.loopSide || "top";
-      const amount = assignment?.amount || 0.72;
-      const radius = 68 * amount;
-      const sideVector = selfLoopSideVector(side);
-      const center = {
-        x: position.x + sideVector.x * radius * 1.05,
-        y: position.y + sideVector.y * radius * 1.05
-      };
-      return {
-        id: loop.id,
-        type: "tadpole",
-        nodes: loop.nodes.slice(),
-        edges: new Set(loop.edges),
-        center,
-        radiusX: radius * 1.15,
-        radiusY: radius * 1.15,
-        bounds: {
-          x1: center.x - radius * 1.15,
-          x2: center.x + radius * 1.15,
-          y1: center.y - radius * 1.15,
-          y2: center.y + radius * 1.15
-        }
-      };
-    }
-    const points = loop.nodes.map((node) => layout.positions?.[node]).filter(Boolean);
-    if (points.length !== loop.nodes.length || points.length < 3) {
-      return null;
-    }
-    return {
-      id: loop.id,
-      type: "polygon",
-      nodes: loop.nodes.slice(),
-      edges: new Set(loop.edges),
-      points,
-      center: averagePoint(points),
-      bounds: pointsBounds(points)
-    };
-  }
-  function selfEnergyRegion(layout, group, curvePlan) {
-    const [firstNode, secondNode] = group.nodes;
-    const first = layout.positions?.[firstNode];
-    const second = layout.positions?.[secondNode];
-    if (!first || !second) {
-      return null;
-    }
-    const vector = lineVector(first, second);
-    const maxAmount = Math.max(
-      ...group.edges.map((edge) => curvePlan.get(edge.id)?.amount || edge.curveAmount || 0.5),
-      0.5
-    );
-    const center = {
-      x: (first.x + second.x) / 2,
-      y: (first.y + second.y) / 2
-    };
-    return {
-      id: `self-energy:${group.id}`,
-      type: "self-energy",
-      nodes: group.nodes.slice(),
-      edges: new Set(group.edges.map((edge) => edge.id)),
-      center,
-      axis: { x: vector.ux, y: vector.uy },
-      normal: { x: vector.px, y: vector.py },
-      radiusX: Math.max(24, vector.length / 2),
-      radiusY: Math.max(24, vector.length * maxAmount * 0.72),
-      bounds: expandBounds(pointsBounds([first, second]), vector.length * maxAmount)
-    };
-  }
-  function buildVertexBounds(layout, semantic) {
-    return semantic.vertices.map((vertex) => {
-      const position = layout.positions?.[vertex.id];
-      if (!position) {
-        return null;
-      }
-      const radius = vertexRadius(vertex);
-      return {
-        id: vertex.id,
-        bounds: {
-          x1: position.x - radius,
-          x2: position.x + radius,
-          y1: position.y - radius,
-          y2: position.y + radius
-        },
-        center: position,
-        radius
-      };
-    }).filter(Boolean).sort((left, right) => compareStable(left.id, right.id));
-  }
-  function buildEdgeSamples(layout, prepared, curvePlan) {
-    return prepared.semantic.propagators.filter((edge) => !edge.metadata.hidden).map((edge) => {
-      const from = layout.positions?.[edge.source];
-      const to = layout.positions?.[edge.target];
-      if (!from || !to) {
-        return null;
-      }
-      const geometry = edgeGeometry(edge, from, to, curvePlan);
-      const samples = [];
-      const steps = geometry.kind === "cubic" ? 8 : 2;
-      for (let step = 0; step <= steps; step += 1) {
-        samples.push(geometryPoint(geometry, step / steps));
-      }
-      return {
-        edgeId: edge.id,
-        edgeIndex: edge.metadata.edgeIndex,
-        samples
-      };
-    }).filter(Boolean).sort((left, right) => left.edgeIndex - right.edgeIndex || compareStable(left.edgeId, right.edgeId));
-  }
-  function scoreNodeLabelOverlap(boxes, vertexBounds) {
-    let penalty = 0;
-    boxes.filter((box) => box.type === "node-label").forEach((box) => {
-      vertexBounds.forEach((vertex) => {
-        const overlap = overlapArea(box.bounds, vertex.bounds);
-        if (overlap > 0) {
-          penalty += overlap / 18;
-        }
-      });
-    });
-    return penalty;
-  }
-  function scoreEdgeLabelOverlap(boxes, vertexBounds, edgeSamples) {
-    let penalty = 0;
-    boxes.filter((box) => box.type === "node-label" || box.type === "edge-label" || box.type === "loop-edge-label" || box.type === "momentum-label" || box.type === "momentum-arrow").forEach((box) => {
-      vertexBounds.forEach((vertex) => {
-        const overlap = overlapArea(box.bounds, vertex.bounds);
-        if (overlap > 0) {
-          penalty += overlap / 18;
-        }
-      });
-      edgeSamples.forEach((edge) => {
-        if (box.type !== "node-label" && edge.edgeId === box.edgeId) {
-          return;
-        }
-        if (edge.samples.some((point) => pointInsideBounds(point, expandBounds(box.bounds, 4)))) {
-          penalty += box.type === "node-label" ? 22 : 10;
-        }
-      });
-    });
-    return penalty;
-  }
-  function scoreLabelLabelOverlap(boxes) {
-    const labelBoxes = boxes.filter((box) => box.type !== "momentum-arrow");
-    let penalty = 0;
-    for (let leftIndex = 0; leftIndex < labelBoxes.length; leftIndex += 1) {
-      for (let rightIndex = leftIndex + 1; rightIndex < labelBoxes.length; rightIndex += 1) {
-        const overlap = overlapArea(labelBoxes[leftIndex].bounds, labelBoxes[rightIndex].bounds);
-        if (overlap > 0) {
-          penalty += overlap / 28;
-        }
-      }
-    }
-    return penalty;
-  }
-  function scoreLabelsInsideLoops(boxes, loopRegions, layout) {
-    if (!loopRegions.length) {
-      return 0;
-    }
-    let penalty = 0;
-    boxes.filter((box) => box.type !== "momentum-arrow").forEach((box) => {
-      loopRegions.forEach((region) => {
-        if (!pointInsideLoopRegion(box.center, region)) {
-          return;
-        }
-        if (outsidePlacementAvailable(box, region, layout)) {
-          penalty += box.loopEdge ? 65 : 38;
-        }
-      });
-    });
-    return penalty;
-  }
-  function scoreMomentumLoopCollision(boxes, loopRegions, vertexBounds) {
-    const momentumBoxes = boxes.filter((box) => box.type === "momentum-label" || box.type === "momentum-arrow");
-    let penalty = 0;
-    momentumBoxes.forEach((box) => {
-      loopRegions.forEach((region) => {
-        const centerInside = pointInsideLoopRegion(box.center, region);
-        const cornersInside = boundsCorners(box.bounds).some((corner) => pointInsideLoopRegion(corner, region));
-        const arrowInside = (box.points || []).some((point) => pointInsideLoopRegion(point, region));
-        if (centerInside || cornersInside || arrowInside) {
-          penalty += box.type === "momentum-arrow" ? 90 : 70;
-        }
-      });
-      vertexBounds.forEach((vertex) => {
-        const overlap = overlapArea(box.bounds, vertex.bounds);
-        const arrowNearVertex = (box.points || []).some((point) => Math.hypot(point.x - vertex.center.x, point.y - vertex.center.y) < vertex.radius + 8);
-        if (overlap > 0 || arrowNearVertex) {
-          penalty += 36 + overlap / 24;
-        }
-      });
-    });
-    return penalty;
-  }
-  function outsidePlacementAvailable(box, region, layout) {
-    const options = layout.options || {};
-    const marginX = Math.max(0, options.marginX ?? 0) / 2;
-    const marginY = Math.max(0, options.marginY ?? 0) / 2;
-    const width = layout.width ?? options.width ?? 0;
-    const height = layout.height ?? options.height ?? 0;
-    let dx = box.center.x - region.center.x;
-    let dy = box.center.y - region.center.y;
-    if (Math.hypot(dx, dy) < 1e-3) {
-      dx = 0;
-      dy = -1;
-    }
-    const length = Math.hypot(dx, dy) || 1;
-    const shift = Math.max(box.bounds.x2 - box.bounds.x1, box.bounds.y2 - box.bounds.y1, 32);
-    const moved = translateBounds(box.bounds, dx / length * shift, dy / length * shift);
-    return moved.x1 >= marginX && moved.y1 >= marginY && (!width || moved.x2 <= width - marginX) && (!height || moved.y2 <= height - marginY);
-  }
-  function edgeLabelPosition(edge, from, to, side, curvePlan, options = {}) {
-    const sample = geometrySample(edgeGeometry(edge, from, to, curvePlan), 0.5);
-    const tangent = normalizeVector(sample.tangent.x, sample.tangent.y);
-    const resolvedSide = normalizePlacementSide(options.sideOverride || side);
-    if (isMomentumEdge(edge)) {
-      if (!options.forceNormal) {
-        return momentumLabelPosition(edge, sample.point, tangent, resolvedSide);
-      }
-      const momentumNormal = momentumNormalForTangent(edge, tangent, resolvedSide);
-      return {
-        x: sample.point.x - momentumNormal.x * METRICS.edgeLabelOffset,
-        y: sample.point.y - momentumNormal.y * METRICS.edgeLabelOffset,
-        anchor: "middle"
-      };
-    }
-    const normalSign = resolvedSide === "right" ? 1 : -1;
-    return {
-      x: sample.point.x + tangent.px * METRICS.edgeLabelOffset * normalSign,
-      y: sample.point.y + tangent.py * METRICS.edgeLabelOffset * normalSign,
-      anchor: "middle"
-    };
-  }
-  function momentumLabelPosition(edge, point, tangent, sideOverride) {
-    const normal = momentumNormalForTangent(edge, tangent, sideOverride);
-    const offset = momentumArrowDistance(edge) + METRICS.momentumLabelGap + momentumLabelDistance(edge);
-    return {
-      x: point.x + normal.x * offset,
-      y: point.y + normal.y * offset,
-      anchor: "middle"
-    };
-  }
-  function momentumArrowGeometry(edge, from, to, curvePlan, options = {}) {
-    const geometry = edgeGeometry(edge, from, to, curvePlan);
-    const shorten = momentumArrowShorten(edge);
-    const reverse = edge.momentumDirection === "target-to-source";
-    const start = reverse ? 1 - shorten : shorten;
-    const end = reverse ? shorten : 1 - shorten;
-    const steps = geometry.kind === "cubic" ? 8 : 1;
-    const midpoint = geometrySample(geometry, 0.5);
-    const normal = momentumNormalForTangent(
-      edge,
-      normalizeVector(midpoint.tangent.x, midpoint.tangent.y),
-      options.sideOverride
-    );
-    const offset = momentumArrowDistance(edge);
-    const points = [];
-    for (let step = 0; step <= steps; step += 1) {
-      const t = start + (end - start) * step / steps;
-      const point = geometryPoint(geometry, t);
-      points.push({
-        x: point.x + normal.x * offset,
-        y: point.y + normal.y * offset
-      });
-    }
-    return { points };
-  }
-  function edgeGeometry(edge, from, to, curvePlan) {
-    const outAngle = Number(edge.metadata.outAngle);
-    const inAngle = Number(edge.metadata.inAngle);
-    if (samePoint(from, to)) {
-      return selfLoopGeometry(edge, from, outAngle, inAngle, curvePlan);
-    }
-    if (Number.isFinite(outAngle) || Number.isFinite(inAngle)) {
-      return angleCurveGeometry(edge, from, to, outAngle, inAngle);
-    }
-    const curve = edgeCurve(edge, curvePlan);
-    if (curve) {
-      return offsetCurveGeometry({ ...edge, curve }, from, to);
-    }
-    return {
-      kind: "line",
-      from,
-      to
-    };
-  }
-  function edgeCurve(edge, curvePlan) {
-    return edge.metadata.curve || curvePlan.get(edge.id) || null;
-  }
-  function selfLoopGeometry(edge, point, outAngle, inAngle, curvePlan) {
-    const curve = edgeCurve(edge, curvePlan);
-    const amount = clamp(curve?.amount ?? 0.72, 0.28, 1.1);
-    const radius = 68 * amount;
-    if (Number.isFinite(outAngle) || Number.isFinite(inAngle)) {
-      const outVector = angleUnitVector(Number.isFinite(outAngle) ? outAngle : 135);
-      const inVector = angleUnitVector(Number.isFinite(inAngle) ? inAngle : 45);
-      return {
-        kind: "cubic",
-        from: point,
-        c1: {
-          x: point.x + outVector.x * radius * 1.65,
-          y: point.y + outVector.y * radius * 1.65
-        },
-        c2: {
-          x: point.x + inVector.x * radius * 1.65,
-          y: point.y + inVector.y * radius * 1.65
-        },
-        to: point
-      };
-    }
-    const side = selfLoopSideVector(curve?.side);
-    const tangent = { x: -side.y, y: side.x };
-    return {
-      kind: "cubic",
-      from: point,
-      c1: {
-        x: point.x - tangent.x * radius + side.x * radius * 1.7,
-        y: point.y - tangent.y * radius + side.y * radius * 1.7
-      },
-      c2: {
-        x: point.x + tangent.x * radius + side.x * radius * 1.7,
-        y: point.y + tangent.y * radius + side.y * radius * 1.7
-      },
-      to: point
-    };
-  }
-  function offsetCurveGeometry(edge, from, to) {
-    const vector = lineVector(from, to);
-    const normal = leftNormalVector(vector);
-    const side = edge.curve.side === "right" ? -1 : 1;
-    const looseness = edge.metadata.looseness ?? 1;
-    const offset = vector.length * edge.curve.amount * looseness * side;
-    if (edge.curve.shape === "semicircle") {
-      return {
-        kind: "cubic",
-        from,
-        c1: {
-          x: from.x + normal.x * offset,
-          y: from.y + normal.y * offset
-        },
-        c2: {
-          x: to.x + normal.x * offset,
-          y: to.y + normal.y * offset
-        },
-        to
-      };
-    }
-    return {
-      kind: "cubic",
-      from,
-      c1: {
-        x: from.x + vector.dx * 0.33 + normal.x * offset,
-        y: from.y + vector.dy * 0.33 + normal.y * offset
-      },
-      c2: {
-        x: from.x + vector.dx * 0.67 + normal.x * offset,
-        y: from.y + vector.dy * 0.67 + normal.y * offset
-      },
-      to
-    };
-  }
-  function angleCurveGeometry(edge, from, to, outAngle, inAngle) {
-    const vector = lineVector(from, to);
-    const looseness = edge.metadata.looseness ?? 1;
-    const handle = vector.length * 0.46 * looseness;
-    const relativeBase = edge.metadata.relativeAngles ? vectorAngle(vector) : 0;
-    const resolvedOut = Number.isFinite(outAngle) ? relativeBase + outAngle : vectorAngle(vector);
-    const resolvedIn = Number.isFinite(inAngle) ? relativeBase + inAngle : vectorAngle(vector) + 180;
-    const outVector = angleUnitVector(resolvedOut);
-    const inVector = angleUnitVector(resolvedIn);
-    return {
-      kind: "cubic",
-      from,
-      c1: {
-        x: from.x + outVector.x * handle,
-        y: from.y + outVector.y * handle
-      },
-      c2: {
-        x: to.x + inVector.x * handle,
-        y: to.y + inVector.y * handle
-      },
-      to
-    };
-  }
-  function geometryPoint(geometry, t) {
-    if (geometry.kind === "cubic") {
-      return cubicPoint(geometry.from, geometry.c1, geometry.c2, geometry.to, t);
-    }
-    return {
-      x: geometry.from.x + (geometry.to.x - geometry.from.x) * t,
-      y: geometry.from.y + (geometry.to.y - geometry.from.y) * t
-    };
-  }
-  function geometryTangent(geometry, t) {
-    if (geometry.kind === "cubic") {
-      return cubicTangent(geometry.from, geometry.c1, geometry.c2, geometry.to, t);
-    }
-    return {
-      x: geometry.to.x - geometry.from.x,
-      y: geometry.to.y - geometry.from.y
-    };
-  }
-  function geometrySample(geometry, t) {
-    return {
-      point: geometryPoint(geometry, t),
-      tangent: geometryTangent(geometry, t)
-    };
-  }
-  function cubicPoint(p0, p1, p2, p3, t) {
-    const mt = 1 - t;
-    return {
-      x: mt ** 3 * p0.x + 3 * mt ** 2 * t * p1.x + 3 * mt * t ** 2 * p2.x + t ** 3 * p3.x,
-      y: mt ** 3 * p0.y + 3 * mt ** 2 * t * p1.y + 3 * mt * t ** 2 * p2.y + t ** 3 * p3.y
-    };
-  }
-  function cubicTangent(p0, p1, p2, p3, t) {
-    const mt = 1 - t;
-    return {
-      x: 3 * mt ** 2 * (p1.x - p0.x) + 6 * mt * t * (p2.x - p1.x) + 3 * t ** 2 * (p3.x - p2.x),
-      y: 3 * mt ** 2 * (p1.y - p0.y) + 6 * mt * t * (p2.y - p1.y) + 3 * t ** 2 * (p3.y - p2.y)
-    };
-  }
-  function labelOffset(kind) {
-    if (kind === "left" || kind === "incoming") {
-      return { x: -METRICS.labelHorizontalOffset, y: 0, anchor: "end" };
-    }
-    if (kind === "right" || kind === "outgoing") {
-      return { x: METRICS.labelHorizontalOffset, y: 0, anchor: "start" };
-    }
-    if (kind === "bottom") {
-      return { x: 0, y: METRICS.labelBottomOffset, anchor: "middle" };
-    }
-    return { x: 0, y: -METRICS.labelTopOffset, anchor: "middle" };
-  }
-  function textBounds(anchor, text, fontSize) {
-    const width = estimateTextWidth(text, fontSize);
-    const height = fontSize * 1.1;
-    let x1 = anchor.x - width / 2;
-    let x2 = anchor.x + width / 2;
-    if (anchor.anchor === "start") {
-      x1 = anchor.x;
-      x2 = anchor.x + width;
-    } else if (anchor.anchor === "end") {
-      x1 = anchor.x - width;
-      x2 = anchor.x;
-    }
-    return {
-      x1,
-      x2,
-      y1: anchor.y - height / 2,
-      y2: anchor.y + height / 2
-    };
-  }
-  function estimateTextWidth(text, fontSize) {
-    const plain = plainLabelText(text);
-    const chars = Array.from(plain).length;
-    const narrow = (plain.match(/[.,:+\-_=]/g) || []).length;
-    const wide = (plain.match(/[MWmw]/g) || []).length;
-    const units = Math.max(1, chars - narrow * 0.35 + wide * 0.25);
-    return units * fontSize * 0.56;
-  }
-  function plainLabelText(text) {
-    return String(text || "").replace(/\\overline\{([^}]*)\}/g, "$1").replace(/\\([A-Za-z]+)/g, "$1").replace(/[{}]/g, "").replace(/[_^]/g, "").trim();
-  }
-  function curvePlanMap(prepared, candidate) {
-    const map = /* @__PURE__ */ new Map();
-    (prepared.parallelCurvePlan || []).forEach((assignment) => {
-      map.set(assignment.propagator, {
-        side: assignment.side,
-        amount: assignment.amount,
-        shape: assignment.shape
-      });
-    });
-    (candidate.curvePlan || []).forEach((assignment) => {
-      map.set(assignment.edge, {
-        side: assignment.side,
-        amount: assignment.amount,
-        shape: assignment.shape
-      });
-    });
-    return map;
-  }
-  function findEdgeByLabelTarget(target, edges) {
-    const match = String(target || "").match(/^([A-Za-z0-9_.-]+)->([A-Za-z0-9_.-]+)(?:#([0-9]+))?$/);
-    if (!match) {
-      return null;
-    }
-    const [, from, to, rawIndex] = match;
-    const matches = edges.filter((edge) => edge.source === from && edge.target === to).sort((left, right) => left.metadata.edgeIndex - right.metadata.edgeIndex || compareStable(left.id, right.id));
-    const index = rawIndex ? Number(rawIndex) - 1 : 0;
-    return matches[index] || null;
-  }
-  function isLoopEdge(edgeId, prepared, candidate) {
-    const loop = candidate.loop || prepared.topology?.loopCandidate;
-    return Boolean(edgeId && loop?.edges?.includes(edgeId));
-  }
-  function vertexRadius(vertex) {
-    const shape = vertex.metadata.vertexShape;
-    if (shape && typeof shape === "object" && Number.isFinite(shape.size)) {
-      return Math.max(4, shape.size);
-    }
-    if (shape === "blob") {
-      return 18;
-    }
-    if (shape === "disk" || shape === "large-blob") {
-      return 44;
-    }
-    return 5;
-  }
-  function pointInsideLoopRegion(point, region) {
-    if (region.type === "polygon") {
-      return pointInsidePolygon(point, region.points);
-    }
-    if (region.type === "self-energy") {
-      const dx = point.x - region.center.x;
-      const dy = point.y - region.center.y;
-      const along = dx * region.axis.x + dy * region.axis.y;
-      const cross = dx * region.normal.x + dy * region.normal.y;
-      return (along / region.radiusX) ** 2 + (cross / region.radiusY) ** 2 <= 1;
-    }
-    const normalized = ((point.x - region.center.x) / region.radiusX) ** 2 + ((point.y - region.center.y) / region.radiusY) ** 2;
-    return normalized <= 1;
-  }
-  function pointInsidePolygon(point, polygon) {
-    let inside = false;
-    for (let index = 0, previousIndex = polygon.length - 1; index < polygon.length; previousIndex = index, index += 1) {
-      const current = polygon[index];
-      const previous = polygon[previousIndex];
-      const intersects = current.y > point.y !== previous.y > point.y && point.x < (previous.x - current.x) * (point.y - current.y) / (previous.y - current.y || 1) + current.x;
-      if (intersects) {
-        inside = !inside;
-      }
-    }
-    return inside;
-  }
-  function boundsCenter(bounds) {
-    return {
-      x: (bounds.x1 + bounds.x2) / 2,
-      y: (bounds.y1 + bounds.y2) / 2
-    };
-  }
-  function boundsCorners(bounds) {
-    return [
-      { x: bounds.x1, y: bounds.y1 },
-      { x: bounds.x2, y: bounds.y1 },
-      { x: bounds.x2, y: bounds.y2 },
-      { x: bounds.x1, y: bounds.y2 }
-    ];
-  }
-  function pointsBounds(points) {
-    return {
-      x1: Math.min(...points.map((point) => point.x)),
-      x2: Math.max(...points.map((point) => point.x)),
-      y1: Math.min(...points.map((point) => point.y)),
-      y2: Math.max(...points.map((point) => point.y))
-    };
-  }
-  function expandBounds(bounds, amount) {
-    return {
-      x1: bounds.x1 - amount,
-      x2: bounds.x2 + amount,
-      y1: bounds.y1 - amount,
-      y2: bounds.y2 + amount
-    };
-  }
-  function translateBounds(bounds, dx, dy) {
-    return {
-      x1: bounds.x1 + dx,
-      x2: bounds.x2 + dx,
-      y1: bounds.y1 + dy,
-      y2: bounds.y2 + dy
-    };
-  }
-  function shiftBoxWithAnchor(box, dx, dy) {
-    return {
-      ...box,
-      x: box.x + dx,
-      y: box.y + dy,
-      bounds: translateBounds(box.bounds, dx, dy),
-      center: {
-        x: box.center.x + dx,
-        y: box.center.y + dy
-      }
-    };
-  }
-  function buildPlacedLabelBoxes(placement) {
-    if (!placement?.entries?.length) {
-      return null;
-    }
-    return placement.entries.flatMap((entry) => {
-      const labelBox = {
-        id: entry.id,
-        type: entry.type,
-        target: entry.target,
-        node: entry.node,
-        edgeId: entry.edgeId,
-        edgeIndex: entry.edgeIndex,
-        source: entry.source,
-        targetNode: entry.targetNode,
-        text: entry.text,
-        x: entry.x,
-        y: entry.y,
-        anchor: entry.anchor,
-        side: entry.side,
-        defaultSide: entry.defaultSide,
-        explicitSide: entry.explicitSide,
-        bounds: cloneBounds(entry.bounds),
-        center: boundsCenter(entry.bounds),
-        fontSize: entry.type === "node-label" ? METRICS.nodeFontSize : METRICS.edgeFontSize
-      };
-      if (!entry.arrowBounds) {
-        return [labelBox];
-      }
-      return [
-        labelBox,
-        {
-          id: `momentum-arrow:${entry.edgeId}`,
-          type: "momentum-arrow",
-          edgeId: entry.edgeId,
-          edgeIndex: entry.edgeIndex,
-          source: entry.source,
-          targetNode: entry.targetNode,
-          bounds: cloneBounds(entry.arrowBounds),
-          center: boundsCenter(entry.arrowBounds),
-          points: (entry.arrowPoints || []).map((point) => ({ ...point }))
-        }
-      ];
-    });
-  }
-  function decorateLoopLabelBoxes(boxes, prepared, candidate) {
-    return boxes.map((box) => {
-      const loopEdge = isLoopEdge(box.edgeId, prepared, candidate);
-      return {
-        ...box,
-        type: loopEdge && box.type === "edge-label" ? "loop-edge-label" : box.type,
-        loopEdge
-      };
-    });
-  }
-  function cloneBounds(bounds) {
-    return {
-      x1: bounds.x1,
-      x2: bounds.x2,
-      y1: bounds.y1,
-      y2: bounds.y2
-    };
-  }
-  function orderedSides(preferred, sides) {
-    const normalized = normalizePlacementSide(preferred);
-    return [
-      normalized,
-      ...sides.filter((side) => side !== normalized)
-    ];
-  }
-  function normalizePlacementSide(side) {
-    if (side === "incoming" || side === "left") {
-      return "left";
-    }
-    if (side === "outgoing" || side === "right") {
-      return "right";
-    }
-    if (side === "bottom") {
-      return "bottom";
-    }
-    return "top";
-  }
-  function nodeSideShifts(side) {
-    if (side === "left" || side === "right") {
-      return [
-        { x: 0, y: 0 },
-        { x: 0, y: -16 },
-        { x: 0, y: 16 }
-      ];
-    }
-    return [
-      { x: 0, y: 0 },
-      { x: -18, y: 0 },
-      { x: 18, y: 0 }
-    ];
-  }
-  function edgeTangentShifts() {
-    return [0, -18, 18];
-  }
-  function viewOverflow(bounds, layout) {
-    const width = layout.width ?? layout.options?.width ?? 0;
-    const height = layout.height ?? layout.options?.height ?? 0;
-    if (!width || !height) {
-      return 0;
-    }
-    return Math.max(0, -bounds.x1) + Math.max(0, -bounds.y1) + Math.max(0, bounds.x2 - width) + Math.max(0, bounds.y2 - height);
-  }
-  function roundBounds(bounds) {
-    return {
-      x1: roundPlacement(bounds.x1),
-      x2: roundPlacement(bounds.x2),
-      y1: roundPlacement(bounds.y1),
-      y2: roundPlacement(bounds.y2)
-    };
-  }
-  function roundPlacement(value) {
-    return Number(value.toFixed(6));
-  }
-  function pointInsideBounds(point, bounds) {
-    return point.x >= bounds.x1 && point.x <= bounds.x2 && point.y >= bounds.y1 && point.y <= bounds.y2;
-  }
-  function overlapArea(left, right) {
-    const width = Math.max(0, Math.min(left.x2, right.x2) - Math.max(left.x1, right.x1));
-    const height = Math.max(0, Math.min(left.y2, right.y2) - Math.max(left.y1, right.y1));
-    return width * height;
-  }
-  function averagePoint(points) {
-    return {
-      x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
-      y: points.reduce((sum, point) => sum + point.y, 0) / points.length
-    };
-  }
-  function samePoint(from, to) {
-    return Math.abs(from.x - to.x) < 1e-3 && Math.abs(from.y - to.y) < 1e-3;
-  }
-  function isMomentumEdge(edge) {
-    return edge.metadata.labelPlacement === "momentum" || edge.metadata.labelPlacement === "momentum-prime";
-  }
-  function momentumNormalForTangent(edge, tangent, sideOverride) {
-    const normal = canonicalMomentumNormal(tangent);
-    const normalSign = normalizePlacementSide(sideOverride || (edge.metadata.labelPlacement === "momentum-prime" ? "right" : "left")) === "right" ? 1 : -1;
-    return {
-      x: normal.x * normalSign,
-      y: normal.y * normalSign
-    };
-  }
-  function canonicalMomentumNormal(tangent) {
-    let ux = tangent.ux;
-    let uy = tangent.uy;
-    if (Math.abs(ux) >= Math.abs(uy)) {
-      if (ux < 0) {
-        ux *= -1;
-        uy *= -1;
-      }
-    } else if (uy < 0) {
-      ux *= -1;
-      uy *= -1;
-    }
-    return {
-      x: -uy,
-      y: ux
-    };
-  }
-  function momentumArrowDistance(edge) {
-    return edge.metadata.momentum?.arrowDistance ?? METRICS.momentumArrowOffset;
-  }
-  function momentumLabelDistance(edge) {
-    return edge.metadata.momentum?.labelDistance ?? 0;
-  }
-  function momentumArrowShorten(edge) {
-    return edge.metadata.momentum?.arrowShorten ?? METRICS.momentumArrowShorten;
-  }
-  function lineVector(from, to) {
-    const dx = to.x - from.x;
-    const dy = to.y - from.y;
-    const length = Math.hypot(dx, dy) || 1;
-    return {
-      dx,
-      dy,
-      length,
-      ux: dx / length,
-      uy: dy / length,
-      px: -dy / length,
-      py: dx / length
-    };
-  }
-  function normalizeVector(dx, dy) {
-    const length = Math.hypot(dx, dy) || 1;
-    return {
-      ux: dx / length,
-      uy: dy / length,
-      px: -dy / length,
-      py: dx / length
-    };
-  }
-  function leftNormalVector(vector) {
-    return {
-      x: vector.dy / vector.length,
-      y: -vector.dx / vector.length
-    };
-  }
-  function vectorAngle(vector) {
-    return Math.atan2(-vector.dy, vector.dx) * 180 / Math.PI;
-  }
-  function angleUnitVector(degrees) {
-    const radians = degrees * Math.PI / 180;
-    return {
-      x: Math.cos(radians),
-      y: -Math.sin(radians)
-    };
-  }
-  function selfLoopSideVector(side) {
-    if (side === "right") {
-      return { x: 1, y: 0 };
-    }
-    if (side === "bottom") {
-      return { x: 0, y: 1 };
-    }
-    if (side === "left") {
-      return { x: -1, y: 0 };
-    }
-    return { x: 0, y: -1 };
-  }
-  function clamp(value, min, max) {
-    return Math.min(max, Math.max(min, value));
-  }
-  var METRICS, LABEL_SCORE_FIELDS;
-  var init_labels = __esm({
-    "src/markfeyn/renderer/layout/labels.js"() {
-      init_model();
-      METRICS = Object.freeze({
-        nodeFontSize: 32,
-        edgeFontSize: 26,
-        labelHorizontalOffset: 20,
-        labelTopOffset: 24,
-        labelBottomOffset: 30,
-        edgeLabelOffset: 32,
-        momentumArrowOffset: 19,
-        momentumLabelGap: 20,
-        momentumArrowShorten: 0.22,
-        momentumArrowHeadLength: 8,
-        momentumArrowHeadWidth: 7
-      });
-      LABEL_SCORE_FIELDS = Object.freeze([
-        "nodeLabelOverlap",
-        "edgeLabelOverlap",
-        "labelLabelOverlap",
-        "labelsInsideLoops",
-        "momentumLoopCollision"
-      ]);
-    }
-  });
-
-  // src/markfeyn/renderer/layout/score.js
-  function scoreLayout(layout, prepared) {
-    const labelBreakdown = scoreLabelGeometry(layout, prepared);
-    const breakdown = {
-      missingCoordinates: scoreMissingCoordinates(layout, prepared.semantic),
-      nonFiniteCoordinates: scoreNonFiniteCoordinates(layout),
-      externalBoundaryRoleViolations: scoreExternalBoundaryRoles(layout, prepared),
-      parallelEdgeOverlap: scoreParallelEdgeOverlap(prepared),
-      externalAlignment: scoreExternalAlignment(layout, prepared),
-      symmetry: scoreSymmetry(layout, prepared),
-      symmetricUnclassifiedBranchLengths: scoreSymmetricUnclassifiedBranchLengths(layout, prepared),
-      symmetricUnclassifiedBranchAngles: scoreSymmetricUnclassifiedBranchAngles(layout, prepared),
-      symmetricUnclassifiedMirrorDeviation: scoreSymmetricUnclassifiedMirrorDeviation(layout, prepared),
-      symmetricUnclassifiedCenteredInteraction: scoreSymmetricUnclassifiedCenteredInteraction(layout, prepared),
-      symmetricUnclassifiedExternalLegBalance: scoreSymmetricUnclassifiedExternalLegBalance(layout, prepared),
-      multiloopRegionOverlap: scoreMultiloopRegionOverlap(layout, prepared),
-      multiloopContainmentViolation: scoreMultiloopContainmentViolation(layout, prepared),
-      multiloopInterleaving: scoreMultiloopInterleaving(layout, prepared),
-      topologyRecognizability: scoreTopologyRecognizability(layout, prepared),
-      layoutInstability: layoutInstabilityScore(layout, prepared.incremental),
-      edgeOverlap: scoreCandidateEdgeOverlap(layout, prepared),
-      loopReadability: scoreCandidateLoopReadability(layout, prepared, layout.loopCandidate),
-      loopSymmetry: scoreLoopSymmetryRefinement(layout, prepared, layout.loopCandidate),
-      externalLegStraightness: scoreCandidateExternalLegStraightness(layout, prepared),
-      ...labelBreakdown
-    };
-    const total = Object.values(breakdown).reduce((sum, value) => sum + value, 0);
-    return {
-      total,
-      breakdown,
-      summary: {
-        missingCoordinates: breakdown.missingCoordinates,
-        nonFiniteCoordinates: breakdown.nonFiniteCoordinates,
-        externalBoundaryRoleViolations: breakdown.externalBoundaryRoleViolations,
-        parallelEdgeOverlap: breakdown.parallelEdgeOverlap,
-        multiloopRegionOverlap: breakdown.multiloopRegionOverlap,
-        multiloopContainmentViolation: breakdown.multiloopContainmentViolation,
-        multiloopInterleaving: breakdown.multiloopInterleaving,
-        topologyRecognizability: breakdown.topologyRecognizability,
-        layoutInstability: breakdown.layoutInstability,
-        edgeOverlap: breakdown.edgeOverlap,
-        loopReadability: breakdown.loopReadability,
-        loopSymmetry: breakdown.loopSymmetry,
-        externalLegStraightness: breakdown.externalLegStraightness,
-        nodeLabelOverlap: breakdown.nodeLabelOverlap,
-        edgeLabelOverlap: breakdown.edgeLabelOverlap,
-        labelLabelOverlap: breakdown.labelLabelOverlap,
-        labelsInsideLoops: breakdown.labelsInsideLoops,
-        momentumLoopCollision: breakdown.momentumLoopCollision
-      }
-    };
-  }
-  function scoreLoopCandidate(layout, prepared, candidate = {}) {
-    const labelBreakdown = scoreLabelGeometry(layout, prepared, candidate);
-    const breakdown = {
-      missingCoordinates: scoreMissingCoordinates(layout, prepared.semantic),
-      nonFiniteCoordinates: scoreNonFiniteCoordinates(layout),
-      externalBoundaryRoleViolations: scoreExternalBoundaryRoles(layout, prepared),
-      externalAlignment: scoreExternalAlignment(layout, prepared),
-      edgeOverlap: scoreCandidateEdgeOverlap(layout, prepared),
-      loopReadability: scoreCandidateLoopReadability(layout, prepared, candidate),
-      loopSymmetry: scoreLoopSymmetryRefinement(layout, prepared, candidate),
-      externalLegStraightness: scoreCandidateExternalLegStraightness(layout, prepared),
-      ...labelBreakdown
-    };
-    const total = Object.values(breakdown).reduce((sum, value) => sum + value, 0);
-    return {
-      total,
-      breakdown
-    };
-  }
-  function scoreDiagnostic(score) {
-    return {
-      stage: "score",
-      severity: score.total > 0 ? "warning" : "info",
-      message: `Layout score: ${roundScore(score.total)}`,
-      data: {
-        total: roundScore(score.total),
-        breakdown: Object.fromEntries(
-          Object.entries(score.breakdown).map(([key, value]) => [key, roundScore(value)])
-        )
-      }
-    };
-  }
-  function scoreMissingCoordinates(layout, semantic) {
-    return semantic.vertices.filter((vertex) => !layout.positions?.[vertex.id]).length * 100;
-  }
-  function scoreNonFiniteCoordinates(layout) {
-    return Object.values(layout.positions || {}).filter((position) => !Number.isFinite(position.x) || !Number.isFinite(position.y)).length * 100;
-  }
-  function scoreExternalBoundaryRoles(layout, prepared) {
-    if (prepared.orientation.mode !== "process" || layout.options?.tikzOrientation) {
-      return 0;
-    }
-    const options = layout.options || {};
-    const tolerance = 4;
-    const incomingLayer = options.orientation?.endsWith("reverse") ? options.width - options.marginX : options.marginX;
-    const outgoingLayer = options.orientation?.endsWith("reverse") ? options.marginX : options.width - options.marginX;
-    let penalty = 0;
-    prepared.semantic.incoming.forEach((node) => {
-      const position = layout.positions?.[node];
-      if (position) {
-        penalty += outsideTolerance(Math.abs(position.x - incomingLayer), tolerance);
-      }
-    });
-    prepared.semantic.outgoing.forEach((node) => {
-      const position = layout.positions?.[node];
-      if (position) {
-        penalty += outsideTolerance(Math.abs(position.x - outgoingLayer), tolerance);
-      }
-    });
-    return penalty;
-  }
-  function scoreParallelEdgeOverlap(prepared) {
-    const plannedByEdge = new Map((prepared.parallelCurvePlan || []).map((entry) => [entry.propagator, entry]));
-    return (prepared.topology.parallelEdgeGroups || []).reduce((penalty, group) => {
-      if (!group.internal || group.edges.length < 2) {
-        return penalty;
-      }
-      const signatures = /* @__PURE__ */ new Set();
-      let groupPenalty = 0;
-      group.edges.forEach((edge) => {
-        const planned = plannedByEdge.get(edge.id);
-        const signature = planned ? `${planned.side}:${planned.amount}` : edge.curveSide ? `${edge.curveSide}:${edge.curveAmount}` : "line";
-        if (signatures.has(signature)) {
-          groupPenalty += 25;
-        }
-        signatures.add(signature);
-        if (signature === "line") {
-          groupPenalty += 25;
-        }
-      });
-      return penalty + groupPenalty;
-    }, 0);
-  }
-  function scoreExternalAlignment(layout, prepared) {
-    const ordering = prepared.externalOrdering;
-    if (!ordering || prepared.orientation.mode !== "process") {
-      return 0;
-    }
-    return scoreOrderedCross(layout, ordering.incoming) + scoreOrderedCross(layout, ordering.outgoing);
-  }
-  function scoreOrderedCross(layout, entries) {
-    let penalty = 0;
-    let previous = -Infinity;
-    entries.forEach((entry) => {
-      const position = layout.positions?.[entry.id];
-      if (!position || !Number.isFinite(position.y)) {
-        return;
-      }
-      if (position.y + 1e-3 < previous) {
-        penalty += previous - position.y;
-      }
-      previous = Math.max(previous, position.y);
-    });
-    return penalty;
-  }
-  function scoreSymmetry(layout, prepared) {
-    if (prepared.orientation.mode !== "symmetric" || !prepared.semantic.unclassified.length) {
-      return 0;
-    }
-    const center = centerOfPositions(layout.positions || {});
-    const distances = prepared.semantic.unclassified.map((node) => layout.positions?.[node]).filter(Boolean).map((position) => Math.hypot(position.x - center.x, position.y - center.y));
-    if (distances.length < 2) {
-      return 0;
-    }
-    return (Math.max(...distances) - Math.min(...distances)) / 20;
-  }
-  function symmetricUnclassifiedRefinement(prepared) {
-    return prepared.symmetricUnclassified?.applicable ? prepared.symmetricUnclassified : null;
-  }
-  function scoreSymmetricUnclassifiedBranchLengths(layout, prepared) {
-    const refinement = symmetricUnclassifiedRefinement(prepared);
-    if (!refinement) {
-      return 0;
-    }
-    if (refinement.kind === "twoCenterTree") {
-      const leftLengths = branchLengths(layout, refinement.leftCenter, refinement.leftLeaves);
-      const rightLengths = branchLengths(layout, refinement.rightCenter, refinement.rightLeaves);
-      return range(leftLengths) / 24 + range(rightLengths) / 24 + Math.abs(average(leftLengths) - average(rightLengths)) / 28;
-    }
-    if (refinement.kind === "twoPointLoop") {
-      const lengths = (refinement.externalLegs || []).map((leg) => distance(layout.positions?.[leg.external], layout.positions?.[leg.internal])).filter((value) => Number.isFinite(value));
-      return lengths.length >= 2 ? range(lengths) / 24 : 0;
-    }
-    return 0;
-  }
-  function scoreSymmetricUnclassifiedBranchAngles(layout, prepared) {
-    const refinement = symmetricUnclassifiedRefinement(prepared);
-    if (!refinement || refinement.kind !== "twoCenterTree") {
-      return 0;
-    }
-    const axis = backboneAxis(layout, refinement.leftCenter, refinement.rightCenter);
-    if (!axis) {
-      return 0;
-    }
-    const leftAngles = signedCrossAxisAngles(layout, refinement.leftCenter, refinement.leftLeaves, axis);
-    const rightAngles = signedCrossAxisAngles(layout, refinement.rightCenter, refinement.rightLeaves, axis);
-    return mirrorAnglePenalty(leftAngles, rightAngles);
-  }
-  function scoreSymmetricUnclassifiedMirrorDeviation(layout, prepared) {
-    const refinement = symmetricUnclassifiedRefinement(prepared);
-    if (!refinement || refinement.kind !== "twoCenterTree") {
-      return 0;
-    }
-    const axis = backboneAxis(layout, refinement.leftCenter, refinement.rightCenter);
-    const midpoint = midpointOf(layout.positions?.[refinement.leftCenter], layout.positions?.[refinement.rightCenter]);
-    if (!axis || !midpoint) {
-      return 0;
-    }
-    let penalty = 0;
-    const pairCount = Math.min(refinement.leftLeaves.length, refinement.rightLeaves.length);
-    for (let index = 0; index < pairCount; index += 1) {
-      const left = layout.positions?.[refinement.leftLeaves[index]];
-      const right = layout.positions?.[refinement.rightLeaves[index]];
-      if (!left || !right) {
-        continue;
-      }
-      const mirrored = reflectAcrossAxis(left, midpoint, axis);
-      penalty += distance(mirrored, right) / 36;
-    }
-    return penalty;
-  }
-  function scoreSymmetricUnclassifiedCenteredInteraction(layout, prepared) {
-    const refinement = symmetricUnclassifiedRefinement(prepared);
-    if (!refinement) {
-      return 0;
-    }
-    const options = layout.options || {};
-    const canvasCenter = {
-      x: (layout.width ?? options.width ?? 0) / 2,
-      y: (layout.height ?? options.height ?? 0) / 2
-    };
-    let penalty = 0;
-    if (refinement.kind === "twoCenterTree") {
-      const left = layout.positions?.[refinement.leftCenter];
-      const right = layout.positions?.[refinement.rightCenter];
-      const interactionCenter = midpointOf(left, right);
-      if (interactionCenter) {
-        penalty += distance(interactionCenter, canvasCenter) / 40;
-      }
-    }
-    if (refinement.kind === "twoPointLoop") {
-      const [endpointA, endpointB] = refinement.loopEndpoints || [];
-      const center = midpointOf(layout.positions?.[endpointA], layout.positions?.[endpointB]);
-      if (center) {
-        penalty += distance(center, canvasCenter) / 40;
-      }
-    }
-    return penalty;
-  }
-  function scoreSymmetricUnclassifiedExternalLegBalance(layout, prepared) {
-    const refinement = symmetricUnclassifiedRefinement(prepared);
-    if (!refinement || refinement.kind !== "twoPointLoop") {
-      return 0;
-    }
-    const [endpointA, endpointB] = refinement.loopEndpoints || [];
-    const positionA = layout.positions?.[endpointA];
-    const positionB = layout.positions?.[endpointB];
-    const axis = backboneAxis(layout, endpointA, endpointB);
-    if (!positionA || !positionB || !axis) {
-      return 0;
-    }
-    let penalty = 0;
-    (refinement.externalLegs || []).forEach((leg) => {
-      const external = layout.positions?.[leg.external];
-      const internal = layout.positions?.[leg.internal];
-      if (!external || !internal) {
-        return;
-      }
-      const axialOffset = (external.x - internal.x) * axis.x + (external.y - internal.y) * axis.y;
-      if (Math.abs(axialOffset) < 8) {
-        penalty += (8 - Math.abs(axialOffset)) * 2;
-      }
-    });
-    const axialOffsets = (refinement.externalLegs || []).map((leg) => {
-      const external = layout.positions?.[leg.external];
-      const internal = layout.positions?.[leg.internal];
-      if (!external || !internal) {
-        return null;
-      }
-      return (external.x - internal.x) * axis.x + (external.y - internal.y) * axis.y;
-    }).filter((value) => Number.isFinite(value));
-    if (axialOffsets.length === 2 && axialOffsets[0] * axialOffsets[1] >= 0) {
-      penalty += Math.abs(axialOffsets[0]) + Math.abs(axialOffsets[1]);
-    }
-    return penalty;
-  }
-  function scoreMultiloopRegionOverlap(layout, prepared) {
-    const regions = prepared.topology.loopRegions || [];
-    if (prepared.topology.detectedTopology !== "multiLoop" || regions.length < 2) {
-      return 0;
-    }
-    const boxes = regions.map((region) => ({
-      region,
-      box: boundingBox(region.nodes.map((node) => layout.positions?.[node]).filter(Boolean))
-    })).filter((entry) => entry.box);
-    let penalty = 0;
-    for (let leftIndex = 0; leftIndex < boxes.length; leftIndex += 1) {
-      for (let rightIndex = leftIndex + 1; rightIndex < boxes.length; rightIndex += 1) {
-        const left = boxes[leftIndex];
-        const right = boxes[rightIndex];
-        if (!sharedCount(left.region.nodes, right.region.nodes) && boxesOverlap(left.box, right.box, 10)) {
-          penalty += 60;
-        }
-      }
-    }
-    return penalty;
-  }
-  function scoreMultiloopContainmentViolation(layout, prepared) {
-    const regions = prepared.topology.loopRegions || [];
-    if (prepared.topology.multiLoop?.kind !== "nested") {
-      return 0;
-    }
-    const byId = new Map(regions.map((region) => [region.id, region]));
-    let penalty = 0;
-    regions.forEach((outer) => {
-      const outerBox = boundingBox(outer.nodes.map((node) => layout.positions?.[node]).filter(Boolean));
-      (outer.contains || []).forEach((childId) => {
-        const child = byId.get(childId);
-        const childBox = boundingBox((child?.nodes || []).map((node) => layout.positions?.[node]).filter(Boolean));
-        if (outerBox && childBox && !boxContains(outerBox, childBox, 4)) {
-          penalty += 80;
-        }
-      });
-    });
-    return penalty;
-  }
-  function scoreMultiloopInterleaving(layout, prepared) {
-    const selection = layout.multiloopCandidate;
-    if (!selection || prepared.topology.detectedTopology !== "multiLoop") {
-      return 0;
-    }
-    const centers = (prepared.topology.loopRegions || []).filter((region) => selection.regions?.includes(region.id)).map((region) => centerForNodes(layout, region.nodes)).filter(Boolean).sort((left, right) => left.x - right.x);
-    if (centers.length < 3) {
-      return 0;
-    }
-    return centers.reduce((penalty, center, index) => {
-      if (index === 0) {
-        return penalty;
-      }
-      return center.x < centers[index - 1].x ? penalty + 40 : penalty;
-    }, 0);
-  }
-  function scoreTopologyRecognizability(layout, prepared) {
-    if (prepared.topology.detectedTopology !== "multiLoop") {
-      return 0;
-    }
-    return (prepared.topology.loopRegions || []).reduce((penalty, region) => {
-      const points = region.nodes.map((node) => layout.positions?.[node]).filter(Boolean);
-      if (region.nodes.length >= 3 && Math.abs(polygonArea(points)) < 200) {
-        return penalty + 100;
-      }
-      if (region.kind === "box" && points.length === 4 && !isConvexPolygon(points)) {
-        return penalty + 120;
-      }
-      return penalty;
-    }, 0);
-  }
-  function branchLengths(layout, center, leaves) {
-    const centerPosition = layout.positions?.[center];
-    return leaves.map((leaf) => layout.positions?.[leaf]).filter(Boolean).map((position) => distance(centerPosition, position));
-  }
-  function backboneAxis(layout, left, right) {
-    const leftPosition = layout.positions?.[left];
-    const rightPosition = layout.positions?.[right];
-    if (!leftPosition || !rightPosition) {
-      return null;
-    }
-    const dx = rightPosition.x - leftPosition.x;
-    const dy = rightPosition.y - leftPosition.y;
-    const length = Math.hypot(dx, dy);
-    if (!length) {
-      return null;
-    }
-    return { x: dx / length, y: dy / length };
-  }
-  function signedCrossAxisAngles(layout, center, leaves, axis) {
-    const centerPosition = layout.positions?.[center];
-    const normal = { x: -axis.y, y: axis.x };
-    return leaves.map((leaf) => layout.positions?.[leaf]).filter(Boolean).map((position) => (position.x - centerPosition.x) * normal.x + (position.y - centerPosition.y) * normal.y).sort((left, right) => left - right);
-  }
-  function mirrorAnglePenalty(leftValues, rightValues) {
-    const pairCount = Math.min(leftValues.length, rightValues.length);
-    let penalty = 0;
-    for (let index = 0; index < pairCount; index += 1) {
-      penalty += Math.abs(leftValues[index] + rightValues[index]) / 24;
-    }
-    return penalty + range(leftValues) / 30 + range(rightValues) / 30;
-  }
-  function midpointOf(left, right) {
-    if (!left || !right) {
-      return null;
-    }
-    return {
-      x: (left.x + right.x) / 2,
-      y: (left.y + right.y) / 2
-    };
-  }
-  function reflectAcrossAxis(point, midpoint, axis) {
-    const relative = {
-      x: point.x - midpoint.x,
-      y: point.y - midpoint.y
-    };
-    const along = relative.x * axis.x + relative.y * axis.y;
-    const alongVector = { x: axis.x * along, y: axis.y * along };
-    const normalVector = {
-      x: relative.x - alongVector.x,
-      y: relative.y - alongVector.y
-    };
-    return {
-      x: midpoint.x + alongVector.x - normalVector.x,
-      y: midpoint.y + alongVector.y - normalVector.y
-    };
-  }
-  function average(values) {
-    if (!values.length) {
-      return 0;
-    }
-    return values.reduce((sum, value) => sum + value, 0) / values.length;
-  }
-  function scoreCandidateEdgeOverlap(layout, prepared) {
-    if (!layout.loopCandidate && !prepared.topology.loopCandidate) {
-      return 0;
-    }
-    const segments = prepared.semantic.propagators.filter((edge) => !edge.metadata.hidden && edge.source !== edge.target).map((edge) => ({
-      edge,
-      from: layout.positions?.[edge.source],
-      to: layout.positions?.[edge.target]
-    })).filter((entry) => entry.from && entry.to);
-    let penalty = 0;
-    for (let leftIndex = 0; leftIndex < segments.length; leftIndex += 1) {
-      for (let rightIndex = leftIndex + 1; rightIndex < segments.length; rightIndex += 1) {
-        const left = segments[leftIndex];
-        const right = segments[rightIndex];
-        if (shareEndpoint(left.edge, right.edge)) {
-          continue;
-        }
-        if (segmentsIntersect(left.from, left.to, right.from, right.to)) {
-          penalty += 35;
-        }
-      }
-    }
-    return penalty;
-  }
-  function scoreCandidateLoopReadability(layout, prepared, candidate = {}) {
-    const loop = candidate?.loop || prepared.topology.loopCandidate;
-    if (!loop) {
-      return 0;
-    }
-    const positions = loop.nodes.map((node) => layout.positions?.[node]).filter(Boolean);
-    if (positions.length !== loop.nodes.length) {
-      return 100;
-    }
-    if (positions.some((position) => !Number.isFinite(position.x) || !Number.isFinite(position.y))) {
-      return 100;
-    }
-    if (loop.type === "tadpole") {
-      const position = positions[0];
-      const minClearance = Math.min(
-        position.x - (layout.options?.marginX ?? 0),
-        (layout.width ?? 0) - (layout.options?.marginX ?? 0) - position.x,
-        position.y - (layout.options?.marginY ?? 0),
-        (layout.height ?? 0) - (layout.options?.marginY ?? 0) - position.y
-      );
-      return minClearance < 42 ? 42 - minClearance : 0;
-    }
-    const area = Math.abs(polygonArea(positions));
-    const minArea = Math.max(900, loop.nodes.length * 420);
-    const edgeLengths = positions.map((position, index) => distance(position, positions[(index + 1) % positions.length]));
-    const minEdge = Math.min(...edgeLengths);
-    const maxEdge = Math.max(...edgeLengths);
-    let penalty = 0;
-    if (area < minArea) {
-      penalty += (minArea - area) / 20;
-    }
-    if (minEdge < 42) {
-      penalty += 42 - minEdge;
-    }
-    if (maxEdge > 0 && minEdge > 0) {
-      penalty += Math.max(0, maxEdge / minEdge - 2.4) * 15;
-    }
-    return penalty;
-  }
-  function scoreLoopSymmetryRefinement(layout, prepared, candidate = {}) {
-    const loop = candidate?.loop || prepared.topology.loopCandidate;
-    if (!loop || loop.type === "tadpole") {
-      return 0;
-    }
-    const positions = loop.nodes.map((node) => layout.positions?.[node]).filter(Boolean);
-    if (positions.length !== loop.nodes.length || positions.length < 3) {
-      return 0;
-    }
-    const center = averagePosition(positions);
-    const edgeLengths = positions.map((position, index) => distance(position, positions[(index + 1) % positions.length]));
-    const radii = positions.map((position) => distance(position, center));
-    let penalty = 0;
-    penalty += range(edgeLengths) / 36;
-    penalty += range(radii) / 42;
-    if (loop.nodes.length === 3) {
-      const area = Math.abs(polygonArea(positions));
-      const perimeter = edgeLengths.reduce((sum, value) => sum + value, 0);
-      const idealArea = perimeter > 0 ? Math.sqrt(3) / 36 * perimeter * perimeter : 0;
-      if (idealArea > 0 && area < idealArea * 0.55) {
-        penalty += (idealArea * 0.55 - area) / 180;
-      }
-    }
-    if (loop.nodes.length === 4) {
-      if (!isConvexPolygon(positions)) {
-        penalty += 55;
-      }
-      const firstDiagonal = distance(positions[0], positions[2]);
-      const secondDiagonal = distance(positions[1], positions[3]);
-      const maxDiagonal = Math.max(firstDiagonal, secondDiagonal);
-      const minDiagonal = Math.min(firstDiagonal, secondDiagonal);
-      if (minDiagonal > 0) {
-        penalty += Math.max(0, maxDiagonal / minDiagonal - 1.7) * 18;
-      }
-    }
-    penalty += scoreEquivalentExternalLegLengths(layout, prepared, loop);
-    return penalty;
-  }
-  function scoreEquivalentExternalLegLengths(layout, prepared, loop) {
-    const groups = /* @__PURE__ */ new Map();
-    (loop.externalLegs || []).forEach((leg) => {
-      const externalPosition = layout.positions?.[leg.external];
-      const internalPosition = layout.positions?.[leg.internal];
-      if (!externalPosition || !internalPosition) {
-        return;
-      }
-      const role = roleFor(prepared, leg.external);
-      if (role === "none") {
-        return;
-      }
-      if (!groups.has(role)) {
-        groups.set(role, []);
-      }
-      groups.get(role).push(distance(externalPosition, internalPosition));
-    });
-    let penalty = 0;
-    groups.forEach((lengths) => {
-      if (lengths.length >= 2) {
-        penalty += range(lengths) / 28;
-      }
-    });
-    return penalty;
-  }
-  function scoreCandidateExternalLegStraightness(layout, prepared) {
-    if (!layout.loopCandidate && !prepared.topology.loopCandidate) {
-      return 0;
-    }
-    const external = new Set(prepared.semantic.externalVertices);
-    const internals = new Set(prepared.semantic.internalVertices);
-    const terminalsByRole = {
-      incoming: [],
-      outgoing: []
-    };
-    let penalty = 0;
-    prepared.semantic.propagators.filter((edge) => !edge.metadata.hidden).forEach((edge) => {
-      const externalNode = external.has(edge.source) ? edge.source : external.has(edge.target) ? edge.target : null;
-      const internalNode = internals.has(edge.source) ? edge.source : internals.has(edge.target) ? edge.target : null;
-      if (!externalNode || !internalNode) {
-        return;
-      }
-      const externalPosition = layout.positions?.[externalNode];
-      const internalPosition = layout.positions?.[internalNode];
-      if (!externalPosition || !internalPosition) {
-        return;
-      }
-      const role = roleFor(prepared, externalNode);
-      if (role === "incoming" || role === "outgoing") {
-        penalty += Math.abs(externalPosition.y - internalPosition.y) / 8;
-      }
-    });
-    prepared.semantic.externalVertices.forEach((node) => {
-      const role = roleFor(prepared, node);
-      const position = layout.positions?.[node];
-      if ((role === "incoming" || role === "outgoing") && position) {
-        terminalsByRole[role].push(position);
-      }
-    });
-    Object.values(terminalsByRole).forEach((positions) => {
-      positions.sort((left, right) => left.y - right.y).forEach((position, index) => {
-        if (index === 0) {
-          return;
-        }
-        const gap = position.y - positions[index - 1].y;
-        if (gap < 28) {
-          penalty += (28 - gap) / 2;
-        }
-      });
-    });
-    return penalty;
-  }
-  function roleFor(prepared, node) {
-    const vertex = prepared.semantic.vertices.find((entry) => entry.id === node);
-    return vertex?.externalRole || "none";
-  }
-  function shareEndpoint(left, right) {
-    return left.source === right.source || left.source === right.target || left.target === right.source || left.target === right.target;
-  }
-  function segmentsIntersect(a, b, c, d) {
-    const abC = orientation(a, b, c);
-    const abD = orientation(a, b, d);
-    const cdA = orientation(c, d, a);
-    const cdB = orientation(c, d, b);
-    return abC * abD < -1e-6 && cdA * cdB < -1e-6;
-  }
-  function orientation(a, b, c) {
-    return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-  }
-  function polygonArea(points) {
-    let area = 0;
-    points.forEach((point, index) => {
-      const next = points[(index + 1) % points.length];
-      area += point.x * next.y - next.x * point.y;
-    });
-    return area / 2;
-  }
-  function distance(left, right) {
-    return Math.hypot(left.x - right.x, left.y - right.y);
-  }
-  function averagePosition(points) {
-    return {
-      x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
-      y: points.reduce((sum, point) => sum + point.y, 0) / points.length
-    };
-  }
-  function centerForNodes(layout, nodes) {
-    const points = nodes.map((node) => layout.positions?.[node]).filter(Boolean);
-    return points.length ? averagePosition(points) : null;
-  }
-  function boundingBox(points) {
-    if (!points.length) {
-      return null;
-    }
-    return {
-      minX: Math.min(...points.map((point) => point.x)),
-      maxX: Math.max(...points.map((point) => point.x)),
-      minY: Math.min(...points.map((point) => point.y)),
-      maxY: Math.max(...points.map((point) => point.y))
-    };
-  }
-  function boxesOverlap(left, right, padding = 0) {
-    return left.minX - padding <= right.maxX && left.maxX + padding >= right.minX && left.minY - padding <= right.maxY && left.maxY + padding >= right.minY;
-  }
-  function boxContains(outer, inner, padding = 0) {
-    return inner.minX >= outer.minX - padding && inner.maxX <= outer.maxX + padding && inner.minY >= outer.minY - padding && inner.maxY <= outer.maxY + padding;
-  }
-  function sharedCount(left, right) {
-    const rightSet = new Set(right);
-    return left.filter((value) => rightSet.has(value)).length;
-  }
-  function range(values) {
-    if (values.length < 2) {
-      return 0;
-    }
-    return Math.max(...values) - Math.min(...values);
-  }
-  function isConvexPolygon(points) {
-    let sign = 0;
-    for (let index = 0; index < points.length; index += 1) {
-      const previous = points[index];
-      const current = points[(index + 1) % points.length];
-      const next = points[(index + 2) % points.length];
-      const cross = orientation(previous, current, next);
-      if (Math.abs(cross) < 1e-3) {
-        continue;
-      }
-      const currentSign = Math.sign(cross);
-      if (!sign) {
-        sign = currentSign;
-      } else if (sign !== currentSign) {
-        return false;
-      }
-    }
-    return true;
-  }
-  function centerOfPositions(positions) {
-    const values = Object.values(positions).filter((position) => Number.isFinite(position.x) && Number.isFinite(position.y));
-    if (!values.length) {
-      return { x: 0, y: 0 };
-    }
-    return {
-      x: values.reduce((sum, position) => sum + position.x, 0) / values.length,
-      y: values.reduce((sum, position) => sum + position.y, 0) / values.length
-    };
-  }
-  function outsideTolerance(value, tolerance) {
-    return Math.max(0, value - tolerance);
-  }
-  function roundScore(value) {
-    return Math.round(value * 1e3) / 1e3;
-  }
-  var init_score = __esm({
-    "src/markfeyn/renderer/layout/score.js"() {
-      init_labels();
-      init_incremental();
+    return elkInstance;
+  }
+  var import_elk_bundled, elkInstance;
+  var init_elk_runner = __esm({
+    "src/markfeyn/renderer/layout/elk-runner.js"() {
+      import_elk_bundled = __toESM(require_elk_bundled());
+      elkInstance = null;
     }
   });
 
@@ -94847,14 +96815,14 @@
         ...candidate,
         score
       };
-    }).sort(compareScoredCandidates);
+    }).sort(compareScoredCandidates2);
     if (!candidates.length) {
       return null;
     }
     const baselineSelected = candidates.slice().sort(compareBaselineCandidates)[0];
     const selected = candidates[0];
     const labelInfluenced = Boolean(baselineSelected && baselineSelected.id !== selected.id);
-    const selectedSummary = summarizeCandidate(selected, true, {
+    const selectedSummary = summarizeCandidate2(selected, true, {
       baselineCandidateId: baselineSelected?.id || null,
       labelAware: true,
       labelInfluenced
@@ -94866,8 +96834,8 @@
         selected: selectedSummary,
         labelAware: true,
         labelInfluenced,
-        baselineSelected: baselineSelected ? summarizeCandidate(baselineSelected, baselineSelected === selected) : null,
-        candidates: candidates.map((candidate) => summarizeCandidate(candidate, candidate === selected, {
+        baselineSelected: baselineSelected ? summarizeCandidate2(baselineSelected, baselineSelected === selected) : null,
+        candidates: candidates.map((candidate) => summarizeCandidate2(candidate, candidate === selected, {
           baselineCandidateId: baselineSelected?.id || null,
           labelAware: true,
           labelInfluenced: candidate === selected ? labelInfluenced : false
@@ -94895,7 +96863,7 @@
             reflected,
             orderedNodes
           };
-          candidates.push(buildCandidate(prepared, layoutOptions, loop, variant, angleSet.angles));
+          candidates.push(buildCandidate2(prepared, layoutOptions, loop, variant, angleSet.angles));
         });
       });
     });
@@ -94910,11 +96878,11 @@
         orderedNodes: loop.nodes.slice(),
         loopSide
       };
-      return buildCandidate(prepared, layoutOptions, loop, variant, [0]);
+      return buildCandidate2(prepared, layoutOptions, loop, variant, [0]);
     });
   }
-  function buildCandidate(prepared, layoutOptions, loop, variant, angles) {
-    const positions = initialPositions(prepared, layoutOptions);
+  function buildCandidate2(prepared, layoutOptions, loop, variant, angles) {
+    const positions = initialPositions2(prepared, layoutOptions);
     const center = defaultLoopCenter(layoutOptions);
     const radius = loopRadius(layoutOptions, loop);
     variant.orderedNodes.forEach((node, index) => {
@@ -94922,7 +96890,7 @@
         return;
       }
       const angle = angles[index % angles.length];
-      positions[node] = positionForKind(
+      positions[node] = positionForKind2(
         center.x + Math.cos(angle) * radius.x,
         center.y + Math.sin(angle) * radius.y,
         vertexKind(prepared, node),
@@ -94931,8 +96899,9 @@
     });
     const placedLoopCenter = centerForNodes2(positions, loop.nodes) || center;
     placeOffLoopInternals(prepared, positions, loop, placedLoopCenter, layoutOptions);
-    placeExternalVertices(prepared, positions, placedLoopCenter, layoutOptions);
+    placeExternalVertices2(prepared, positions, placedLoopCenter, layoutOptions);
     placeRemainingVertices(prepared, positions, placedLoopCenter, layoutOptions);
+    normalizeDeclaredProcessTerminals(prepared, positions, layoutOptions);
     const candidate = {
       id: candidateId(loop, variant),
       topology: prepared.topology.detectedTopology,
@@ -94955,13 +96924,13 @@
     };
     return candidate;
   }
-  function initialPositions(prepared, layoutOptions) {
+  function initialPositions2(prepared, layoutOptions) {
     const positions = {};
     prepared.semantic.vertices.forEach((vertex) => {
       if (!vertex.positionHint) {
         return;
       }
-      positions[vertex.id] = positionForKind(
+      positions[vertex.id] = positionForKind2(
         vertex.positionHint.x,
         vertex.positionHint.y,
         kindForExternalRole(vertex.externalRole),
@@ -94986,7 +96955,7 @@
           return;
         }
         const anchor = averagePosition2(neighbors.map((neighbor) => positions[neighbor]));
-        const direction = outwardUnit(anchor, center, fallbackAngleForNode(prepared, node));
+        const direction = outwardUnit2(anchor, center, fallbackAngleForNode(prepared, node));
         const next = clampPosition(
           {
             x: anchor.x + direction.x * gap,
@@ -94994,7 +96963,7 @@
           },
           layoutOptions
         );
-        positions[node] = positionForKind(next.x, next.y, "internal", layoutOptions);
+        positions[node] = positionForKind2(next.x, next.y, "internal", layoutOptions);
         changed = true;
       });
       if (!changed) {
@@ -95002,7 +96971,7 @@
       }
     }
   }
-  function placeExternalVertices(prepared, positions, center, layoutOptions) {
+  function placeExternalVertices2(prepared, positions, center, layoutOptions) {
     const externalNodes = prepared.semantic.externalVertices.slice().sort((left, right) => compareExternalOrdering(prepared.externalOrdering, left, right));
     const legsByInternalAndRole = /* @__PURE__ */ new Map();
     externalNodes.forEach((external) => {
@@ -95024,9 +96993,9 @@
       const [internal, role] = key.split("|");
       const anchor = positions[internal];
       nodes.slice().sort((left, right) => compareExternalOrdering(prepared.externalOrdering, left, right)).forEach((node, index) => {
-        const offset = stackOffset(index, nodes.length);
+        const offset = stackOffset2(index, nodes.length);
         const point = externalPoint(role, anchor, center, offset, layoutOptions);
-        positions[node] = positionForKind(point.x, point.y, kindForExternalRole(role), layoutOptions);
+        positions[node] = positionForKind2(point.x, point.y, kindForExternalRole(role), layoutOptions);
       });
     });
   }
@@ -95042,8 +97011,54 @@
         },
         layoutOptions
       );
-      positions[node] = positionForKind(point.x, point.y, vertexKind(prepared, node), layoutOptions);
+      positions[node] = positionForKind2(point.x, point.y, vertexKind(prepared, node), layoutOptions);
     });
+  }
+  function normalizeDeclaredProcessTerminals(prepared, positions, layoutOptions) {
+    if (layoutOptions.tikzOrientation) {
+      return;
+    }
+    [
+      { nodes: orderedRoleNodes(prepared, "incoming"), role: "incoming" },
+      { nodes: orderedRoleNodes(prepared, "outgoing"), role: "outgoing" }
+    ].forEach(({ nodes, role }) => {
+      if (nodes.length <= 1) {
+        return;
+      }
+      const layer = terminalLayerForRole(role, layoutOptions);
+      const midpoint = layoutOptions.width / 2;
+      const leftBoundary = layer <= midpoint;
+      nodes.forEach((node, index) => {
+        if (!positions[node] || isFixedVertex(prepared, node)) {
+          return;
+        }
+        positions[node] = {
+          ...positions[node],
+          x: layer,
+          y: boundaryCrossCoordinate(index, nodes.length, leftBoundary, layoutOptions),
+          kind: kindForExternalRole(role),
+          labelSide: labelSideForKind(role, layoutOptions.orientation)
+        };
+      });
+    });
+  }
+  function orderedRoleNodes(prepared, role) {
+    const entries = prepared.externalOrdering?.[role];
+    if (Array.isArray(entries) && entries.length) {
+      return entries.map((entry) => entry.id);
+    }
+    return prepared.semantic?.[role]?.slice() || [];
+  }
+  function isFixedVertex(prepared, node) {
+    return Boolean(prepared.semantic.vertices.find((vertex) => vertex.id === node)?.fixed);
+  }
+  function boundaryCrossCoordinate(index, count, leftBoundary, layoutOptions) {
+    if (count <= 1) {
+      return (layoutOptions.marginY + layoutOptions.height - layoutOptions.marginY) / 2;
+    }
+    const start = leftBoundary ? layoutOptions.height - layoutOptions.marginY : layoutOptions.marginY;
+    const end = leftBoundary ? layoutOptions.marginY : layoutOptions.height - layoutOptions.marginY;
+    return start + (end - start) * index / (count - 1);
   }
   function firstPositionedInternalNeighbor(prepared, positions, external) {
     return prepared.semantic.propagators.filter((edge) => !edge.metadata.hidden && (edge.source === external || edge.target === external)).map((edge) => edge.source === external ? edge.target : edge.source).filter((node) => prepared.semantic.internalVertices.includes(node) && positions[node]).sort(compareStable)[0] || null;
@@ -95063,7 +97078,7 @@
         y: clamp2(anchor.y + offset, layoutOptions.marginY, layoutOptions.height - layoutOptions.marginY)
       };
     }
-    const direction = outwardUnit(anchor, center, -Math.PI / 2);
+    const direction = outwardUnit2(anchor, center, -Math.PI / 2);
     const distance2 = Math.max(70, Math.min(layoutOptions.width, layoutOptions.height) * 0.22);
     const tangent = { x: -direction.y, y: direction.x };
     return clampPosition(
@@ -95074,7 +97089,7 @@
       layoutOptions
     );
   }
-  function stackOffset(index, count) {
+  function stackOffset2(index, count) {
     if (count <= 1) {
       return 0;
     }
@@ -95156,7 +97171,7 @@
       y: points.reduce((sum, point) => sum + point.y, 0) / points.length
     };
   }
-  function outwardUnit(point, center, fallbackAngle2) {
+  function outwardUnit2(point, center, fallbackAngle2) {
     const dx = point.x - center.x;
     const dy = point.y - center.y;
     const length = Math.hypot(dx, dy);
@@ -95182,7 +97197,7 @@
       y: clamp2(point.y, layoutOptions.marginY, layoutOptions.height - layoutOptions.marginY)
     };
   }
-  function positionForKind(x, y, kind, layoutOptions) {
+  function positionForKind2(x, y, kind, layoutOptions) {
     return {
       x,
       y,
@@ -95220,7 +97235,7 @@
     }
     return reverse ? layoutOptions.marginX : layoutOptions.width - layoutOptions.marginX;
   }
-  function summarizeCandidate(candidate, selected, metadata = {}) {
+  function summarizeCandidate2(candidate, selected, metadata = {}) {
     return {
       id: candidate.id,
       selected,
@@ -95258,7 +97273,7 @@
       variant.loopSide || "plain"
     ].join(":");
   }
-  function compareScoredCandidates(left, right) {
+  function compareScoredCandidates2(left, right) {
     return numericCompare(left.score.total, right.score.total) || compareCandidateTieBreakers(left, right);
   }
   function compareBaselineCandidates(left, right) {
@@ -95296,1676 +97311,1857 @@
     }
   });
 
-  // src/markfeyn/renderer/layout/multiloop.js
-  function analyzeMultiloop(semantic, topology) {
-    const regions = (topology.loopRegions || []).filter((region) => region.loopOrder > 0).sort(compareRegion);
-    return {
-      applicable: topology.loopOrder > 1 && regions.length > 0,
-      kind: topology.multiLoop?.kind || "unknown",
-      loopOrder: topology.loopOrder,
-      regions,
-      principalSkeleton: topology.principalSkeleton || null,
-      diagnostics: regions.length ? [] : [{
-        code: "no-loop-regions",
-        message: "No loop regions were available for multiloop candidate placement."
-      }]
-    };
-  }
-  function multiloopDiagnostic(multiloop) {
-    return {
-      stage: "multiloop",
-      severity: multiloop?.applicable ? "info" : "warning",
-      message: multiloop?.applicable ? `Multiloop decomposition: ${multiloop.kind}` : "Multiloop decomposition unavailable",
-      data: {
-        applicable: Boolean(multiloop?.applicable),
-        kind: multiloop?.kind || null,
-        loopOrder: multiloop?.loopOrder || 0,
-        regions: (multiloop?.regions || []).map((region) => ({
-          id: region.id,
-          kind: region.kind,
-          loopOrder: region.loopOrder,
-          nodes: region.nodes,
-          cycles: region.cycles
-        })),
-        diagnostics: multiloop?.diagnostics || []
-      }
-    };
-  }
-  function hasMultiloopLayout(prepared) {
-    return Boolean(prepared?.multiloop?.applicable && prepared.topology.detectedTopology === "multiLoop");
-  }
-  function selectMultiloopLayout(prepared, layoutOptions = {}) {
-    if (!hasMultiloopLayout(prepared)) {
-      return null;
+  // src/markfeyn/renderer/parser/braces.js
+  function parseBrace(source, diagram, lineNumber) {
+    const match = String(source || "").trim().match(/^([A-Za-z0-9_.-]+)->([A-Za-z0-9_.-]+)(?:\[([^\]]*)\])?:(?:"([^"]*)"|'([^']*)'|(.+))$/);
+    if (!match) {
+      diagram.errors.push(`Line ${lineNumber}: braces must use "brace from->to[side]:label"`);
+      return;
     }
-    const candidates = generateMultiloopCandidates(prepared, layoutOptions).map((candidate) => ({
-      ...candidate,
-      score: scoreMultiloopCandidate(candidate.layout, prepared, candidate)
-    })).sort(compareScoredCandidates2);
-    if (!candidates.length) {
-      return null;
+    const side = normalizeBraceSide(match[3] || "left");
+    if (!side) {
+      diagram.errors.push(`Line ${lineNumber}: unsupported brace side "${match[3]}"`);
+      return;
     }
-    const selected = candidates[0];
-    const selectedSummary = summarizeCandidate2(selected, true);
-    selected.layout.multiloopCandidate = selectedSummary;
-    return {
-      layout: selected.layout,
-      selection: {
-        selected: selectedSummary,
-        candidates: candidates.map((candidate) => summarizeCandidate2(candidate, candidate === selected))
-      }
-    };
-  }
-  function generateMultiloopCandidates(prepared, layoutOptions) {
-    const limit = candidateLimit(layoutOptions.quality);
-    const variants = [
-      { id: "canonical", laneSign: 1, reflected: false },
-      { id: "reflected", laneSign: -1, reflected: true },
-      { id: "upper-first", laneSign: 1, reflected: true },
-      { id: "lower-first", laneSign: -1, reflected: false }
-    ].slice(0, limit);
-    return variants.map((variant) => buildCandidate2(prepared, layoutOptions, variant));
-  }
-  function buildCandidate2(prepared, layoutOptions, variant) {
-    const positions = initialPositions2(prepared, layoutOptions);
-    const regions = primaryRegions(prepared.multiloop.regions);
-    const sharedNodes = sharedCycleNodes(regions);
-    const center = { x: layoutOptions.width / 2, y: layoutOptions.height / 2 };
-    const radius = {
-      x: Math.max(46, Math.min(86, layoutOptions.width / 6)),
-      y: Math.max(42, Math.min(72, layoutOptions.height / 4))
-    };
-    const regionGap = Math.max(radius.x * 1.2, layoutOptions.width / Math.max(4, regions.length + 2));
-    sharedNodes.forEach((node) => {
-      if (prepared.multiloop.kind !== "overlapping" || sharedNodes.length === 1) {
-        positions[node] = positionForKind2(center.x, center.y, "internal", layoutOptions);
-      }
+    diagram.braces.push({
+      from: match[1],
+      to: match[2],
+      side,
+      label: (match[4] ?? match[5] ?? match[6] ?? "").trim()
     });
-    placeNestedSharedPointRegions(prepared, positions, regions, sharedNodes, center, layoutOptions);
-    placeOverlappingSharedPointRegions(prepared, positions, regions, sharedNodes, center, layoutOptions);
-    regions.forEach((region, index) => {
-      const offset = index - (regions.length - 1) / 2;
-      const regionCenter = {
-        x: center.x + offset * regionGap,
-        y: center.y + variant.laneSign * laneOffset(prepared, region, index, radius.y)
+  }
+  function normalizeBraceSide(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (normalized === "left" || normalized === "right") {
+      return normalized;
+    }
+    return null;
+  }
+  var init_braces = __esm({
+    "src/markfeyn/renderer/parser/braces.js"() {
+    }
+  });
+
+  // src/markfeyn/renderer/parser/constants.js
+  var EDGE_DEFINITIONS, SIZE_PRESETS, DEFAULT_DIAGRAM_OPTIONS, VERTEX_SHAPES, BLOB_VERTEX_DEFAULT_RADII, BLOB_VERTEX_SIZE_PRESETS, BLOB_HATCHES;
+  var init_constants = __esm({
+    "src/markfeyn/renderer/parser/constants.js"() {
+      EDGE_DEFINITIONS = /* @__PURE__ */ new Map([
+        ["plain", { type: "plain" }],
+        ["line", { type: "plain" }],
+        ["propagator", { type: "plain" }],
+        ["fermion", { type: "fermion", arrow: "forward" }],
+        ["anti fermion", { type: "fermion", arrow: "reverse" }],
+        ["anti-fermion", { type: "fermion", arrow: "reverse" }],
+        ["antifermion", { type: "fermion", arrow: "reverse" }],
+        ["photon", { type: "photon" }],
+        ["boson", { type: "photon" }],
+        ["charged boson", { type: "photon", arrow: "forward" }],
+        ["charged-boson", { type: "photon", arrow: "forward" }],
+        ["anti charged boson", { type: "photon", arrow: "reverse" }],
+        ["anti-charged-boson", { type: "photon", arrow: "reverse" }],
+        ["gluon", { type: "gluon" }],
+        ["scalar", { type: "scalar" }],
+        ["charged scalar", { type: "scalar", arrow: "forward" }],
+        ["charged-scalar", { type: "scalar", arrow: "forward" }],
+        ["anti charged scalar", { type: "scalar", arrow: "reverse" }],
+        ["anti-charged-scalar", { type: "scalar", arrow: "reverse" }],
+        ["ghost", { type: "ghost" }],
+        ["dashed", { type: "dashed" }],
+        ["dot dashed", { type: "dashdot" }],
+        ["dot-dashed", { type: "dashdot" }],
+        ["dashdot", { type: "dashdot" }],
+        ["dash-dot", { type: "dashdot" }],
+        ["triangle", { type: "triangle" }],
+        ["zigzag", { type: "triangle" }],
+        ["square", { type: "square" }],
+        ["rectangle", { type: "square" }],
+        ["rectangular", { type: "square" }],
+        ["double", { type: "double" }],
+        ["eikonal", { type: "double", arrow: "forward" }],
+        ["wilson line", { type: "double", arrow: "forward" }],
+        ["wilson-line", { type: "double", arrow: "forward" }],
+        ["invisible", { type: "invisible", hidden: true }],
+        ["hidden", { type: "invisible", hidden: true }]
+      ]);
+      SIZE_PRESETS = {
+        small: { width: 420, minHeight: 280, marginX: 70, marginY: 46, externalGap: 82 },
+        medium: { width: 520, minHeight: 330, marginX: 82, marginY: 52, externalGap: 100 },
+        large: { width: 760, minHeight: 480, marginX: 110, marginY: 70, externalGap: 140 }
       };
-      const orderedNodes = orderedRegionNodes(region, variant);
-      const angles = regionAngles(region, orderedNodes.length, variant);
-      orderedNodes.forEach((node, nodeIndex) => {
-        if (positions[node]) {
-          return;
-        }
-        positions[node] = positionForKind2(
-          regionCenter.x + Math.cos(angles[nodeIndex]) * radius.x,
-          regionCenter.y + Math.sin(angles[nodeIndex]) * radius.y,
-          "internal",
-          layoutOptions
-        );
+      DEFAULT_DIAGRAM_OPTIONS = {
+        layout: "spring",
+        orientation: "horizontal",
+        size: "medium"
+      };
+      VERTEX_SHAPES = /* @__PURE__ */ new Map([
+        ["dot", "dot"],
+        ["square dot", "square-dot"],
+        ["square-dot", "square-dot"],
+        ["square", "square-dot"],
+        ["empty dot", "empty-dot"],
+        ["empty-dot", "empty-dot"],
+        ["crossed dot", "crossed-dot"],
+        ["crossed-dot", "crossed-dot"],
+        ["cross dot", "crossed-dot"],
+        ["cross-dot", "crossed-dot"],
+        ["cross", "cross"],
+        ["blob", "blob"],
+        ["disk", "disk"],
+        ["large blob", "disk"],
+        ["large-blob", "disk"]
+      ]);
+      BLOB_VERTEX_DEFAULT_RADII = Object.freeze({
+        blob: 18,
+        disk: 44
       });
-    });
-    placeRemainingInternals(prepared, positions, center, layoutOptions);
-    placeExternalVertices2(prepared, positions, center, layoutOptions);
-    return {
-      id: `multiloop:${prepared.multiloop.kind}:${variant.id}`,
-      variant,
-      regions,
-      layout: {
-        width: layoutOptions.width,
-        height: layoutOptions.height,
-        positions,
-        options: layoutOptions,
-        multiloopCandidate: {
-          id: `multiloop:${prepared.multiloop.kind}:${variant.id}`,
-          kind: prepared.multiloop.kind,
-          regions: regions.map((region) => region.id)
-        }
-      }
-    };
-  }
-  function placeOverlappingSharedPointRegions(prepared, positions, regions, sharedNodes, center, layoutOptions) {
-    if (prepared.multiloop.kind !== "overlapping" || sharedNodes.length !== 1 || regions.length < 2) {
-      return;
-    }
-    const shared = sharedNodes[0];
-    const verticalGap = Math.max(70, layoutOptions.height * 0.22);
-    const horizontalGap = Math.max(96, layoutOptions.width * 0.17);
-    regions.forEach((region, index) => {
-      if (!region.nodes.includes(shared)) {
-        return;
-      }
-      const nonShared = region.nodes.filter((node) => node !== shared).sort(compareStable);
-      const y = center.y + (index - (regions.length - 1) / 2) * verticalGap;
-      const slots = [
-        { x: center.x - horizontalGap, y },
-        { x: center.x + horizontalGap, y },
-        { x: center.x, y: y + (index === 0 ? -verticalGap * 0.55 : verticalGap * 0.55) }
-      ];
-      const usedSlots = /* @__PURE__ */ new Set();
-      nonShared.forEach((node, nodeIndex) => {
-        if (positions[node]) {
-          return;
-        }
-        const slotIndex = nestedSlotIndex(prepared, node, usedSlots, nodeIndex);
-        usedSlots.add(slotIndex);
-        const slot = slots[Math.min(slotIndex, slots.length - 1)];
-        positions[node] = positionForKind2(slot.x, slot.y, "internal", layoutOptions);
-      });
-    });
-  }
-  function placeNestedSharedPointRegions(prepared, positions, regions, sharedNodes, center, layoutOptions) {
-    if (prepared.multiloop.kind !== "nested" || sharedNodes.length !== 1 || regions.length < 2) {
-      return;
-    }
-    const shared = sharedNodes[0];
-    const verticalGap = Math.max(70, layoutOptions.height * 0.22);
-    const horizontalGap = Math.max(96, layoutOptions.width * 0.17);
-    regions.forEach((region, index) => {
-      if (!region.nodes.includes(shared)) {
-        return;
-      }
-      const nonShared = region.nodes.filter((node) => node !== shared).sort(compareStable);
-      const y = center.y + (index - (regions.length - 1) / 2) * verticalGap;
-      const slots = [
-        { x: center.x - horizontalGap, y },
-        { x: center.x + horizontalGap, y },
-        { x: center.x, y: y + (index === 0 ? -verticalGap * 0.55 : verticalGap * 0.55) }
-      ];
-      const usedSlots = /* @__PURE__ */ new Set();
-      nonShared.forEach((node, nodeIndex) => {
-        if (positions[node]) {
-          return;
-        }
-        const slotIndex = nestedSlotIndex(prepared, node, usedSlots, nodeIndex);
-        usedSlots.add(slotIndex);
-        const slot = slots[Math.min(slotIndex, slots.length - 1)];
-        positions[node] = positionForKind2(slot.x, slot.y, "internal", layoutOptions);
-      });
-    });
-  }
-  function primaryRegions(regions) {
-    const cycles = regions.filter((region) => region.loopOrder === 1).sort(compareRegion);
-    return (cycles.length ? cycles : regions).slice(0, 8);
-  }
-  function initialPositions2(prepared, layoutOptions) {
-    const positions = {};
-    prepared.semantic.vertices.forEach((vertex) => {
-      if (!vertex.positionHint) {
-        return;
-      }
-      positions[vertex.id] = positionForKind2(
-        vertex.positionHint.x,
-        vertex.positionHint.y,
-        kindForRole(vertex.externalRole),
-        layoutOptions
-      );
-    });
-    return positions;
-  }
-  function sharedCycleNodes(regions) {
-    const counts = /* @__PURE__ */ new Map();
-    regions.forEach((region) => {
-      region.nodes.forEach((node) => counts.set(node, (counts.get(node) || 0) + 1));
-    });
-    return Array.from(counts.entries()).filter(([, count]) => count > 1).map(([node]) => node).sort(compareStable);
-  }
-  function orderedRegionNodes(region, variant) {
-    const nodes = region.nodes.slice().sort(compareStable);
-    return variant.reflected ? nodes.reverse() : nodes;
-  }
-  function regionAngles(region, count, variant) {
-    if (region.kind === "box" && count === 4) {
-      const base = [-0.72 * Math.PI, -0.28 * Math.PI, 0.28 * Math.PI, 0.72 * Math.PI];
-      return variant.reflected ? base.slice().reverse() : base;
-    }
-    const start = region.kind === "triangle" ? -Math.PI / 2 : -Math.PI;
-    return Array.from({ length: count }, (_, index) => start + 2 * Math.PI * index / count);
-  }
-  function laneOffset(prepared, region, index, radiusY) {
-    if (prepared.multiloop.kind === "disjoint") {
-      return 0;
-    }
-    if (prepared.multiloop.kind === "nested") {
-      return index % 2 === 0 ? -radiusY * 0.45 : radiusY * 0.45;
-    }
-    return (index % 2 === 0 ? -1 : 1) * radiusY * 0.35;
-  }
-  function placeRemainingInternals(prepared, positions, center, layoutOptions) {
-    const placed = new Set(Object.keys(positions));
-    const internals = prepared.semantic.internalVertices.filter((node) => !placed.has(node)).sort(compareStable);
-    const gap = Math.max(54, Math.min(layoutOptions.width, layoutOptions.height) * 0.16);
-    internals.forEach((node, index) => {
-      const angle = -Math.PI / 2 + Math.PI * (index + 1) / (internals.length + 1);
-      positions[node] = positionForKind2(
-        center.x + Math.cos(angle) * gap,
-        center.y + Math.sin(angle) * gap,
-        "internal",
-        layoutOptions
-      );
-    });
-  }
-  function placeExternalVertices2(prepared, positions, center, layoutOptions) {
-    const external = prepared.semantic.externalVertices.slice().sort((left, right) => compareExternal(prepared, left, right));
-    const byNeighbor = /* @__PURE__ */ new Map();
-    external.forEach((node) => {
-      if (positions[node]) {
-        return;
-      }
-      const neighbor = firstPositionedNeighbor(prepared, positions, node);
-      const key = neighbor || "unanchored";
-      if (!byNeighbor.has(key)) {
-        byNeighbor.set(key, []);
-      }
-      byNeighbor.get(key).push(node);
-    });
-    byNeighbor.forEach((nodes, neighbor) => {
-      const anchor = positions[neighbor] || center;
-      nodes.slice().sort((left, right) => compareExternal(prepared, left, right)).forEach((node, index) => {
-        const role = roleFor2(prepared, node);
-        const offset = stackOffset2(index, nodes.length);
-        let point;
-        if (role === "incoming") {
-          point = { x: layoutOptions.marginX, y: anchor.y + offset };
-        } else if (role === "outgoing") {
-          point = { x: layoutOptions.width - layoutOptions.marginX, y: anchor.y + offset };
-        } else {
-          const direction = outwardUnit2(anchor, center, fallbackAngle(node));
-          point = {
-            x: anchor.x + direction.x * Math.max(72, layoutOptions.width * 0.2),
-            y: anchor.y + direction.y * Math.max(56, layoutOptions.height * 0.22) + offset
-          };
-        }
-        positions[node] = positionForKind2(point.x, point.y, kindForRole(role), layoutOptions);
-      });
-    });
-  }
-  function firstPositionedNeighbor(prepared, positions, node) {
-    const edge = prepared.semantic.propagators.filter((propagator) => !propagator.metadata.hidden).find((propagator) => propagator.source === node && positions[propagator.target] || propagator.target === node && positions[propagator.source]);
-    if (!edge) {
-      return null;
-    }
-    return edge.source === node ? edge.target : edge.source;
-  }
-  function compareExternal(prepared, left, right) {
-    const order = new Map((prepared.externalOrdering?.all || []).map((entry, index) => [entry.id, index]));
-    if (order.has(left) && order.has(right)) {
-      return order.get(left) - order.get(right);
-    }
-    return compareStable(left, right);
-  }
-  function nestedSlotIndex(prepared, node, usedSlots, fallbackIndex) {
-    const roles = attachedExternalRoles(prepared, node);
-    if (roles.has("incoming") && !usedSlots.has(0)) {
-      return 0;
-    }
-    if (roles.has("outgoing") && !usedSlots.has(1)) {
-      return 1;
-    }
-    return [0, 1, 2].find((slot) => !usedSlots.has(slot)) ?? fallbackIndex;
-  }
-  function attachedExternalRoles(prepared, node) {
-    const roles = /* @__PURE__ */ new Set();
-    const external = new Set(prepared.semantic.externalVertices);
-    prepared.semantic.propagators.filter((propagator) => !propagator.metadata.hidden).forEach((propagator) => {
-      const neighbor = propagator.source === node ? propagator.target : propagator.target === node ? propagator.source : null;
-      if (neighbor && external.has(neighbor)) {
-        roles.add(roleFor2(prepared, neighbor));
-      }
-    });
-    return roles;
-  }
-  function roleFor2(prepared, node) {
-    return prepared.semantic.vertices.find((vertex) => vertex.id === node)?.externalRole || "unclassified";
-  }
-  function kindForRole(role) {
-    if (role === "incoming" || role === "outgoing") {
-      return role;
-    }
-    if (role === "unclassified") {
-      return "external";
-    }
-    return "internal";
-  }
-  function positionForKind2(x, y, kind, layoutOptions) {
-    return {
-      x: Math.max(layoutOptions.marginX, Math.min(layoutOptions.width - layoutOptions.marginX, x)),
-      y: Math.max(layoutOptions.marginY, Math.min(layoutOptions.height - layoutOptions.marginY, y)),
-      kind
-    };
-  }
-  function stackOffset2(index, count) {
-    return (index - (count - 1) / 2) * 38;
-  }
-  function outwardUnit2(anchor, center, fallbackAngleValue) {
-    const dx = anchor.x - center.x;
-    const dy = anchor.y - center.y;
-    const length = Math.hypot(dx, dy);
-    if (length > 1e-6) {
-      return { x: dx / length, y: dy / length };
-    }
-    return { x: Math.cos(fallbackAngleValue), y: Math.sin(fallbackAngleValue) };
-  }
-  function fallbackAngle(node) {
-    const text = String(node);
-    let hash = 0;
-    for (let index = 0; index < text.length; index += 1) {
-      hash = (hash * 31 + text.charCodeAt(index)) % 997;
-    }
-    return 2 * Math.PI * hash / 997;
-  }
-  function scoreMultiloopCandidate(layout, prepared, candidate) {
-    const finitePenalty = Object.values(layout.positions).filter((position) => !Number.isFinite(position.x) || !Number.isFinite(position.y)).length * 1e3;
-    const regionPenalty = candidate.regions.reduce((sum, region) => {
-      const points = region.nodes.map((node) => layout.positions[node]).filter(Boolean);
-      return sum + (Math.abs(polygonArea2(points)) < 200 ? 250 : 0);
-    }, 0);
-    const overlapPenalty = sharedCycleNodes(candidate.regions).length && prepared.multiloop.kind === "overlapping" ? 0 : 10;
-    const externalPenalty = prepared.semantic.externalVertices.reduce((sum, node) => layout.positions[node] ? sum : sum + 100, 0);
-    return {
-      total: finitePenalty + regionPenalty + overlapPenalty + externalPenalty,
-      breakdown: {
-        finitePenalty,
-        regionPenalty,
-        overlapPenalty,
-        externalPenalty
-      }
-    };
-  }
-  function polygonArea2(points) {
-    if (points.length < 3) {
-      return 0;
-    }
-    let area = 0;
-    points.forEach((point, index) => {
-      const next = points[(index + 1) % points.length];
-      area += point.x * next.y - next.x * point.y;
-    });
-    return area / 2;
-  }
-  function candidateLimit(quality) {
-    if (quality === "high") {
-      return 4;
-    }
-    if (quality === "fast") {
-      return 1;
-    }
-    return 2;
-  }
-  function compareScoredCandidates2(left, right) {
-    return left.score.total - right.score.total || compareStable(left.id, right.id);
-  }
-  function summarizeCandidate2(candidate, selected) {
-    return {
-      id: candidate.id,
-      selected,
-      kind: candidate.layout.multiloopCandidate.kind,
-      regions: candidate.layout.multiloopCandidate.regions,
-      variant: candidate.variant,
-      score: candidate.score
-    };
-  }
-  function compareRegion(left, right) {
-    return left.loopOrder - right.loopOrder || left.nodes.length - right.nodes.length || compareStable(left.id, right.id);
-  }
-  var init_multiloop = __esm({
-    "src/markfeyn/renderer/layout/multiloop.js"() {
-      init_model();
+      BLOB_VERTEX_SIZE_PRESETS = /* @__PURE__ */ new Map([
+        ["tiny", 8],
+        ["small", 14],
+        ["medium", BLOB_VERTEX_DEFAULT_RADII.blob],
+        ["large", 28],
+        ["huge", BLOB_VERTEX_DEFAULT_RADII.disk],
+        ["disk", BLOB_VERTEX_DEFAULT_RADII.disk]
+      ]);
+      BLOB_HATCHES = /* @__PURE__ */ new Map([
+        ["hatched", "diagonal"],
+        ["hatch", "diagonal"],
+        ["diagonal", "diagonal"],
+        ["diagonal right", "diagonal"],
+        ["forward diagonal", "diagonal"],
+        ["slash", "diagonal"],
+        ["north east", "diagonal"],
+        ["north east lines", "diagonal"],
+        ["ne", "diagonal"],
+        ["diagonal reverse", "diagonal-reverse"],
+        ["diagonal left", "diagonal-reverse"],
+        ["reverse diagonal", "diagonal-reverse"],
+        ["backward diagonal", "diagonal-reverse"],
+        ["backslash", "diagonal-reverse"],
+        ["north west", "diagonal-reverse"],
+        ["north west lines", "diagonal-reverse"],
+        ["nw", "diagonal-reverse"],
+        ["cross", "cross"],
+        ["cross hatch", "cross"],
+        ["crosshatch", "cross"],
+        ["cross hatched", "cross"],
+        ["horizontal", "horizontal"],
+        ["horizontal lines", "horizontal"],
+        ["vertical", "vertical"],
+        ["vertical lines", "vertical"],
+        ["grid", "grid"],
+        ["grid lines", "grid"]
+      ]);
     }
   });
 
-  // src/markfeyn/renderer/layout/validate.js
-  function validateSemanticDiagram(semantic) {
-    const diagnostics = [];
-    const vertices = semanticNodeById(semantic);
-    const vertexIds = semantic.vertices.map((vertex) => vertex.id);
-    const propagatorIds = semantic.propagators.map((propagator) => propagator.id);
-    duplicateValues(vertexIds).forEach((id) => {
-      diagnostics.push(error(`Duplicate vertex id "${id}".`, { vertex: id }));
-    });
-    duplicateValues(propagatorIds).forEach((id) => {
-      diagnostics.push(error(`Duplicate propagator id "${id}".`, { propagator: id }));
-    });
-    semantic.propagators.forEach((propagator) => {
-      if (!vertices.has(propagator.source)) {
-        diagnostics.push(error(`Propagator "${propagator.id}" references missing source "${propagator.source}".`, {
-          propagator: propagator.id,
-          vertex: propagator.source
-        }));
+  // src/markfeyn/renderer/parser/options.js
+  function parseEdgeOptions(source) {
+    const options = {};
+    splitOptionList(source).map((item) => item.trim()).filter(Boolean).forEach((item) => {
+      const parsed = parseOptionItem(item);
+      const name = normalizeOptionName(parsed.name);
+      if (name === "hidden" || name === "invisible" || name === "draw" && parsed.value === "none") {
+        options.hidden = true;
       }
-      if (!vertices.has(propagator.target)) {
-        diagnostics.push(error(`Propagator "${propagator.id}" references missing target "${propagator.target}".`, {
-          propagator: propagator.id,
-          vertex: propagator.target
-        }));
+      if (name === "reverse" || name === "anti") {
+        options.arrow = "reverse";
       }
-      if (propagator.source === propagator.target) {
-        diagnostics.push(warning(`Self-loop "${propagator.id}" has limited milestone-1 layout support.`, {
-          propagator: propagator.id
-        }));
+      if (name === "forward") {
+        options.arrow = "forward";
+      }
+      if (name === "overlay" || name === "foreground" || name === "front") {
+        options.overlay = true;
+      }
+      applyCurveOption(options, name, parsed.value);
+      if (name === "out") {
+        const outAngle = Number(parsed.value);
+        if (Number.isFinite(outAngle)) {
+          options.outAngle = outAngle;
+        }
+      }
+      if (name === "in") {
+        const inAngle = Number(parsed.value);
+        if (Number.isFinite(inAngle)) {
+          options.inAngle = inAngle;
+        }
+      }
+      if (name === "looseness") {
+        const looseness = Number(parsed.value);
+        if (Number.isFinite(looseness) && looseness > 0) {
+          options.looseness = looseness;
+        }
+      }
+      if (name === "relative") {
+        options.relativeAngles = parsed.value !== "false";
+      }
+      if (name === "edge label" || name === "label") {
+        options.label = cleanLabelValue(parsed.value);
+        options.labelSide = "left";
+      }
+      if (name === "edge label'" || name === "label'") {
+        options.label = cleanLabelValue(parsed.value);
+        options.labelSide = "right";
+      }
+      if (name === "momentum" || name === "reversed momentum" || name === "rmomentum") {
+        const momentum = parseMomentumValue(parsed.value);
+        options.label = momentum.label;
+        options.labelSide = "left";
+        options.labelPlacement = "momentum";
+        options.momentumDirection = name === "momentum" ? "forward" : "reverse";
+        options.momentum = momentum.options;
+      }
+      if (name === "momentum'" || name === "reversed momentum'" || name === "rmomentum'") {
+        const momentum = parseMomentumValue(parsed.value);
+        options.label = momentum.label;
+        options.labelSide = "right";
+        options.labelPlacement = "momentum-prime";
+        options.momentumDirection = name === "momentum'" ? "forward" : "reverse";
+        options.momentum = momentum.options;
       }
     });
-    const incoming = new Set(semantic.source.incoming || []);
-    const outgoing = new Set(semantic.source.outgoing || []);
-    Array.from(incoming).filter((node) => outgoing.has(node)).forEach((node) => {
-      diagnostics.push(error(`Vertex "${node}" is declared both incoming and outgoing.`, { vertex: node }));
-    });
-    duplicateValues(semantic.source.incoming || []).forEach((node) => {
-      diagnostics.push(error(`Incoming vertex "${node}" is declared more than once.`, { vertex: node }));
-    });
-    duplicateValues(semantic.source.outgoing || []).forEach((node) => {
-      diagnostics.push(error(`Outgoing vertex "${node}" is declared more than once.`, { vertex: node }));
-    });
-    semantic.vertices.forEach((vertex) => {
-      if (vertex.fixed && !vertex.positionHint) {
-        diagnostics.push(error(`Fixed vertex "${vertex.id}" is missing a position hint.`, { vertex: vertex.id }));
-      }
-    });
-    return {
-      errors: diagnostics.filter((diagnostic) => diagnostic.severity === "error"),
-      warnings: diagnostics.filter((diagnostic) => diagnostic.severity === "warning"),
-      diagnostics
-    };
+    return options;
   }
-  function duplicateValues(values) {
-    const seen = /* @__PURE__ */ new Set();
-    const duplicates = /* @__PURE__ */ new Set();
-    values.forEach((value) => {
-      if (seen.has(value)) {
-        duplicates.add(value);
-      }
-      seen.add(value);
-    });
-    return Array.from(duplicates);
-  }
-  function error(message, data = {}) {
-    return {
-      stage: "validation",
-      severity: "error",
-      message,
-      data
-    };
-  }
-  function warning(message, data = {}) {
-    return {
-      stage: "validation",
-      severity: "warning",
-      message,
-      data
-    };
-  }
-  var init_validate = __esm({
-    "src/markfeyn/renderer/layout/validate.js"() {
-      init_model();
+  function parseMomentumValue(value) {
+    let text = unwrapLabelValue(value);
+    const options = {};
+    const optionMatch = text.match(/^\[([^\]]*)\]\s*/);
+    if (optionMatch) {
+      Object.assign(options, parseMomentumOptions(optionMatch[1]));
+      text = text.slice(optionMatch[0].length).trim();
     }
-  });
-
-  // src/markfeyn/renderer/layout/topology.js
-  function analyzeTopology(semantic) {
-    const visibleEdges = semantic.propagators.filter((propagator) => !propagator.metadata.hidden);
-    const adjacency = adjacencyMap(semantic.vertices.map((vertex) => vertex.id), visibleEdges);
-    const internalEdges = visibleEdges.filter((edge) => edge.source !== edge.target && semantic.internalVertices.includes(edge.source) && semantic.internalVertices.includes(edge.target));
-    const internalAdjacency = adjacencyMap(semantic.internalVertices, internalEdges);
-    const connectedComponents = components(adjacency);
-    const externalVertices = semantic.externalVertices.slice().sort(compareStable);
-    const internalVertices = semantic.internalVertices.slice().sort(compareStable);
-    const parallelEdgeGroups = detectParallelEdgeGroups(semantic, visibleEdges);
-    const tadpoleLoops = detectTadpoleLoops(semantic, visibleEdges);
-    const simpleCycles = detectSimpleInternalCycles(semantic, visibleEdges);
-    const oneLoop = selectOneLoopTopology(simpleCycles, tadpoleLoops);
-    const edgeCount = visibleEdges.length;
-    const loopOrder = Math.max(0, edgeCount - semantic.vertices.length + connectedComponents.length);
-    const biconnected = analyzeBiconnectedComponents(internalAdjacency, internalEdges);
-    const cycles = [
-      ...simpleCycles,
-      ...tadpoleLoops
-    ].sort(compareCycleSummaries);
-    const loopRegions = buildLoopRegions2(semantic, cycles, biconnected.components);
-    const multiLoop = classifyMultiLoop(loopOrder, loopRegions, cycles);
-    const detectedTopology = classifyTopology(
-      semantic,
-      visibleEdges,
-      connectedComponents,
-      loopOrder,
-      parallelEdgeGroups,
-      oneLoop,
-      multiLoop
-    );
-    const graphCenters = graphCentersFor(adjacency, internalVertices);
-    const principalSkeleton = buildPrincipalSkeleton(semantic, loopRegions, biconnected);
-    const limitations = topologyLimitations(semantic, connectedComponents, loopOrder, oneLoop, loopRegions);
     return {
-      connectedComponents,
-      externalVertices,
-      internalVertices,
-      cycles,
-      biconnectedComponents: biconnected.components,
-      articulationVertices: biconnected.articulationVertices,
-      bridges: biconnected.bridges,
-      loopOrder,
-      detectedTopology,
-      multiLoop,
-      loopRegions,
-      principalSkeleton,
-      confidence: confidenceFor(detectedTopology),
-      graphCenters,
-      repeatedStructures: parallelEdgeGroups.map((group) => ({
-        type: group.selfEnergyLike ? "selfEnergyParallelPropagators" : "parallelPropagators",
-        nodes: group.nodes,
-        edgeCount: group.edges.length
-      })),
-      parallelEdgeGroups,
-      selfEnergyBubbles: parallelEdgeGroups.filter((group) => group.selfEnergyLike),
-      tadpoleLoops,
-      loopCandidate: loopOrder === 1 && detectedTopology !== "selfEnergy" ? oneLoop : null,
-      inferredSymmetryGroups: inferSimpleSymmetryGroups(semantic),
-      limitations
+      label: cleanLabelValue(text),
+      options
     };
   }
-  function adjacencyMap(nodes, edges) {
-    const adjacency = new Map(nodes.map((node) => [node, /* @__PURE__ */ new Set()]));
-    edges.forEach((edge) => {
-      if (edge.source === edge.target) {
+  function unwrapLabelValue(value) {
+    let text = String(value || "").trim();
+    if (text.startsWith("{") && text.endsWith("}") || text.startsWith('"') && text.endsWith('"') || text.startsWith("'") && text.endsWith("'")) {
+      text = text.slice(1, -1).trim();
+    }
+    return text;
+  }
+  function parseMomentumOptions(source) {
+    const options = {};
+    splitOptionList(source).map((item) => item.trim()).filter(Boolean).forEach((item) => {
+      const parsed = parseOptionItem(item);
+      const name = normalizeOptionName(parsed.name);
+      if (name === "arrow distance") {
+        const distance2 = parseDistanceValue(parsed.value);
+        if (Number.isFinite(distance2) && distance2 >= 0) {
+          options.arrowDistance = distance2;
+        }
+      }
+      if (name === "label distance") {
+        const distance2 = parseDistanceValue(parsed.value);
+        if (Number.isFinite(distance2) && distance2 >= 0) {
+          options.labelDistance = distance2;
+        }
+      }
+      if (name === "arrow shorten") {
+        const shorten = parseFractionValue(parsed.value);
+        if (Number.isFinite(shorten)) {
+          options.arrowShorten = clamp3(shorten, 0, 0.45);
+        }
+      }
+    });
+    return options;
+  }
+  function parseDistanceValue(value) {
+    const match = String(value || "").trim().match(/^(-?\d+(?:\.\d+)?)(px|pt|mm|cm|em)?$/i);
+    if (!match) {
+      return NaN;
+    }
+    const number = Number(match[1]);
+    const unit = (match[2] || "px").toLowerCase();
+    const scale = {
+      px: 1,
+      pt: 4 / 3,
+      mm: 96 / 25.4,
+      cm: 96 / 2.54,
+      em: 16
+    }[unit] ?? 1;
+    return number * scale;
+  }
+  function parseFractionValue(value) {
+    const text = String(value || "").trim();
+    if (text.endsWith("%")) {
+      return Number(text.slice(0, -1)) / 100;
+    }
+    return Number(text);
+  }
+  function splitOptionList(source) {
+    const items = [];
+    let buffer = "";
+    let braceDepth = 0;
+    let bracketDepth = 0;
+    let quote = null;
+    for (const character of String(source || "")) {
+      if (quote) {
+        buffer += character;
+        if (character === quote) {
+          quote = null;
+        }
+        continue;
+      }
+      if (character === '"') {
+        quote = character;
+        buffer += character;
+        continue;
+      }
+      if (character === "{") {
+        braceDepth += 1;
+        buffer += character;
+        continue;
+      }
+      if (character === "}") {
+        braceDepth = Math.max(0, braceDepth - 1);
+        buffer += character;
+        continue;
+      }
+      if (character === "[") {
+        bracketDepth += 1;
+        buffer += character;
+        continue;
+      }
+      if (character === "]") {
+        bracketDepth = Math.max(0, bracketDepth - 1);
+        buffer += character;
+        continue;
+      }
+      if (character === "," && braceDepth === 0 && bracketDepth === 0) {
+        items.push(buffer);
+        buffer = "";
+        continue;
+      }
+      buffer += character;
+    }
+    if (buffer) {
+      items.push(buffer);
+    }
+    return items;
+  }
+  function parseOptionItem(item) {
+    const separator = item.indexOf("=");
+    if (separator === -1) {
+      return {
+        name: item.trim(),
+        value: ""
+      };
+    }
+    return {
+      name: item.slice(0, separator).trim(),
+      value: item.slice(separator + 1).trim()
+    };
+  }
+  function normalizeOptionName(value) {
+    return String(value || "").trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+  }
+  function applyCurveOption(options, name, value) {
+    const normalizedValue = String(value || "").trim();
+    if (name === "half left") {
+      options.curve = { side: "left", amount: 2 / 3, shape: "semicircle" };
+      return;
+    }
+    if (name === "half right") {
+      options.curve = { side: "right", amount: 2 / 3, shape: "semicircle" };
+      return;
+    }
+    if (name === "quarter left") {
+      options.curve = { side: "left", amount: 0.28 };
+      return;
+    }
+    if (name === "quarter right") {
+      options.curve = { side: "right", amount: 0.28 };
+      return;
+    }
+    if (name === "bend left") {
+      options.curve = {
+        side: "left",
+        amount: bendAmountFromValue(normalizedValue)
+      };
+      return;
+    }
+    if (name === "bend right") {
+      options.curve = {
+        side: "right",
+        amount: bendAmountFromValue(normalizedValue)
+      };
+    }
+  }
+  function bendAmountFromValue(value) {
+    const angle = Number(value);
+    if (!Number.isFinite(angle) || angle <= 0) {
+      return 0.35;
+    }
+    return clamp3(angle / 90, 0.12, 0.8);
+  }
+  function cleanLabelValue(value) {
+    let text = String(value || "").trim();
+    if (text.startsWith("{") && text.endsWith("}") || text.startsWith('"') && text.endsWith('"') || text.startsWith("'") && text.endsWith("'")) {
+      text = text.slice(1, -1).trim();
+    }
+    text = text.replace(/^\[[^\]]*\]\s*/, "");
+    if (text.startsWith("\\(") && text.endsWith("\\)")) {
+      text = text.slice(2, -2).trim();
+    }
+    return text;
+  }
+  function parseDiagramOptions(tokens, diagram, lineNumber) {
+    tokens.forEach((token) => {
+      const [key, ...valueParts] = token.split("=");
+      if (!valueParts.length) {
+        diagram.errors.push(`Line ${lineNumber}: option "${token}" must use key=value`);
         return;
       }
-      if (!adjacency.has(edge.source)) {
-        adjacency.set(edge.source, /* @__PURE__ */ new Set());
-      }
-      if (!adjacency.has(edge.target)) {
-        adjacency.set(edge.target, /* @__PURE__ */ new Set());
-      }
-      adjacency.get(edge.source).add(edge.target);
-      adjacency.get(edge.target).add(edge.source);
+      setDiagramOption(diagram, key, valueParts.join("="), lineNumber);
     });
-    return adjacency;
   }
-  function classifyTopology(semantic, visibleEdges, connectedComponents, loopOrder, parallelEdgeGroups, oneLoop, multiLoop) {
-    const incomingCount = semantic.incoming.length;
-    const outgoingCount = semantic.outgoing.length;
-    const externalCount = semantic.externalVertices.length;
-    const internalCount = semantic.internalVertices.length;
-    if (loopOrder > 1 && multiLoop?.regions?.length) {
-      return "multiLoop";
+  function setDiagramOption(diagram, key, value, lineNumber) {
+    const normalizedKey = String(key || "").trim().toLowerCase().replace(/-/g, "_");
+    const normalizedValue = String(value || "").trim();
+    if (!normalizedValue) {
+      diagram.errors.push(`Line ${lineNumber}: ${key} requires a value`);
+      return;
     }
-    if (parallelEdgeGroups.some((group) => group.selfEnergyLike)) {
-      return "selfEnergy";
-    }
-    if (loopOrder === 1 && oneLoop) {
-      if (oneLoop.type === "tadpole") {
-        return "tadpole";
+    if (normalizedKey === "layout") {
+      const layout = normalizeLayoutName(normalizedValue);
+      if (!layout) {
+        diagram.errors.push(`Line ${lineNumber}: unsupported layout "${normalizedValue}"`);
+        return;
       }
-      if (oneLoop.type === "triangle") {
-        return "triangleLoop";
+      diagram.options.layout = layout;
+      return;
+    }
+    if (normalizedKey === "orientation" || normalizedKey === "orient") {
+      const orientation2 = normalizeOrientation(normalizedValue);
+      if (!orientation2) {
+        diagram.errors.push(`Line ${lineNumber}: unsupported orientation "${normalizedValue}"`);
+        return;
       }
-      if (oneLoop.type === "box") {
-        return "boxLoop";
+      diagram.options.orientation = orientation2;
+      return;
+    }
+    if (normalizedKey === "size") {
+      const size = normalizedValue.toLowerCase();
+      if (!SIZE_PRESETS[size]) {
+        diagram.errors.push(`Line ${lineNumber}: unsupported size "${normalizedValue}"`);
+        return;
       }
-      if (oneLoop.type === "polygon" || oneLoop.type === "simple") {
-        return "polygonLoop";
+      diagram.options.size = size;
+      return;
+    }
+    if (normalizedKey === "width" || normalizedKey === "height" || normalizedKey === "margin_x" || normalizedKey === "margin_y") {
+      const number = Number(normalizedValue);
+      if (!Number.isFinite(number) || number <= 0) {
+        diagram.errors.push(`Line ${lineNumber}: ${key} must be a positive number`);
+        return;
       }
-      return "oneLoop";
+      diagram.options[normalizedKey] = number;
+      return;
     }
-    if (incomingCount === 1 && outgoingCount >= 2 && loopOrder === 0) {
-      return "decay";
+    diagram.errors.push(`Line ${lineNumber}: unknown option "${key}"`);
+  }
+  function normalizeLayoutName(value) {
+    const normalized = value.toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+    if (normalized === "layered" || normalized === "layered layout") {
+      return "layered";
     }
-    if (incomingCount === 2 && outgoingCount >= 2) {
-      return "scattering";
+    if (normalized === "spring" || normalized === "spring layout") {
+      return "spring";
     }
-    if (isContactInteraction(semantic, visibleEdges)) {
-      return "contactInteraction";
+    if (normalized === "spring electrical" || normalized === "spring electrical layout" || normalized === "electrical" || normalized === "electrical layout") {
+      return "spring-electrical";
     }
-    if (externalCount === 0 && internalCount > 0 && connectedComponents.length > 0) {
-      return "vacuum";
-    }
-    if (loopOrder === 0 && semantic.vertices.length > 0) {
+    if (normalized === "tree" || normalized === "tree layout") {
       return "tree";
     }
-    return "unknown";
+    return null;
   }
-  function detectTadpoleLoops(semantic, visibleEdges) {
-    const internal = new Set(semantic.internalVertices);
-    return visibleEdges.filter((edge) => edge.source === edge.target).map((edge) => ({
-      id: `tadpole:${edge.source}:${edge.metadata.edgeIndex}`,
-      type: "tadpole",
-      nodes: [edge.source],
-      edges: [edge.id],
-      edgeIndices: [edge.metadata.edgeIndex],
-      length: 1,
-      internal: internal.has(edge.source),
-      externalLegs: externalLegsForNodes(semantic, [edge.source])
-    })).sort(compareCycleSummaries);
-  }
-  function detectSimpleInternalCycles(semantic, visibleEdges) {
-    const internal = new Set(semantic.internalVertices);
-    const pairEdges = internalPairEdges(visibleEdges, internal);
-    const adjacency = /* @__PURE__ */ new Map();
-    pairEdges.forEach((edges, key) => {
-      const [first, second] = key.split("|");
-      addInternalNeighbor(adjacency, first, second);
-      addInternalNeighbor(adjacency, second, first);
-    });
-    const cyclesByKey = /* @__PURE__ */ new Map();
-    const nodes = Array.from(adjacency.keys()).sort(compareStable);
-    nodes.forEach((start) => {
-      findCyclesFrom(start, start, adjacency, [start], /* @__PURE__ */ new Set([start]), cyclesByKey);
-    });
-    return Array.from(cyclesByKey.values()).map((nodesInCycle) => cycleSummary(nodesInCycle, pairEdges, semantic)).filter(Boolean).sort(compareCycleSummaries);
-  }
-  function internalPairEdges(visibleEdges, internal) {
-    const pairEdges = /* @__PURE__ */ new Map();
-    visibleEdges.forEach((edge) => {
-      if (edge.source === edge.target || !internal.has(edge.source) || !internal.has(edge.target)) {
-        return;
-      }
-      const key = edgePairKey(edge.source, edge.target);
-      if (!pairEdges.has(key)) {
-        pairEdges.set(key, []);
-      }
-      pairEdges.get(key).push(edge);
-    });
-    pairEdges.forEach((edges) => {
-      edges.sort((left, right) => left.metadata.edgeIndex - right.metadata.edgeIndex || compareStable(left.id, right.id));
-    });
-    return pairEdges;
-  }
-  function findCyclesFrom(start, current, adjacency, path, visited, cyclesByKey) {
-    Array.from(adjacency.get(current) || []).sort(compareStable).forEach((neighbor) => {
-      if (neighbor === start && path.length >= 3) {
-        const canonical = canonicalCycle(path);
-        cyclesByKey.set(canonical.join("|"), canonical);
-        return;
-      }
-      if (visited.has(neighbor) || compareStable(neighbor, start) < 0 || path.length >= 12) {
-        return;
-      }
-      visited.add(neighbor);
-      path.push(neighbor);
-      findCyclesFrom(start, neighbor, adjacency, path, visited, cyclesByKey);
-      path.pop();
-      visited.delete(neighbor);
-    });
-  }
-  function canonicalCycle(nodes) {
-    const candidates = [];
-    const forward = nodes.slice();
-    const reverse = nodes.slice().reverse();
-    [forward, reverse].forEach((cycle) => {
-      for (let index = 0; index < cycle.length; index += 1) {
-        candidates.push([
-          ...cycle.slice(index),
-          ...cycle.slice(0, index)
-        ]);
-      }
-    });
-    return candidates.sort(compareCycleNodeList)[0];
-  }
-  function cycleSummary(nodes, pairEdges, semantic) {
-    const edges = [];
-    const edgeIndices = [];
-    for (let index = 0; index < nodes.length; index += 1) {
-      const first = nodes[index];
-      const second = nodes[(index + 1) % nodes.length];
-      const edge = pairEdges.get(edgePairKey(first, second))?.[0];
-      if (!edge) {
-        return null;
-      }
-      edges.push(edge.id);
-      edgeIndices.push(edge.metadata.edgeIndex);
+  function normalizeQuality(value) {
+    const normalized = String(value || "balanced").toLowerCase();
+    if (normalized === "fast" || normalized === "high") {
+      return normalized;
     }
-    return {
-      id: `cycle:${nodes.join("|")}`,
-      type: cycleType(nodes.length),
-      nodes,
-      edges,
-      edgeIndices,
-      length: nodes.length,
-      internal: true,
-      externalLegs: externalLegsForNodes(semantic, nodes)
-    };
+    return "balanced";
   }
-  function selectOneLoopTopology(simpleCycles, tadpoleLoops) {
-    const tadpole = tadpoleLoops.find((loop) => loop.internal) || tadpoleLoops[0];
-    if (tadpole) {
-      return tadpole;
+  function normalizeOrientation(value) {
+    const normalized = value.toLowerCase().replace(/_/g, "-").replace(/\s+/g, "-").trim();
+    if (normalized === "horizontal") {
+      return "horizontal";
     }
-    if (!simpleCycles.length) {
+    if (normalized === "horizontal'" || normalized === "horizontal-reverse" || normalized === "horizontal-flipped") {
+      return "horizontal-reverse";
+    }
+    if (normalized === "vertical") {
+      return "vertical";
+    }
+    if (normalized === "vertical'" || normalized === "vertical-reverse" || normalized === "vertical-flipped") {
+      return "vertical-reverse";
+    }
+    return null;
+  }
+  function isTikzOrientationCommand(command) {
+    return command === "horizontal" || command === "horizontal'" || command === "vertical" || command === "vertical'";
+  }
+  function isNodeIdentifier(value) {
+    return /^[A-Za-z0-9_.-]+$/.test(String(value || ""));
+  }
+  function normalizeTikzOrientation(value) {
+    if (!value || typeof value !== "object") {
       return null;
     }
-    return simpleCycles.slice().sort((left, right) => loopTypeRank(left.type) - loopTypeRank(right.type) || left.length - right.length || compareCycleSummaries(left, right))[0];
-  }
-  function externalLegsForNodes(semantic, nodes) {
-    const nodeSet = new Set(nodes);
-    const external = new Set(semantic.externalVertices);
-    return semantic.propagators.filter((edge) => !edge.metadata.hidden).flatMap((edge) => {
-      if (nodeSet.has(edge.source) && external.has(edge.target)) {
-        return [externalLeg(edge.target, edge.source, edge)];
-      }
-      if (nodeSet.has(edge.target) && external.has(edge.source)) {
-        return [externalLeg(edge.source, edge.target, edge)];
-      }
-      return [];
-    }).sort((left, right) => left.edgeIndex - right.edgeIndex || compareStable(left.external, right.external) || compareStable(left.internal, right.internal));
-  }
-  function externalLeg(external, internal, edge) {
-    return {
-      external,
-      internal,
-      edge: edge.id,
-      edgeIndex: edge.metadata.edgeIndex
-    };
-  }
-  function cycleType(length) {
-    if (length === 3) {
-      return "triangle";
-    }
-    if (length === 4) {
-      return "box";
-    }
-    return "polygon";
-  }
-  function loopTypeRank(type) {
-    return {
-      tadpole: 0,
-      triangle: 1,
-      box: 2,
-      polygon: 3,
-      simple: 3
-    }[type] ?? 4;
-  }
-  function topologyLimitations(semantic, connectedComponents, loopOrder, oneLoop, loopRegions) {
-    const limitations = [];
-    if (loopOrder > 1 && !loopRegions.length) {
-      limitations.push({
-        code: "general-multiloop-layout-not-implemented",
-        message: "General multiloop optimization is not implemented; layout falls back to local and ELK heuristics."
-      });
-    } else if (loopOrder > 2) {
-      limitations.push({
-        code: "higher-order-multiloop-heuristic",
-        message: "Higher-order multiloop diagrams use bounded region heuristics rather than a complete multiloop optimizer."
-      });
-    }
-    if (semantic.externalVertices.length === 0 && loopOrder === 1 && oneLoop) {
-      limitations.push({
-        code: "vacuum-one-loop-centered-only",
-        message: "Vacuum one-loop diagrams use deterministic centered polygon placement, not a full vacuum graph optimizer."
-      });
-    }
-    if (semantic.externalVertices.length === 0 && connectedComponents.length > 1 && loopOrder > 1) {
-      limitations.push({
-        code: "disconnected-vacuum-multiloop-not-solved",
-        message: "Disconnected multiloop vacuum diagrams are detected but not treated as solved by the one-loop candidate layout."
-      });
-    }
-    return limitations;
-  }
-  function analyzeBiconnectedComponents(adjacency, edges) {
-    const edgeIdsByPair = edgeIdsByPairMap(edges);
-    const discovery = /* @__PURE__ */ new Map();
-    const low = /* @__PURE__ */ new Map();
-    const parent = /* @__PURE__ */ new Map();
-    const edgeStack = [];
-    const articulation = /* @__PURE__ */ new Set();
-    const bridges = [];
-    const componentsFound = [];
-    let time = 0;
-    Array.from(adjacency.keys()).sort(compareStable).forEach((root) => {
-      if (discovery.has(root)) {
-        return;
-      }
-      let rootChildren = 0;
-      function visit(node) {
-        discovery.set(node, time);
-        low.set(node, time);
-        time += 1;
-        Array.from(adjacency.get(node) || []).sort(compareStable).forEach((neighbor) => {
-          const edge = canonicalEdge(node, neighbor);
-          if (!discovery.has(neighbor)) {
-            parent.set(neighbor, node);
-            rootChildren += node === root ? 1 : 0;
-            edgeStack.push(edge);
-            visit(neighbor);
-            low.set(node, Math.min(low.get(node), low.get(neighbor)));
-            if (node === root && rootChildren > 1 || node !== root && low.get(neighbor) >= discovery.get(node)) {
-              articulation.add(node);
-              componentsFound.push(popComponent(edgeStack, edge, edgeIdsByPair));
-            }
-            if (low.get(neighbor) > discovery.get(node)) {
-              bridges.push(edgeSummary(node, neighbor, edgeIdsByPair));
-            }
-          } else if (parent.get(node) !== neighbor && discovery.get(neighbor) < discovery.get(node)) {
-            low.set(node, Math.min(low.get(node), discovery.get(neighbor)));
-            edgeStack.push(edge);
-          }
-        });
-      }
-      visit(root);
-      if (edgeStack.length) {
-        componentsFound.push(popComponent(edgeStack, null, edgeIdsByPair));
-      }
-    });
-    return {
-      components: componentsFound.filter((component) => component.nodes.length).map((component, index) => ({
-        id: `bcc:${index + 1}`,
-        ...component,
-        loopOrder: Math.max(0, component.edges.length - component.nodes.length + 1)
-      })).sort(compareComponentSummaries),
-      articulationVertices: Array.from(articulation).sort(compareStable),
-      bridges: bridges.sort((left, right) => compareStable(left.id, right.id))
-    };
-  }
-  function buildLoopRegions2(semantic, cycles, biconnectedComponents) {
-    const cycleRegions = cycles.map((cycle, index) => ({
-      id: `loop-region:${index + 1}`,
-      nodes: cycle.nodes.slice(),
-      edges: cycle.edges.slice(),
-      loopOrder: 1,
-      kind: loopKind(cycle.type),
-      cycles: [cycle.id],
-      contains: [],
-      attachments: externalLegsForNodes(semantic, cycle.nodes)
-    }));
-    const componentRegions = biconnectedComponents.filter((component) => component.loopOrder > 1).map((component, index) => ({
-      id: `loop-region:bcc-${index + 1}`,
-      nodes: component.nodes.slice().sort(compareStable),
-      edges: component.edges.slice().sort(compareStable),
-      loopOrder: component.loopOrder,
-      kind: "generic",
-      cycles: cycles.filter((cycle) => cycle.nodes.every((node) => component.nodes.includes(node))).map((cycle) => cycle.id).sort(compareStable),
-      contains: [],
-      attachments: externalLegsForNodes(semantic, component.nodes)
-    }));
-    const regions = [...cycleRegions, ...componentRegions].filter((region, index, list) => list.findIndex((other) => sameMembers(region.nodes, other.nodes) && sameMembers(region.edges, other.edges)) === index).sort(compareLoopRegions);
-    regions.forEach((region) => {
-      region.contains = regions.filter((other) => other.id !== region.id && isStrictSubset(other.nodes, region.nodes)).map((other) => other.id).sort(compareStable);
-    });
-    return regions;
-  }
-  function classifyMultiLoop(loopOrder, loopRegions, cycles) {
-    if (loopOrder <= 1 || !loopRegions.length) {
+    const axis = value.axis === "vertical" ? "vertical" : "horizontal";
+    const from = String(value.from || "").trim();
+    const to = String(value.to || "").trim();
+    if (!isNodeIdentifier(from) || !isNodeIdentifier(to)) {
       return null;
     }
-    const sharedEdges = hasSharedMembers(cycles, "edges");
-    const sharedNodes = hasSharedMembers(cycles, "nodes");
-    const nested = loopRegions.some((region) => region.kind !== "generic" && region.contains.length);
-    const kind = sharedEdges ? "overlapping" : sharedNodes ? "overlapping" : nested ? "nested" : "disjoint";
     return {
-      kind,
-      loopOrder,
-      regions: loopRegions.map((region) => region.id)
+      axis,
+      from,
+      to,
+      flip: Boolean(value.flip),
+      angle: axis === "vertical" ? 90 : 0
     };
   }
-  function buildPrincipalSkeleton(semantic, loopRegions, biconnected) {
-    const regionByNode = /* @__PURE__ */ new Map();
-    loopRegions.forEach((region) => {
-      region.nodes.forEach((node) => {
-        if (!regionByNode.has(node)) {
-          regionByNode.set(node, []);
+  function clamp3(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+  var init_options = __esm({
+    "src/markfeyn/renderer/parser/options.js"() {
+      init_constants();
+    }
+  });
+
+  // src/markfeyn/renderer/parser/edges.js
+  function matchEdgeCommand(parts) {
+    const maxWords = Math.min(3, parts.length);
+    for (let wordCount = maxWords; wordCount > 0; wordCount -= 1) {
+      const name = parts.slice(0, wordCount).join(" ");
+      const definition = EDGE_DEFINITIONS.get(name);
+      if (definition) {
+        return {
+          name,
+          words: parts.slice(0, wordCount),
+          definition
+        };
+      }
+    }
+    return null;
+  }
+  function parseEdges(source, command, definition, diagram, lineNumber) {
+    const specs = splitEdgeSpecs(source);
+    if (!specs.length) {
+      diagram.errors.push(`Line ${lineNumber}: ${command} requires at least one edge`);
+      return;
+    }
+    specs.forEach((spec) => {
+      const edge = parseEdgeSpec(spec, command, definition, diagram.errors, lineNumber);
+      if (edge) {
+        diagram.edges.push(edge);
+      }
+    });
+  }
+  function parseEdgeSpec(spec, command, definition, errors, lineNumber) {
+    const match = spec.match(/^([A-Za-z0-9_.-]+)->([A-Za-z0-9_.-]+)(.*)$/);
+    if (!match) {
+      errors.push(`Line ${lineNumber}: invalid ${command} edge "${spec}"`);
+      return null;
+    }
+    const optionSource = parseEdgeOptionSource(match[3], spec, command, errors, lineNumber);
+    if (optionSource === null) {
+      return null;
+    }
+    return {
+      ...definition,
+      from: match[1],
+      to: match[2],
+      ...parseEdgeOptions(optionSource)
+    };
+  }
+  function parseEdgeOptionSource(rest, spec, command, errors, lineNumber) {
+    const source = String(rest || "").trim();
+    if (!source) {
+      return "";
+    }
+    if (!source.startsWith("[") || !source.endsWith("]")) {
+      errors.push(`Line ${lineNumber}: invalid ${command} edge "${spec}"`);
+      return null;
+    }
+    return source.slice(1, -1);
+  }
+  function splitEdgeSpecs(source) {
+    const specs = [];
+    let buffer = "";
+    let bracketDepth = 0;
+    let quote = null;
+    for (const character of String(source || "")) {
+      if (quote) {
+        buffer += character;
+        if (character === quote) {
+          quote = null;
         }
-        regionByNode.get(node).push(region.id);
-      });
-    });
-    const edges = biconnected.bridges.map((bridge) => ({
-      ...bridge,
-      regions: [
-        ...regionByNode.get(bridge.source) || [],
-        ...regionByNode.get(bridge.target) || []
-      ].filter((value, index, list) => list.indexOf(value) === index).sort(compareStable)
-    })).sort((left, right) => compareStable(left.id, right.id));
-    return {
-      articulationVertices: biconnected.articulationVertices.slice(),
-      bridges: edges,
-      externalAttachments: semantic.externalVertices.map((external) => ({
-        external,
-        internal: firstInternalNeighbor(semantic, external)
-      })).filter((entry) => entry.internal).sort((left, right) => compareStable(left.external, right.external))
+        continue;
+      }
+      if (character === '"' || character === "'") {
+        quote = character;
+        buffer += character;
+        continue;
+      }
+      if (character === "[") {
+        bracketDepth += 1;
+        buffer += character;
+        continue;
+      }
+      if (character === "]") {
+        bracketDepth = Math.max(0, bracketDepth - 1);
+        buffer += character;
+        continue;
+      }
+      if (/\s/.test(character) && bracketDepth === 0) {
+        if (buffer.trim()) {
+          specs.push(buffer.trim());
+          buffer = "";
+        }
+        continue;
+      }
+      buffer += character;
+    }
+    if (buffer.trim()) {
+      specs.push(buffer.trim());
+    }
+    return specs;
+  }
+  var init_edges = __esm({
+    "src/markfeyn/renderer/parser/edges.js"() {
+      init_constants();
+      init_options();
+    }
+  });
+
+  // src/markfeyn/renderer/parser/directives.js
+  function parseExplicitTikzOrientationCommand(parts, diagram, lineNumber) {
+    const command = parts[0];
+    if (!isTikzOrientationCommand(command)) {
+      diagram.errors.push(`Line ${lineNumber}: tikz must use "tikz vertical a to b" or "tikz horizontal a to b"`);
+      return;
+    }
+    parseTikzOrientationCommand(command, parts.slice(1), diagram, lineNumber);
+  }
+  function parseTikzOrientationCommand(command, parts, diagram, lineNumber, options = {}) {
+    const axis = command.startsWith("vertical") ? "vertical" : "horizontal";
+    const flip = command.endsWith("'");
+    if (parts.length !== 3 || parts[1] !== "to" || !isNodeIdentifier(parts[0]) || !isNodeIdentifier(parts[2])) {
+      diagram.errors.push(`Line ${lineNumber}: ${command} must use "${command} a to b"`);
+      return;
+    }
+    if (options.deprecated) {
+      diagram.warnings.push(
+        `Line ${lineNumber}: "${command} ${parts.join(" ")}" is deprecated; use "tikz ${command} ${parts.join(" ")}" for post-layout rotation or "align ${axis} ${parts[0]} ${parts[2]}" for a native layout constraint`
+      );
+    }
+    diagram.options.tikzOrientation = {
+      axis,
+      from: parts[0],
+      to: parts[2],
+      flip,
+      angle: axis === "vertical" ? 90 : 0
     };
   }
-  function compareCycleSummaries(left, right) {
-    return loopTypeRank(left.type) - loopTypeRank(right.type) || left.length - right.length || compareCycleNodeList(left.nodes, right.nodes) || compareCycleNodeList(left.edges, right.edges);
-  }
-  function compareCycleNodeList(left, right) {
-    const count = Math.min(left.length, right.length);
-    for (let index = 0; index < count; index += 1) {
-      const compared = compareStable(left[index], right[index]);
-      if (compared) {
-        return compared;
-      }
+  function parseAlignmentCommand(parts, diagram, lineNumber) {
+    const axis = String(parts[0] || "").toLowerCase();
+    if (axis !== "vertical" && axis !== "horizontal") {
+      diagram.errors.push(`Line ${lineNumber}: align must use "align vertical a b" or "align horizontal a b"`);
+      return;
     }
-    return left.length - right.length;
-  }
-  function addInternalNeighbor(adjacency, node, neighbor) {
-    if (!adjacency.has(node)) {
-      adjacency.set(node, /* @__PURE__ */ new Set());
+    const nodes = parts.slice(1).filter((part) => part !== "to");
+    if (nodes.length < 2 || nodes.some((node) => !isNodeIdentifier(node))) {
+      diagram.errors.push(`Line ${lineNumber}: align ${axis} requires at least two node names`);
+      return;
     }
-    adjacency.get(node).add(neighbor);
+    diagram.options.alignments = [
+      ...diagram.options.alignments || [],
+      { axis, nodes }
+    ];
   }
-  function edgePairKey(first, second) {
-    return [first, second].sort(compareStable).join("|");
-  }
-  function detectParallelEdgeGroups(semantic, visibleEdges) {
-    const internal = new Set(semantic.internalVertices);
-    const grouped = /* @__PURE__ */ new Map();
-    visibleEdges.filter((edge) => edge.source !== edge.target).forEach((edge) => {
-      const nodes = [edge.source, edge.target].sort(compareStable);
-      const key = nodes.join("|");
-      if (!grouped.has(key)) {
-        grouped.set(key, {
-          id: key,
-          nodes,
-          internal: nodes.every((node) => internal.has(node)),
-          edges: []
-        });
-      }
-      grouped.get(key).edges.push({
-        id: edge.id,
-        source: edge.source,
-        target: edge.target,
-        edgeIndex: edge.metadata.edgeIndex,
-        style: edge.style,
-        curveSide: edge.metadata.curve?.side,
-        curveAmount: edge.metadata.curve?.amount
-      });
-    });
-    return Array.from(grouped.values()).filter((group) => group.edges.length > 1).map((group) => ({
-      ...group,
-      edges: group.edges.sort((left, right) => left.edgeIndex - right.edgeIndex || compareStable(left.id, right.id)),
-      selfEnergyLike: group.internal && group.edges.length >= 2
-    })).sort((left, right) => compareStable(left.id, right.id));
-  }
-  function isContactInteraction(semantic, visibleEdges) {
-    if (semantic.internalVertices.length !== 1 || semantic.externalVertices.length < 3) {
-      return false;
+  function parseManualPosition(parts, diagram, lineNumber) {
+    if (parts.length !== 3) {
+      diagram.errors.push(`Line ${lineNumber}: position must use "position node x y"`);
+      return;
     }
-    const center = semantic.internalVertices[0];
-    return visibleEdges.every((edge) => edge.source === center || edge.target === center);
+    const [node, rawX, rawY] = parts;
+    const x = Number(rawX);
+    const y = Number(rawY);
+    if (!node || !Number.isFinite(x) || !Number.isFinite(y)) {
+      diagram.errors.push(`Line ${lineNumber}: position coordinates must be numbers`);
+      return;
+    }
+    diagram.manualPositions[node] = { x, y };
   }
-  function components(adjacency) {
-    const visited = /* @__PURE__ */ new Set();
-    const result = [];
-    Array.from(adjacency.keys()).sort(compareStable).forEach((node) => {
-      if (visited.has(node)) {
-        return;
-      }
-      const component = [];
-      const stack = [node];
-      visited.add(node);
-      while (stack.length) {
-        const current = stack.pop();
-        component.push(current);
-        Array.from(adjacency.get(current) || []).sort(compareStable).forEach((neighbor) => {
-          if (!visited.has(neighbor)) {
-            visited.add(neighbor);
-            stack.push(neighbor);
+  var init_directives = __esm({
+    "src/markfeyn/renderer/parser/directives.js"() {
+      init_options();
+    }
+  });
+
+  // src/markfeyn/renderer/parser/feynman-parser.js
+  var FeynmanParser;
+  var init_feynman_parser = __esm({
+    "src/markfeyn/renderer/parser/feynman-parser.js"() {
+      FeynmanParser = class {
+        constructor(source, helpers) {
+          this.source = String(source || "");
+          this.helpers = helpers;
+          this.diagram = helpers.createEmptyFeynmanDiagram();
+        }
+        parse() {
+          this.source.split(/\r?\n/).forEach((rawLine, index) => {
+            this.parseLine(rawLine, index + 1);
+          });
+          return this.diagram;
+        }
+        parseLine(rawLine, lineNumber) {
+          const line = rawLine.trim();
+          if (!line || line.startsWith("#")) {
+            return;
           }
-        });
+          const parts = line.split(/\s+/);
+          const command = parts[0];
+          const rest = parts.slice(1);
+          const helpers = this.helpers;
+          if (command === "incoming") {
+            this.diagram.incoming.push(...rest);
+            return;
+          }
+          if (command === "outgoing") {
+            this.diagram.outgoing.push(...rest);
+            return;
+          }
+          if (command === "layout") {
+            helpers.setDiagramOption(this.diagram, "layout", rest.join(" "), lineNumber);
+            return;
+          }
+          if (command === "orientation" || command === "orient") {
+            helpers.setDiagramOption(this.diagram, "orientation", rest.join(" "), lineNumber);
+            return;
+          }
+          if (command === "tikz") {
+            helpers.parseExplicitTikzOrientationCommand(rest, this.diagram, lineNumber);
+            return;
+          }
+          if (helpers.isTikzOrientationCommand(command)) {
+            helpers.parseTikzOrientationCommand(command, rest, this.diagram, lineNumber, { deprecated: true });
+            return;
+          }
+          if (command === "align" || command === "alignment") {
+            helpers.parseAlignmentCommand(rest, this.diagram, lineNumber);
+            return;
+          }
+          if (command === "size") {
+            helpers.setDiagramOption(this.diagram, "size", rest[0], lineNumber);
+            return;
+          }
+          if (command === "options" || command === "option") {
+            helpers.parseDiagramOptions(rest, this.diagram, lineNumber);
+            return;
+          }
+          if (command === "position" || command === "at") {
+            helpers.parseManualPosition(rest, this.diagram, lineNumber);
+            return;
+          }
+          if (command === "label") {
+            helpers.parseLabels(line.slice(command.length).trim(), this.diagram.labels, this.diagram.errors, lineNumber);
+            return;
+          }
+          if (command === "brace") {
+            helpers.parseBrace(line.slice(command.length).trim(), this.diagram, lineNumber);
+            return;
+          }
+          if (command === "vertex" || command === "vertices") {
+            helpers.parseVertices(line.slice(command.length).trim(), this.diagram.vertices, this.diagram.errors, lineNumber);
+            return;
+          }
+          const edgeCommand = helpers.matchEdgeCommand(parts);
+          if (edgeCommand) {
+            helpers.parseEdges(
+              line.slice(edgeCommand.words.join(" ").length).trim(),
+              edgeCommand.name,
+              edgeCommand.definition,
+              this.diagram,
+              lineNumber
+            );
+            return;
+          }
+          this.diagram.errors.push(`Line ${lineNumber}: unknown command "${command}"`);
+        }
+      };
+    }
+  });
+
+  // src/markfeyn/renderer/parser/labels.js
+  function parseLabels(source, labels, errors, lineNumber) {
+    let index = 0;
+    let matched = false;
+    while (index < source.length) {
+      while (index < source.length && /\s/.test(source[index])) {
+        index += 1;
       }
-      result.push(component.sort(compareStable));
-    });
-    return result;
-  }
-  function edgeIdsByPairMap(edges) {
-    const map = /* @__PURE__ */ new Map();
-    edges.forEach((edge) => {
-      const key = edgePairKey(edge.source, edge.target);
-      if (!map.has(key)) {
-        map.set(key, []);
-      }
-      map.get(key).push(edge.id);
-    });
-    map.forEach((ids) => ids.sort(compareStable));
-    return map;
-  }
-  function canonicalEdge(source, target) {
-    const [left, right] = [source, target].sort(compareStable);
-    return { source: left, target: right, key: `${left}|${right}` };
-  }
-  function edgeSummary(source, target, edgeIdsByPair) {
-    const edge = canonicalEdge(source, target);
-    return {
-      id: edgeIdsByPair.get(edge.key)?.[0] || edge.key,
-      source: edge.source,
-      target: edge.target,
-      edges: edgeIdsByPair.get(edge.key) || []
-    };
-  }
-  function popComponent(edgeStack, stopEdge, edgeIdsByPair) {
-    const nodes = /* @__PURE__ */ new Set();
-    const edges = /* @__PURE__ */ new Set();
-    while (edgeStack.length) {
-      const edge = edgeStack.pop();
-      nodes.add(edge.source);
-      nodes.add(edge.target);
-      (edgeIdsByPair.get(edge.key) || [edge.key]).forEach((edgeId) => edges.add(edgeId));
-      if (!stopEdge || edge.key === stopEdge.key) {
+      if (index >= source.length) {
         break;
       }
+      const keyStart = index;
+      while (index < source.length && !/[\s:]/.test(source[index])) {
+        index += 1;
+      }
+      const key = source.slice(keyStart, index);
+      if (!key) {
+        errors.push(`Line ${lineNumber}: labels must use node:text pairs`);
+        break;
+      }
+      if (source[index] !== ":") {
+        errors.push(`Line ${lineNumber}: labels must use node:text pairs`);
+        break;
+      }
+      index += 1;
+      const value = readLabelValue(source, index);
+      if (!value) {
+        errors.push(`Line ${lineNumber}: missing label text for "${key}"`);
+        break;
+      }
+      labels[key] = value.text;
+      index = value.next;
+      matched = true;
+    }
+    if (!matched && source) {
+      errors.push(`Line ${lineNumber}: labels must use node:text pairs`);
+    }
+  }
+  function readLabelValue(source, start) {
+    if (start >= source.length) {
+      return null;
+    }
+    if (source[start] === '"') {
+      return readQuotedLabelValue(source, start, '"');
+    }
+    if (source[start] === "'") {
+      return readQuotedLabelValue(source, start, "'");
+    }
+    let index = start;
+    let braceDepth = 0;
+    while (index < source.length) {
+      const character = source[index];
+      if (character === "{") {
+        braceDepth += 1;
+        index += 1;
+        continue;
+      }
+      if (character === "}") {
+        braceDepth = Math.max(0, braceDepth - 1);
+        index += 1;
+        continue;
+      }
+      if (braceDepth === 0 && /\s/.test(character)) {
+        break;
+      }
+      index += 1;
+    }
+    const text = source.slice(start, index);
+    if (!text) {
+      return null;
     }
     return {
-      nodes: Array.from(nodes).sort(compareStable),
-      edges: Array.from(edges).sort(compareStable)
+      text,
+      next: index
     };
   }
-  function compareComponentSummaries(left, right) {
-    return compareCycleNodeList(left.nodes, right.nodes) || compareCycleNodeList(left.edges, right.edges);
-  }
-  function loopKind(type) {
-    if (type === "triangle" || type === "box" || type === "tadpole") {
-      return type;
+  function readQuotedLabelValue(source, start, quote) {
+    let index = start + 1;
+    let text = "";
+    while (index < source.length) {
+      const character = source[index];
+      if (character === "\\" && index + 1 < source.length) {
+        text += character + source[index + 1];
+        index += 2;
+        continue;
+      }
+      if (character === quote) {
+        return {
+          text,
+          next: index + 1
+        };
+      }
+      text += character;
+      index += 1;
     }
-    if (type === "polygon" || type === "simple") {
-      return "polygon";
+    return null;
+  }
+  var init_labels2 = __esm({
+    "src/markfeyn/renderer/parser/labels.js"() {
     }
-    return "generic";
+  });
+
+  // src/markfeyn/renderer/parser/vertices.js
+  function parseVertices(source, vertices, errors, lineNumber) {
+    const specs = splitEdgeSpecs(source);
+    if (!specs.length && source) {
+      errors.push(`Line ${lineNumber}: vertices must use node:shape pairs`);
+      return;
+    }
+    specs.forEach((spec) => {
+      const parsed = parseVertexSpec(spec, errors, lineNumber);
+      if (parsed) {
+        vertices[parsed.node] = parsed.definition;
+      }
+    });
   }
-  function compareLoopRegions(left, right) {
-    return left.loopOrder - right.loopOrder || left.nodes.length - right.nodes.length || compareCycleNodeList(left.nodes, right.nodes) || compareCycleNodeList(left.edges, right.edges);
+  function parseVertexSpec(spec, errors, lineNumber) {
+    const separator = spec.indexOf(":");
+    if (separator <= 0 || separator === spec.length - 1) {
+      errors.push(`Line ${lineNumber}: vertices must use node:shape pairs`);
+      return null;
+    }
+    const node = spec.slice(0, separator).trim();
+    const rawDefinition = spec.slice(separator + 1).trim();
+    if (!node || /\s/.test(node)) {
+      errors.push(`Line ${lineNumber}: invalid vertex node "${node}"`);
+      return null;
+    }
+    const definition = parseVertexDefinition(rawDefinition, errors, lineNumber);
+    if (!definition) {
+      return null;
+    }
+    return { node, definition };
   }
-  function sameMembers(left, right) {
-    return left.length === right.length && left.every((value, index) => value === right[index]);
+  function parseVertexDefinition(rawDefinition, errors, lineNumber) {
+    const parsed = splitVertexShapeAndOptions(rawDefinition);
+    const rawShape = unwrapLabelValue(parsed.shape);
+    const shape = normalizeVertexShape(rawShape);
+    if (!shape) {
+      errors.push(`Line ${lineNumber}: unsupported vertex shape "${rawShape}"`);
+      return null;
+    }
+    const options = parseVertexOptions(parsed.options, errors, lineNumber);
+    if (!options) {
+      return null;
+    }
+    if (Object.keys(options).length && shape !== "blob" && shape !== "disk") {
+      errors.push(`Line ${lineNumber}: vertex options are only supported for blob and disk vertices`);
+      return null;
+    }
+    if (!Object.keys(options).length) {
+      return shape;
+    }
+    return { shape, ...options };
   }
-  function isStrictSubset(left, right) {
-    const rightSet = new Set(right);
-    return left.length < right.length && left.every((value) => rightSet.has(value));
-  }
-  function hasSharedMembers(cycles, key) {
-    for (let leftIndex = 0; leftIndex < cycles.length; leftIndex += 1) {
-      const left = new Set(cycles[leftIndex][key]);
-      for (let rightIndex = leftIndex + 1; rightIndex < cycles.length; rightIndex += 1) {
-        if (cycles[rightIndex][key].some((value) => left.has(value))) {
-          return true;
+  function splitVertexShapeAndOptions(rawDefinition) {
+    const source = String(rawDefinition || "").trim();
+    if (!source.endsWith("]")) {
+      return { shape: source, options: "" };
+    }
+    let quote = null;
+    let bracketDepth = 0;
+    let optionStart = -1;
+    for (let index = 0; index < source.length; index += 1) {
+      const character = source[index];
+      if (quote) {
+        if (character === quote) {
+          quote = null;
+        }
+        continue;
+      }
+      if (character === '"' || character === "'") {
+        quote = character;
+        continue;
+      }
+      if (character === "[") {
+        if (bracketDepth === 0) {
+          optionStart = index;
+        }
+        bracketDepth += 1;
+        continue;
+      }
+      if (character === "]") {
+        bracketDepth = Math.max(0, bracketDepth - 1);
+        if (bracketDepth === 0 && index !== source.length - 1) {
+          optionStart = -1;
         }
       }
+    }
+    if (optionStart === -1 || bracketDepth !== 0) {
+      return { shape: source, options: "" };
+    }
+    return {
+      shape: source.slice(0, optionStart).trim(),
+      options: source.slice(optionStart + 1, -1)
+    };
+  }
+  function parseVertexOptions(source, errors, lineNumber) {
+    const options = {};
+    let valid = true;
+    splitOptionList(source).map((item) => item.trim()).filter(Boolean).forEach((item) => {
+      const parsed = parseOptionItem(item);
+      const name = normalizeOptionName(parsed.name);
+      if (name === "hatch" || name === "hatched" || name === "pattern") {
+        const hatch = normalizeBlobHatch(parsed.value || "diagonal");
+        if (!hatch) {
+          errors.push(`Line ${lineNumber}: unsupported blob hatch "${parsed.value}"`);
+          valid = false;
+          return;
+        }
+        options.hatch = hatch;
+        return;
+      }
+      if (name === "fill") {
+        const normalizedValue = normalizeOptionName(unwrapLabelValue(parsed.value || "hatched"));
+        if (normalizedValue === "shaded" || normalizedValue === "solid" || normalizedValue === "none") {
+          return;
+        }
+        const hatch = normalizeBlobHatch(parsed.value || "diagonal");
+        if (!hatch) {
+          errors.push(`Line ${lineNumber}: unsupported blob fill "${parsed.value}"`);
+          valid = false;
+          return;
+        }
+        options.hatch = hatch;
+        return;
+      }
+      if (name === "size" || name === "radius") {
+        const size = parseBlobVertexSize(parsed.value);
+        if (!Number.isFinite(size) || size <= 0) {
+          errors.push(`Line ${lineNumber}: blob vertex size must be a positive number or preset`);
+          valid = false;
+          return;
+        }
+        options.size = size;
+        return;
+      }
+      if (name === "diameter") {
+        const diameter = parseBlobVertexSize(parsed.value);
+        if (!Number.isFinite(diameter) || diameter <= 0) {
+          errors.push(`Line ${lineNumber}: blob vertex diameter must be a positive number or preset`);
+          valid = false;
+          return;
+        }
+        options.size = diameter / 2;
+        return;
+      }
+      if (name === "rx" || name === "x radius" || name === "radius x" || name === "horizontal radius") {
+        const radius = parseBlobVertexSize(parsed.value);
+        if (!Number.isFinite(radius) || radius <= 0) {
+          errors.push(`Line ${lineNumber}: blob vertex x radius must be a positive number or preset`);
+          valid = false;
+          return;
+        }
+        options.rx = radius;
+        return;
+      }
+      if (name === "ry" || name === "y radius" || name === "radius y" || name === "vertical radius") {
+        const radius = parseBlobVertexSize(parsed.value);
+        if (!Number.isFinite(radius) || radius <= 0) {
+          errors.push(`Line ${lineNumber}: blob vertex y radius must be a positive number or preset`);
+          valid = false;
+          return;
+        }
+        options.ry = radius;
+        return;
+      }
+      if (name === "width" || name === "minimum width" || name === "min width" || name === "x diameter" || name === "horizontal diameter") {
+        const width = parseBlobVertexSize(parsed.value);
+        if (!Number.isFinite(width) || width <= 0) {
+          errors.push(`Line ${lineNumber}: blob vertex width must be a positive number or preset`);
+          valid = false;
+          return;
+        }
+        options.rx = width / 2;
+        return;
+      }
+      if (name === "height" || name === "minimum height" || name === "min height" || name === "y diameter" || name === "vertical diameter") {
+        const height = parseBlobVertexSize(parsed.value);
+        if (!Number.isFinite(height) || height <= 0) {
+          errors.push(`Line ${lineNumber}: blob vertex height must be a positive number or preset`);
+          valid = false;
+          return;
+        }
+        options.ry = height / 2;
+        return;
+      }
+      errors.push(`Line ${lineNumber}: unknown vertex option "${parsed.name}"`);
+      valid = false;
+    });
+    return valid ? options : null;
+  }
+  function normalizeBlobHatch(value) {
+    const normalized = normalizeOptionName(unwrapLabelValue(value));
+    return BLOB_HATCHES.get(normalized) ?? null;
+  }
+  function parseBlobVertexSize(value) {
+    const normalized = normalizeOptionName(unwrapLabelValue(value));
+    const preset = BLOB_VERTEX_SIZE_PRESETS.get(normalized);
+    if (preset) {
+      return preset;
+    }
+    return parseDistanceValue(unwrapLabelValue(value));
+  }
+  function normalizeVertexShape(value) {
+    const normalized = String(value || "").trim().toLowerCase().replace(/_/g, "-").replace(/\s+/g, " ");
+    return VERTEX_SHAPES.get(normalized) ?? VERTEX_SHAPES.get(normalized.replace(/\s+/g, "-")) ?? null;
+  }
+  var init_vertices = __esm({
+    "src/markfeyn/renderer/parser/vertices.js"() {
+      init_constants();
+      init_edges();
+      init_options();
+    }
+  });
+
+  // src/markfeyn/renderer/render/paths.js
+  function wavePath(from, to, amplitude, wavelength) {
+    return wavePathForEdge({}, from, to, amplitude, wavelength);
+  }
+  function wavePathForEdge(edge, from, to, amplitude, wavelength) {
+    const geometry = edgeGeometry2(edge, from, to);
+    const length = geometryLength(geometry);
+    const cycles = Math.max(2, Math.round(length / wavelength));
+    const steps = cycles * 12;
+    const points = [];
+    for (let step = 0; step <= steps; step += 1) {
+      const t = step / steps;
+      const phase = t * cycles * Math.PI * 2;
+      const offset = Math.sin(phase) * amplitude;
+      const sample = geometrySample2(geometry, t);
+      const normal = perpendicularVector(sample.tangent);
+      points.push({
+        x: sample.point.x + normal.x * offset,
+        y: sample.point.y + normal.y * offset
+      });
+    }
+    return pointsToPath(points);
+  }
+  function gluonPath(from, to, radius, loopLength) {
+    return gluonPathForEdge({}, from, to, radius, loopLength);
+  }
+  function gluonPathForEdge(edge, from, to, radius, loopLength) {
+    const geometry = edgeGeometry2(edge, from, to);
+    const length = geometryLength(geometry);
+    const loops = Math.max(3, Math.round(length / loopLength));
+    const steps = loops * 18;
+    const points = [];
+    for (let step = 0; step <= steps; step += 1) {
+      const t = step / steps;
+      const phase = t * loops * Math.PI * 2;
+      const sample = geometrySample2(geometry, t);
+      const tangent = normalizeVector2(sample.tangent.x, sample.tangent.y);
+      const normal = perpendicularVector(tangent);
+      const taper = gluonEndpointTaper(t, loops);
+      const along = Math.sin(phase) * radius * taper;
+      const offset = Math.cos(phase) * radius * taper;
+      points.push({
+        x: sample.point.x + tangent.ux * along + normal.x * offset,
+        y: sample.point.y + tangent.uy * along + normal.y * offset
+      });
+    }
+    return pointsToPath(points);
+  }
+  function gluonEndpointTaper(t, loops) {
+    const loopsFromEndpoint = Math.min(t, 1 - t) * loops;
+    const edgeProgress = Math.min(1, Math.max(0, loopsFromEndpoint / GLUON_ENDPOINT_RAMP_LOOPS));
+    return edgeProgress * edgeProgress * (3 - 2 * edgeProgress);
+  }
+  function trianglePath(from, to, amplitude, wavelength) {
+    return trianglePathForEdge({}, from, to, amplitude, wavelength);
+  }
+  function trianglePathForEdge(edge, from, to, amplitude, wavelength) {
+    const geometry = edgeGeometry2(edge, from, to);
+    const length = geometryLength(geometry);
+    const cycles = Math.max(2, Math.round(length / wavelength));
+    const quarters = cycles * 4;
+    const offsetPattern = [0, amplitude, 0, -amplitude];
+    const samples = [];
+    for (let step = 0; step <= quarters; step += 1) {
+      samples.push({
+        t: step / quarters,
+        offset: offsetPattern[step % 4]
+      });
+    }
+    return offsetSamplesToPath(geometry, samples);
+  }
+  function squarePath(from, to, amplitude, wavelength) {
+    return squarePathForEdge({}, from, to, amplitude, wavelength);
+  }
+  function squarePathForEdge(edge, from, to, amplitude, wavelength) {
+    const geometry = edgeGeometry2(edge, from, to);
+    const length = geometryLength(geometry);
+    const cycles = Math.max(2, Math.round(length / wavelength));
+    const samples = [{ t: 0, offset: 0 }];
+    for (let cycle = 0; cycle < cycles; cycle += 1) {
+      const start = cycle / cycles;
+      const mid = (cycle + 0.5) / cycles;
+      const end = (cycle + 1) / cycles;
+      samples.push({ t: start, offset: amplitude });
+      samples.push({ t: mid, offset: amplitude });
+      samples.push({ t: mid, offset: -amplitude });
+      samples.push({ t: end, offset: -amplitude });
+    }
+    samples.push({ t: 1, offset: 0 });
+    return offsetSamplesToPath(geometry, samples);
+  }
+  function offsetSamplesToPath(geometry, samples) {
+    const points = samples.map(({ t, offset }) => {
+      const sample = geometrySample2(geometry, t);
+      const normal = perpendicularVector(sample.tangent);
+      return {
+        x: sample.point.x + normal.x * offset,
+        y: sample.point.y + normal.y * offset
+      };
+    });
+    return pointsToPath(points);
+  }
+  function doubleLinePath(from, to, separation) {
+    return doubleLinePathForEdge({}, from, to, separation);
+  }
+  function doubleLinePathForEdge(edge, from, to, separation) {
+    const geometry = edgeGeometry2(edge, from, to);
+    const half = separation / 2;
+    const steps = geometry.kind === "cubic" ? 48 : 1;
+    const upper = [];
+    const lower = [];
+    for (let step = 0; step <= steps; step += 1) {
+      const sample = geometrySample2(geometry, step / steps);
+      const normal = perpendicularVector(sample.tangent);
+      upper.push({
+        x: sample.point.x + normal.x * half,
+        y: sample.point.y + normal.y * half
+      });
+      lower.push({
+        x: sample.point.x - normal.x * half,
+        y: sample.point.y - normal.y * half
+      });
+    }
+    return `${pointsToPath(upper)} ${pointsToPath(lower)}`;
+  }
+  function edgePath(edge, from, to) {
+    return geometryToPath(edgeGeometry2(edge, from, to));
+  }
+  function edgeGeometry2(edge, from, to) {
+    const outAngle = Number(edge?.outAngle);
+    const inAngle = Number(edge?.inAngle);
+    if (samePoint2(from, to)) {
+      return selfLoopGeometry2(edge, from, outAngle, inAngle);
+    }
+    if (Number.isFinite(outAngle) || Number.isFinite(inAngle)) {
+      return angleCurveGeometry2(edge, from, to, outAngle, inAngle);
+    }
+    if (edge?.curve) {
+      return offsetCurveGeometry2(edge, from, to);
+    }
+    return {
+      kind: "line",
+      from,
+      to
+    };
+  }
+  function selfLoopGeometry2(edge, point, outAngle, inAngle) {
+    const amount = clamp4(edge?.curve?.amount ?? 0.72, 0.28, 1.1);
+    const radius = 68 * amount;
+    if (Number.isFinite(outAngle) || Number.isFinite(inAngle)) {
+      const outVector = angleUnitVector2(Number.isFinite(outAngle) ? outAngle : 135);
+      const inVector = angleUnitVector2(Number.isFinite(inAngle) ? inAngle : 45);
+      return {
+        kind: "cubic",
+        from: point,
+        c1: {
+          x: point.x + outVector.x * radius * 1.65,
+          y: point.y + outVector.y * radius * 1.65
+        },
+        c2: {
+          x: point.x + inVector.x * radius * 1.65,
+          y: point.y + inVector.y * radius * 1.65
+        },
+        to: point
+      };
+    }
+    const side = selfLoopSideVector2(edge?.curve?.side);
+    const tangent = { x: -side.y, y: side.x };
+    return {
+      kind: "cubic",
+      from: point,
+      c1: {
+        x: point.x - tangent.x * radius + side.x * radius * 1.7,
+        y: point.y - tangent.y * radius + side.y * radius * 1.7
+      },
+      c2: {
+        x: point.x + tangent.x * radius + side.x * radius * 1.7,
+        y: point.y + tangent.y * radius + side.y * radius * 1.7
+      },
+      to: point
+    };
+  }
+  function samePoint2(from, to) {
+    return Math.abs(from.x - to.x) < 1e-3 && Math.abs(from.y - to.y) < 1e-3;
+  }
+  function selfLoopSideVector2(side) {
+    if (side === "right") {
+      return { x: 1, y: 0 };
+    }
+    if (side === "bottom") {
+      return { x: 0, y: 1 };
+    }
+    if (side === "left") {
+      return { x: -1, y: 0 };
+    }
+    return { x: 0, y: -1 };
+  }
+  function offsetCurveGeometry2(edge, from, to) {
+    const vector = lineVector2(from, to);
+    const normal = leftNormalVector2(vector);
+    const side = edge.curve.side === "right" ? -1 : 1;
+    const looseness = edge.looseness ?? 1;
+    const offset = vector.length * edge.curve.amount * looseness * side;
+    if (edge.curve.shape === "semicircle") {
+      return {
+        kind: "cubic",
+        from,
+        c1: {
+          x: from.x + normal.x * offset,
+          y: from.y + normal.y * offset
+        },
+        c2: {
+          x: to.x + normal.x * offset,
+          y: to.y + normal.y * offset
+        },
+        to
+      };
+    }
+    return {
+      kind: "cubic",
+      from,
+      c1: {
+        x: from.x + vector.dx * 0.33 + normal.x * offset,
+        y: from.y + vector.dy * 0.33 + normal.y * offset
+      },
+      c2: {
+        x: from.x + vector.dx * 0.67 + normal.x * offset,
+        y: from.y + vector.dy * 0.67 + normal.y * offset
+      },
+      to
+    };
+  }
+  function angleCurveGeometry2(edge, from, to, outAngle, inAngle) {
+    const vector = lineVector2(from, to);
+    const looseness = edge?.looseness ?? 1;
+    const handle = vector.length * 0.46 * looseness;
+    const relativeBase = edge?.relativeAngles ? vectorAngle2(vector) : 0;
+    const resolvedOut = Number.isFinite(outAngle) ? relativeBase + outAngle : vectorAngle2(vector);
+    const resolvedIn = Number.isFinite(inAngle) ? relativeBase + inAngle : vectorAngle2(vector) + 180;
+    const outVector = angleUnitVector2(resolvedOut);
+    const inVector = angleUnitVector2(resolvedIn);
+    return {
+      kind: "cubic",
+      from,
+      c1: {
+        x: from.x + outVector.x * handle,
+        y: from.y + outVector.y * handle
+      },
+      c2: {
+        x: to.x + inVector.x * handle,
+        y: to.y + inVector.y * handle
+      },
+      to
+    };
+  }
+  function geometryToPath(geometry) {
+    if (geometry.kind === "cubic") {
+      return [
+        `M ${round(geometry.from.x)} ${round(geometry.from.y)}`,
+        `C ${round(geometry.c1.x)} ${round(geometry.c1.y)}`,
+        `${round(geometry.c2.x)} ${round(geometry.c2.y)}`,
+        `${round(geometry.to.x)} ${round(geometry.to.y)}`
+      ].join(" ");
+    }
+    return `M ${round(geometry.from.x)} ${round(geometry.from.y)} L ${round(geometry.to.x)} ${round(geometry.to.y)}`;
+  }
+  function geometryPoint2(geometry, t) {
+    if (geometry.kind === "cubic") {
+      return cubicPoint2(geometry.from, geometry.c1, geometry.c2, geometry.to, t);
+    }
+    return {
+      x: geometry.from.x + (geometry.to.x - geometry.from.x) * t,
+      y: geometry.from.y + (geometry.to.y - geometry.from.y) * t
+    };
+  }
+  function geometryTangent2(geometry, t) {
+    if (geometry.kind === "cubic") {
+      return cubicTangent2(geometry.from, geometry.c1, geometry.c2, geometry.to, t);
+    }
+    return {
+      x: geometry.to.x - geometry.from.x,
+      y: geometry.to.y - geometry.from.y
+    };
+  }
+  function geometrySample2(geometry, t) {
+    return {
+      point: geometryPoint2(geometry, t),
+      tangent: geometryTangent2(geometry, t)
+    };
+  }
+  function geometryLength(geometry) {
+    const steps = geometry.kind === "cubic" ? 48 : 1;
+    let length = 0;
+    let previous = geometryPoint2(geometry, 0);
+    for (let step = 1; step <= steps; step += 1) {
+      const next = geometryPoint2(geometry, step / steps);
+      length += Math.hypot(next.x - previous.x, next.y - previous.y);
+      previous = next;
+    }
+    return length;
+  }
+  function cubicPoint2(p0, p1, p2, p3, t) {
+    const mt = 1 - t;
+    return {
+      x: mt ** 3 * p0.x + 3 * mt ** 2 * t * p1.x + 3 * mt * t ** 2 * p2.x + t ** 3 * p3.x,
+      y: mt ** 3 * p0.y + 3 * mt ** 2 * t * p1.y + 3 * mt * t ** 2 * p2.y + t ** 3 * p3.y
+    };
+  }
+  function cubicTangent2(p0, p1, p2, p3, t) {
+    const mt = 1 - t;
+    return {
+      x: 3 * mt ** 2 * (p1.x - p0.x) + 6 * mt * t * (p2.x - p1.x) + 3 * t ** 2 * (p3.x - p2.x),
+      y: 3 * mt ** 2 * (p1.y - p0.y) + 6 * mt * t * (p2.y - p1.y) + 3 * t ** 2 * (p3.y - p2.y)
+    };
+  }
+  function lineVector2(from, to) {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const length = Math.hypot(dx, dy) || 1;
+    return {
+      dx,
+      dy,
+      length,
+      ux: dx / length,
+      uy: dy / length,
+      px: -dy / length,
+      py: dx / length
+    };
+  }
+  function normalizeVector2(dx, dy) {
+    const length = Math.hypot(dx, dy) || 1;
+    return {
+      ux: dx / length,
+      uy: dy / length,
+      px: -dy / length,
+      py: dx / length
+    };
+  }
+  function perpendicularVector(vector) {
+    const normalized = normalizeVector2(vector.x ?? vector.dx ?? vector.ux, vector.y ?? vector.dy ?? vector.uy);
+    return {
+      x: normalized.px,
+      y: normalized.py
+    };
+  }
+  function leftNormalVector2(vector) {
+    return {
+      x: vector.dy / vector.length,
+      y: -vector.dx / vector.length
+    };
+  }
+  function vectorAngle2(vector) {
+    return Math.atan2(-vector.dy, vector.dx) * 180 / Math.PI;
+  }
+  function angleUnitVector2(degrees) {
+    const radians = degrees * Math.PI / 180;
+    return {
+      x: Math.cos(radians),
+      y: -Math.sin(radians)
+    };
+  }
+  function pointsToPath(points) {
+    return points.map((point, index) => `${index === 0 ? "M" : "L"} ${round(point.x)} ${round(point.y)}`).join(" ");
+  }
+  function clamp4(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+  function round(value) {
+    return Math.round(value * 100) / 100;
+  }
+  var GLUON_ENDPOINT_RAMP_LOOPS;
+  var init_paths = __esm({
+    "src/markfeyn/renderer/render/paths.js"() {
+      GLUON_ENDPOINT_RAMP_LOOPS = 0.62;
+    }
+  });
+
+  // src/markfeyn/renderer/render/label-markup.js
+  function labelNeedsMathJax(source) {
+    const input = String(source ?? "");
+    if (!input.includes("\\")) {
+      return false;
+    }
+    if (MATHJAX_COMPLEX_COMMANDS.test(input)) {
+      return true;
+    }
+    let index = 0;
+    while (index < input.length) {
+      if (input[index] === "_" || input[index] === "^") {
+        const script = rawScriptArgument(input, index + 1);
+        if (script && script.text.includes("\\")) {
+          const commands = script.text.match(/\\[A-Za-z]+/g) || [];
+          const plain = script.text.replace(/\\[A-Za-z]+/g, "").trim();
+          if (commands.length > 1 || commands.length === 1 && plain.length > 0) {
+            return true;
+          }
+          if (commands.length === 1 && !LATEX_SYMBOLS.has(commands[0].slice(1))) {
+            return true;
+          }
+        }
+        index = script ? script.next : index + 1;
+        continue;
+      }
+      if (input[index] === "\\") {
+        const command = readLatexCommand(input, index);
+        const nameMatch = input.slice(index + 1, command.next).match(/^[A-Za-z]+/);
+        if (nameMatch && !LATEX_SYMBOLS.has(nameMatch[0]) && nameMatch[0] !== "overline" && nameMatch[0] !== "bar") {
+          return true;
+        }
+        index = command.next;
+        continue;
+      }
+      index += 1;
     }
     return false;
   }
-  function firstInternalNeighbor(semantic, node) {
-    const internal = new Set(semantic.internalVertices);
-    const edge = semantic.propagators.filter((propagator) => !propagator.metadata.hidden).find((propagator) => propagator.source === node && internal.has(propagator.target) || propagator.target === node && internal.has(propagator.source));
-    if (!edge) {
-      return null;
+  function labelSegmentText(segment) {
+    if (segment.kind === "normal") {
+      return segment.text;
     }
-    return edge.source === node ? edge.target : edge.source;
+    return segment.text.replace(/-/g, "−");
   }
-  function graphCentersFor(adjacency, preferredNodes) {
-    const candidates = (preferredNodes.length ? preferredNodes : Array.from(adjacency.keys())).sort(compareStable);
-    let best = [];
-    let bestEccentricity = Infinity;
-    candidates.forEach((node) => {
-      const distances = breadthFirstDistances(adjacency, node);
-      const eccentricity = Math.max(...Array.from(distances.values()));
-      if (eccentricity < bestEccentricity) {
-        best = [node];
-        bestEccentricity = eccentricity;
-      } else if (eccentricity === bestEccentricity) {
-        best.push(node);
-      }
-    });
-    return best.length ? best.sort(compareStable) : [];
-  }
-  function breadthFirstDistances(adjacency, start) {
-    const distances = /* @__PURE__ */ new Map([[start, 0]]);
-    const queue = [start];
-    while (queue.length) {
-      const current = queue.shift();
-      const nextDistance = distances.get(current) + 1;
-      Array.from(adjacency.get(current) || []).sort(compareStable).forEach((neighbor) => {
-        if (!distances.has(neighbor)) {
-          distances.set(neighbor, nextDistance);
-          queue.push(neighbor);
-        }
-      });
-    }
-    return distances;
-  }
-  function inferSimpleSymmetryGroups(semantic) {
-    if (semantic.unclassified.length >= 2) {
-      return [semantic.unclassified.slice().sort(compareStable)];
-    }
-    return [];
-  }
-  function confidenceFor(topology) {
-    if (topology === "unknown") {
-      return 0.2;
-    }
-    return 0.85;
-  }
-  var init_topology = __esm({
-    "src/markfeyn/renderer/layout/topology.js"() {
-      init_model();
-    }
-  });
-
-  // src/markfeyn/renderer/layout/orientation.js
-  function analyzeOrientation(semantic, topology, options = {}) {
-    const requested = options.orientationMode || semantic.layoutHints.orientationMode;
-    if (requested === "fixed") {
-      return {
-        mode: "fixed",
-        confidence: 1,
-        direction: directionFromOptions(options),
-        evidence: ["explicit fixed orientation mode"],
-        ambiguities: []
-      };
-    }
-    if (requested === "symmetric") {
-      return symmetricOrientation(["explicit symmetric orientation mode"]);
-    }
-    if (requested === "process") {
-      return processOrientation(["explicit process orientation mode"], directionFromOptions(options));
-    }
-    if (options.tikzOrientation || semantic.source.options?.tikzOrientation) {
-      return {
-        mode: "fixed",
-        confidence: 0.9,
-        direction: directionFromOptions(options),
-        evidence: ["explicit TikZ-Feynman orientation command"],
-        ambiguities: []
-      };
-    }
-    if (semantic.incoming.length > 0 && semantic.outgoing.length > 0) {
-      return processOrientation(["explicit incoming and outgoing external roles"], directionFromOptions(options));
-    }
-    if (semantic.process.initialState?.length && semantic.process.finalState?.length) {
-      return processOrientation(["process metadata includes initial and final states"], directionFromOptions(options));
-    }
-    return symmetricOrientation([
-      "no reliable incoming/outgoing process roles",
-      `topology classified as ${topology.detectedTopology}`
-    ]);
-  }
-  function processOrientation(evidence, direction = "RIGHT") {
-    return {
-      mode: "process",
-      confidence: 0.9,
-      direction,
-      axis: direction === "RIGHT" || direction === "LEFT" ? { x: 1, y: 0 } : { x: 0, y: 1 },
-      evidence,
-      ambiguities: []
-    };
-  }
-  function symmetricOrientation(evidence) {
-    return {
-      mode: "symmetric",
-      confidence: 0.8,
-      evidence,
-      ambiguities: ["external roles are unclassified"]
-    };
-  }
-  function directionFromOptions(options) {
-    const direction = String(options.direction || "").toUpperCase();
-    if (["RIGHT", "LEFT", "DOWN", "UP"].includes(direction)) {
-      return direction;
-    }
-    return "RIGHT";
-  }
-  var init_orientation = __esm({
-    "src/markfeyn/renderer/layout/orientation.js"() {
-    }
-  });
-
-  // src/markfeyn/renderer/layout/parallel.js
-  function parallelPropagatorCurvePlan(topology) {
-    const assignments = [];
-    (topology.parallelEdgeGroups || []).forEach((group) => {
-      if (!group.internal || group.edges.length < 2) {
+  function parseLabelMarkup(source) {
+    const input = String(source ?? "");
+    const segments = [];
+    let buffer = "";
+    let index = 0;
+    const flush = () => {
+      if (!buffer) {
         return;
       }
-      const count = group.edges.length;
-      const center = (count - 1) / 2;
-      group.edges.forEach((edge, index) => {
-        const canonicalSide = index <= center ? "left" : "right";
-        const side = edge.source === group.nodes[0] ? canonicalSide : oppositeSide(canonicalSide);
-        const distance2 = Math.abs(index - center) + 0.5;
-        const amount = count === 2 ? 0.5 : Math.min(0.72, 0.26 + distance2 * 0.18);
-        assignments.push({
-          propagator: edge.id,
-          edgeIndex: edge.edgeIndex,
-          group: group.id,
-          side,
-          amount
-        });
-      });
-    });
-    return assignments;
-  }
-  function oppositeSide(side) {
-    return side === "left" ? "right" : "left";
-  }
-  var init_parallel = __esm({
-    "src/markfeyn/renderer/layout/parallel.js"() {
-    }
-  });
-
-  // src/markfeyn/renderer/layout/symmetric-unclassified.js
-  function analyzeSymmetricUnclassifiedRefinement(semantic, topology, orientation2) {
-    if (orientation2.mode !== "symmetric") {
-      return skipped("orientation is not symmetric");
-    }
-    if (semantic.incoming.length || semantic.outgoing.length) {
-      return skipped("explicit incoming or outgoing roles are declared");
-    }
-    const visibleEdges = semantic.propagators.filter((propagator) => !propagator.metadata.hidden);
-    const adjacency = adjacencyMap(
-      semantic.vertices.map((vertex) => vertex.id),
-      visibleEdges
-    );
-    const twoCenterTree = detectTwoCenterUnclassifiedTree(semantic, topology, adjacency);
-    if (twoCenterTree) {
-      return {
-        applicable: true,
-        kind: "twoCenterTree",
-        ...twoCenterTree,
-        scope: "focused two-center unclassified tree heuristic"
-      };
-    }
-    const twoPointLoop = detectSymmetricTwoPointLoop(semantic, topology, adjacency);
-    if (twoPointLoop) {
-      return {
-        applicable: true,
-        kind: "twoPointLoop",
-        ...twoPointLoop,
-        scope: "focused symmetric two-point self-energy heuristic"
-      };
-    }
-    return skipped("topology does not match focused symmetric unclassified patterns");
-  }
-  function symmetricUnclassifiedDiagnostic(refinement) {
-    const message = refinement.applicable ? `Applied symmetric unclassified refinement: ${refinement.kind}` : `Skipped symmetric unclassified refinement: ${refinement.reason}`;
-    return {
-      stage: "symmetric-unclassified",
-      severity: "info",
-      message,
-      data: {
-        applicable: refinement.applicable,
-        kind: refinement.kind || null,
-        reason: refinement.reason || null,
-        scope: refinement.scope || "focused tree and two-point-loop heuristic, not full automorphism solving",
-        leftCenter: refinement.leftCenter || null,
-        rightCenter: refinement.rightCenter || null,
-        leftLeaves: refinement.leftLeaves || null,
-        rightLeaves: refinement.rightLeaves || null,
-        centerExternal: refinement.centerExternal || null,
-        centerAttachedCenter: refinement.centerAttachedCenter || null,
-        loopEndpoints: refinement.loopEndpoints || null,
-        externalLegs: refinement.externalLegs || null
+      pushLabelSegment(segments, "normal", buffer);
+      buffer = "";
+    };
+    while (index < input.length) {
+      const character = input[index];
+      if (character === "\\") {
+        const overline = readOverlineCommand(input, index);
+        if (overline) {
+          flush();
+          pushLabelSegment(segments, "normal", labelMarkupToText(overline.text), { overline: true });
+          index = overline.next;
+          continue;
+        }
+        const command = readLatexCommand(input, index);
+        buffer += command.text;
+        index = command.next;
+        continue;
       }
-    };
-  }
-  function skipped(reason) {
-    return {
-      applicable: false,
-      reason,
-      scope: "focused tree and two-point-loop heuristic, not full automorphism solving"
-    };
-  }
-  function detectTwoCenterUnclassifiedTree(semantic, topology, adjacency) {
-    if (topology.detectedTopology !== "tree") {
-      return null;
-    }
-    const internals = semantic.internalVertices.slice().sort(compareStable);
-    if (internals.length !== 2) {
-      return null;
-    }
-    const [centerA, centerB] = internals;
-    const unclassified = new Set(semantic.unclassified);
-    if (!adjacency.get(centerA)?.has(centerB)) {
-      return null;
-    }
-    const leavesA = unclassifiedNeighbors(adjacency, centerA, centerB, unclassified);
-    const leavesB = unclassifiedNeighbors(adjacency, centerB, centerA, unclassified);
-    if (!leavesA.length || !leavesB.length) {
-      return null;
-    }
-    if (Math.abs(leavesA.length - leavesB.length) > 1) {
-      return null;
-    }
-    if (!onlyAllowedNeighbors(adjacency, centerA, centerB, unclassified, leavesA)) {
-      return null;
-    }
-    if (!onlyAllowedNeighbors(adjacency, centerB, centerA, unclassified, leavesB)) {
-      return null;
-    }
-    let ordered = orderTwoCenterSides(semantic, centerA, centerB, leavesA, leavesB);
-    const allLeaves = [...ordered.leftLeaves, ...ordered.rightLeaves];
-    let centerExternal = null;
-    let centerAttachedCenter = null;
-    if (allLeaves.length % 2 === 1) {
-      centerExternal = medianExternalLeaf(semantic, allLeaves);
-      centerAttachedCenter = ordered.leftLeaves.includes(centerExternal) ? ordered.leftCenter : ordered.rightCenter;
-      ordered = {
-        ...ordered,
-        leftLeaves: ordered.leftLeaves.filter((leaf) => leaf !== centerExternal),
-        rightLeaves: ordered.rightLeaves.filter((leaf) => leaf !== centerExternal)
-      };
-    }
-    return {
-      leftCenter: ordered.leftCenter,
-      rightCenter: ordered.rightCenter,
-      leftLeaves: ordered.leftLeaves,
-      rightLeaves: ordered.rightLeaves,
-      centerExternal,
-      centerAttachedCenter,
-      backbone: [ordered.leftCenter, ordered.rightCenter]
-    };
-  }
-  function detectSymmetricTwoPointLoop(semantic, topology, adjacency) {
-    if (topology.detectedTopology !== "selfEnergy") {
-      return null;
-    }
-    const bubble = (topology.selfEnergyBubbles || []).find((group) => group.internal && group.edges.length >= 2);
-    if (!bubble) {
-      return null;
-    }
-    const [endpointA, endpointB] = bubble.nodes.slice().sort(compareStable);
-    const internals = new Set(semantic.internalVertices);
-    const unclassified = new Set(semantic.unclassified);
-    if (internals.size !== 2) {
-      return null;
-    }
-    const legA = externalLegForEndpoint(adjacency, endpointA, endpointB, unclassified, internals);
-    const legB = externalLegForEndpoint(adjacency, endpointB, endpointA, unclassified, internals);
-    if (!legA || !legB) {
-      return null;
-    }
-    if (unclassified.size !== 2) {
-      return null;
-    }
-    return {
-      loopEndpoints: [endpointA, endpointB],
-      externalLegs: [
-        { external: legA, internal: endpointA },
-        { external: legB, internal: endpointB }
-      ],
-      bubbleId: bubble.id
-    };
-  }
-  function unclassifiedNeighbors(adjacency, center, otherInternal, unclassified) {
-    return Array.from(adjacency.get(center) || []).filter((neighbor) => neighbor !== otherInternal && unclassified.has(neighbor)).sort(compareStable);
-  }
-  function orderTwoCenterSides(semantic, centerA, centerB, leavesA, leavesB) {
-    const orderA = earliestDeclarationIndex(semantic, leavesA);
-    const orderB = earliestDeclarationIndex(semantic, leavesB);
-    if (orderA <= orderB) {
-      return {
-        leftCenter: centerA,
-        rightCenter: centerB,
-        leftLeaves: leavesA,
-        rightLeaves: leavesB
-      };
-    }
-    return {
-      leftCenter: centerB,
-      rightCenter: centerA,
-      leftLeaves: leavesB,
-      rightLeaves: leavesA
-    };
-  }
-  function earliestDeclarationIndex(semantic, leaves) {
-    const indices = leaves.map((id) => declarationIndexFor(semantic, id));
-    return Math.min(...indices);
-  }
-  function declarationIndexFor(semantic, id) {
-    const vertex = semantic.vertices.find((entry) => entry.id === id);
-    return vertex?.metadata?.declarationIndex ?? Number.MAX_SAFE_INTEGER;
-  }
-  function medianExternalLeaf(semantic, leaves) {
-    const sorted = leaves.slice().sort((left, right) => declarationIndexFor(semantic, left) - declarationIndexFor(semantic, right) || compareStable(left, right));
-    return sorted[Math.floor(sorted.length / 2)];
-  }
-  function onlyAllowedNeighbors(adjacency, center, otherInternal, unclassified, leaves) {
-    const allowed = /* @__PURE__ */ new Set([otherInternal, ...leaves]);
-    return Array.from(adjacency.get(center) || []).every((neighbor) => allowed.has(neighbor));
-  }
-  function externalLegForEndpoint(adjacency, endpoint, otherEndpoint, unclassified, internals) {
-    const neighbors = Array.from(adjacency.get(endpoint) || []).filter((neighbor2) => neighbor2 !== otherEndpoint);
-    if (neighbors.length !== 1) {
-      return null;
-    }
-    const [neighbor] = neighbors;
-    if (!unclassified.has(neighbor) || internals.has(neighbor)) {
-      return null;
-    }
-    return neighbor;
-  }
-  var init_symmetric_unclassified = __esm({
-    "src/markfeyn/renderer/layout/symmetric-unclassified.js"() {
-      init_topology();
-      init_model();
-    }
-  });
-
-  // src/markfeyn/renderer/layout/layout.js
-  function prepareFeynmanLayout(diagram, options = {}) {
-    const profile = createProfile(options);
-    const semantic = profile.measure("semantic", () => createSemanticDiagram(diagram));
-    const validation = profile.measure("validation", () => validateSemanticDiagram(semantic));
-    const topology = profile.measure("topology", () => analyzeTopology(semantic));
-    const orientation2 = profile.measure("orientation", () => analyzeOrientation(semantic, topology, options));
-    const incremental = analyzeIncrementalStability(semantic, options);
-    const externalOrdering = profile.measure("external-order", () => analyzeExternalOrdering(semantic, {
-      ...options,
-      previousLayout: incremental.previousLayout
-    }));
-    const layoutOptionsHint = { ...semantic.source.options || {}, ...options };
-    const inferredPorts = profile.measure("port-constraints", () => inferredPortDiagnostics(semantic, layoutOptionsHint, externalOrdering, orientation2));
-    const parallelCurvePlan = profile.measure("parallel-edges", () => parallelPropagatorCurvePlan(topology));
-    const symmetricUnclassified = profile.measure("symmetric-unclassified", () => analyzeSymmetricUnclassifiedRefinement(semantic, topology, orientation2));
-    const multiloop = profile.measure("multiloop", () => analyzeMultiloop(semantic, topology));
-    const diagnostics = [
-      ...validation.diagnostics,
-      info(`Detected topology: ${topology.detectedTopology}`, "topology", {
-        topology: topology.detectedTopology,
-        confidence: topology.confidence,
-        loopOrder: topology.loopOrder,
-        cycles: topology.cycles,
-        loopCandidate: topology.loopCandidate,
-        parallelEdgeGroups: topology.parallelEdgeGroups,
-        selfEnergyBubbles: topology.selfEnergyBubbles,
-        limitations: topology.limitations
-      }),
-      ...topologyLimitDiagnostics(topology),
-      info(`Orientation mode: ${orientation2.mode}`, "orientation", {
-        mode: orientation2.mode,
-        evidence: orientation2.evidence,
-        ambiguities: orientation2.ambiguities
-      }),
-      externalOrderingDiagnostic(externalOrdering),
-      info("Layered port constraints prepared", "port-constraints", inferredPorts),
-      info("Parallel propagator groups prepared", "parallel-edges", {
-        groups: topology.parallelEdgeGroups,
-        curvePlan: parallelCurvePlan
-      }),
-      multiloopDiagnostic(multiloop),
-      incrementalDiagnostic(incremental),
-      symmetricUnclassifiedDiagnostic(symmetricUnclassified)
-    ];
-    return {
-      semantic,
-      validation,
-      topology,
-      orientation: orientation2,
-      externalOrdering,
-      diagnostics,
-      compatibleDiagram: createCompatibilityDiagram(diagram, semantic),
-      inferredPorts,
-      parallelCurvePlan,
-      symmetricUnclassified,
-      multiloop,
-      incremental,
-      profile
-    };
-  }
-  function shouldUseSymmetricContactLayout(prepared) {
-    return prepared.orientation.mode === "symmetric" && prepared.topology.detectedTopology === "contactInteraction";
-  }
-  function shouldUseSymmetricUnclassifiedLayout(prepared) {
-    return Boolean(prepared.symmetricUnclassified?.applicable);
-  }
-  function shouldUseSymmetricTreeLayout(prepared) {
-    return prepared.orientation.mode === "symmetric" && (prepared.topology.detectedTopology === "tree" || prepared.topology.detectedTopology === "decay") && !shouldUseSymmetricUnclassifiedLayout(prepared);
-  }
-  function attachLayoutAnalysis(layout, prepared, debug = {}) {
-    const labelPlacementStartedAt = now();
-    const labelPlacement = resolveLabelPlacement(layout, prepared);
-    prepared.profile?.push("label-placement", now() - labelPlacementStartedAt);
-    layout.labelPlacement = labelPlacement;
-    const scoreStartedAt = now();
-    const score = scoreLayout(layout, prepared);
-    prepared.profile?.push("score", now() - scoreStartedAt);
-    layout.analysis = {
-      topology: prepared.topology,
-      orientation: prepared.orientation,
-      externalOrdering: prepared.externalOrdering,
-      validation: prepared.validation
-    };
-    layout.score = score;
-    layout.diagnostics = [
-      ...prepared.diagnostics,
-      ...loopCandidateDiagnostics(prepared),
-      labelPlacementDiagnostic(labelPlacement),
-      scoreDiagnostic(score)
-    ];
-    if (debug.enabled) {
-      layout.debug = {
-        semanticGraph: prepared.semantic,
-        compiledElkGraph: debug.elkGraph || null,
-        elkGraph: debug.elkGraph || null,
-        inferredPorts: prepared.inferredPorts.constraints,
-        portConstraints: prepared.inferredPorts,
-        externalOrdering: prepared.externalOrdering,
-        parallelCurvePlan: prepared.parallelCurvePlan,
-        loopCandidates: prepared.loopCandidateSelection || null,
-        multiloopCandidates: prepared.multiloopCandidateSelection || null,
-        labelPlacement,
-        profile: prepared.profile?.entries || null,
-        constraints: {
-          ports: prepared.inferredPorts.constraints,
-          portConstraints: prepared.inferredPorts
-        }
-      };
-    }
-    return layout;
-  }
-  function info(message, stage, data = {}) {
-    return {
-      stage,
-      severity: "info",
-      message,
-      data
-    };
-  }
-  function loopCandidateDiagnostics(prepared) {
-    const selected = prepared.loopCandidateSelection?.selected;
-    if (!selected) {
-      return [];
-    }
-    return [
-      info(
-        selected.labelAware ? `Selected label-aware loop candidate: ${selected.id}${selected.labelInfluenced ? " (label score changed baseline choice)" : ""}` : `Selected loop candidate: ${selected.id}`,
-        "loop-candidate",
-        selected
-      )
-    ];
-  }
-  function createProfile(options) {
-    const enabled = Boolean(options.debug || options.profile);
-    const entries = [];
-    return {
-      entries,
-      measure(stage, callback) {
-        if (!enabled) {
-          return callback();
-        }
-        const startedAt = now();
-        const result = callback();
-        entries.push({ stage, ms: roundMs(now() - startedAt) });
-        return result;
-      },
-      push(stage, ms) {
-        if (enabled) {
-          entries.push({ stage, ms: roundMs(ms) });
-        }
+      if (UNICODE_SUPERSCRIPTS.has(character)) {
+        flush();
+        pushLabelSegment(segments, "sup", UNICODE_SUPERSCRIPTS.get(character));
+        index += 1;
+        continue;
       }
+      if (UNICODE_SUBSCRIPTS.has(character)) {
+        flush();
+        pushLabelSegment(segments, "sub", UNICODE_SUBSCRIPTS.get(character));
+        index += 1;
+        continue;
+      }
+      if (character === "^" || character === "_") {
+        const script = readScriptArgument(input, index + 1);
+        if (!script) {
+          buffer += character;
+          index += 1;
+          continue;
+        }
+        flush();
+        pushLabelSegment(
+          segments,
+          character === "^" ? "sup" : "sub",
+          labelMarkupToText(script.text)
+        );
+        index = script.next;
+        continue;
+      }
+      buffer += character;
+      index += 1;
+    }
+    flush();
+    return segments;
+  }
+  function labelMarkupToText(source) {
+    return parseLabelMarkup(source).map((segment) => segment.text).join("");
+  }
+  function pushLabelSegment(segments, kind, text, options = {}) {
+    if (!text) {
+      return;
+    }
+    const previous = segments[segments.length - 1];
+    if (previous && previous.kind === kind && Boolean(previous.overline) === Boolean(options.overline)) {
+      previous.text += text;
+      return;
+    }
+    segments.push({ kind, text, ...options });
+  }
+  function readOverlineCommand(input, start) {
+    if (!input.startsWith("\\overline", start) && !input.startsWith("\\bar", start)) {
+      return null;
+    }
+    const commandLength = input.startsWith("\\overline", start) ? "\\overline".length : "\\bar".length;
+    const argument = readScriptArgument(input, start + commandLength);
+    if (!argument) {
+      return null;
+    }
+    return argument;
+  }
+  function readLatexCommand(input, start) {
+    let index = start + 1;
+    if (index >= input.length) {
+      return { text: "\\", next: index };
+    }
+    if (/[A-Za-z]/.test(input[index])) {
+      while (index < input.length && /[A-Za-z]/.test(input[index])) {
+        index += 1;
+      }
+      const command = input.slice(start + 1, index);
+      return {
+        text: LATEX_SYMBOLS.get(command) ?? `\\${command}`,
+        next: index
+      };
+    }
+    const escaped = LATEX_ESCAPES.get(input[index]);
+    return {
+      text: escaped ?? input[index],
+      next: index + 1
     };
   }
-  function now() {
-    return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+  function readScriptArgument(input, start) {
+    if (start >= input.length) {
+      return null;
+    }
+    if (input[start] === "{") {
+      return readBracedScriptArgument(input, start);
+    }
+    if (input[start] === "\\") {
+      const command = readLatexCommand(input, start);
+      return {
+        text: command.text,
+        next: command.next
+      };
+    }
+    return {
+      text: input[start],
+      next: start + 1
+    };
   }
-  function roundMs(value) {
-    return Number(value.toFixed(3));
+  function rawScriptArgument(input, start) {
+    if (start >= input.length) {
+      return null;
+    }
+    if (input[start] === "{") {
+      return readRawBracedScriptArgument(input, start);
+    }
+    if (input[start] === "\\") {
+      const command = readLatexCommand(input, start);
+      return {
+        text: input.slice(start, command.next),
+        next: command.next
+      };
+    }
+    return {
+      text: input[start],
+      next: start + 1
+    };
   }
-  function topologyLimitDiagnostics(topology) {
-    return (topology.limitations || []).map((limitation) => ({
-      stage: "topology",
-      severity: "warning",
-      message: limitation.message,
-      data: limitation
-    }));
+  function readRawBracedScriptArgument(input, start) {
+    let depth = 0;
+    let text = "";
+    for (let index = start; index < input.length; index += 1) {
+      const character = input[index];
+      if (character === "{") {
+        depth += 1;
+        if (depth > 1) {
+          text += character;
+        }
+        continue;
+      }
+      if (character === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          return {
+            text,
+            next: index + 1
+          };
+        }
+        text += character;
+        continue;
+      }
+      text += character;
+    }
+    return null;
   }
-  var init_layout = __esm({
-    "src/markfeyn/renderer/layout/layout.js"() {
-      init_model();
-      init_validate();
-      init_topology();
-      init_orientation();
-      init_elk_compiler();
-      init_external_order();
-      init_parallel();
-      init_score();
-      init_symmetric_unclassified();
-      init_multiloop();
-      init_incremental();
-      init_labels();
+  function readBracedScriptArgument(input, start) {
+    let depth = 0;
+    let text = "";
+    for (let index = start; index < input.length; index += 1) {
+      const character = input[index];
+      if (character === "\\") {
+        const command = readLatexCommand(input, index);
+        text += command.text;
+        index = command.next - 1;
+        continue;
+      }
+      if (character === "{") {
+        depth += 1;
+        if (depth > 1) {
+          text += character;
+        }
+        continue;
+      }
+      if (character === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          return {
+            text,
+            next: index + 1
+          };
+        }
+        text += character;
+        continue;
+      }
+      text += character;
+    }
+    return null;
+  }
+  var LATEX_SYMBOLS, LATEX_ESCAPES, UNICODE_SUPERSCRIPTS, UNICODE_SUBSCRIPTS, MATHJAX_COMPLEX_COMMANDS;
+  var init_label_markup = __esm({
+    "src/markfeyn/renderer/render/label-markup.js"() {
+      LATEX_SYMBOLS = new Map(Object.entries({
+        alpha: "α",
+        beta: "β",
+        gamma: "γ",
+        delta: "δ",
+        epsilon: "ε",
+        varepsilon: "ε",
+        zeta: "ζ",
+        eta: "η",
+        theta: "θ",
+        vartheta: "ϑ",
+        iota: "ι",
+        kappa: "κ",
+        lambda: "λ",
+        mu: "μ",
+        nu: "ν",
+        xi: "ξ",
+        pi: "π",
+        varpi: "ϖ",
+        rho: "ρ",
+        varrho: "ϱ",
+        sigma: "σ",
+        varsigma: "ς",
+        tau: "τ",
+        upsilon: "υ",
+        phi: "φ",
+        varphi: "ϕ",
+        chi: "χ",
+        psi: "ψ",
+        omega: "ω",
+        Gamma: "Γ",
+        Delta: "Δ",
+        Theta: "Θ",
+        Lambda: "Λ",
+        Xi: "Ξ",
+        Pi: "Π",
+        Sigma: "Σ",
+        Upsilon: "Υ",
+        Phi: "Φ",
+        Psi: "Ψ",
+        Omega: "Ω",
+        ell: "ℓ",
+        hbar: "ℏ",
+        pm: "±",
+        mp: "∓",
+        times: "×",
+        cdot: "·",
+        to: "→",
+        rightarrow: "→",
+        leftarrow: "←",
+        leftrightarrow: "↔",
+        infty: "∞",
+        partial: "∂"
+      }));
+      LATEX_ESCAPES = /* @__PURE__ */ new Map([
+        ["\\", "\\"],
+        ["^", "^"],
+        ["_", "_"],
+        ["{", "{"],
+        ["}", "}"]
+      ]);
+      UNICODE_SUPERSCRIPTS = /* @__PURE__ */ new Map([
+        ["⁺", "+"],
+        ["⁻", "-"],
+        ["⁰", "0"],
+        ["¹", "1"],
+        ["²", "2"],
+        ["³", "3"],
+        ["⁴", "4"],
+        ["⁵", "5"],
+        ["⁶", "6"],
+        ["⁷", "7"],
+        ["⁸", "8"],
+        ["⁹", "9"]
+      ]);
+      UNICODE_SUBSCRIPTS = /* @__PURE__ */ new Map([
+        ["₊", "+"],
+        ["₋", "-"],
+        ["₀", "0"],
+        ["₁", "1"],
+        ["₂", "2"],
+        ["₃", "3"],
+        ["₄", "4"],
+        ["₅", "5"],
+        ["₆", "6"],
+        ["₇", "7"],
+        ["₈", "8"],
+        ["₉", "9"]
+      ]);
+      MATHJAX_COMPLEX_COMMANDS = /\\(frac|sqrt|sum|prod|int|oint|text|mathbf|mathrm|mathcal|mathbb|hat|tilde|vec|begin)\b/;
     }
   });
 
   // src/markfeyn/renderer/feynman-diagrams.js
   var require_feynman_diagrams = __commonJS({
     "src/markfeyn/renderer/feynman-diagrams.js"(exports, module) {
-      var import_elk_bundled = __toESM(require_elk_bundled());
+      init_layout_engine();
       init_elk_compiler();
+      init_elk_runner();
       init_external_order();
-      init_incremental();
       init_loop_candidates();
       init_multiloop();
+      init_braces();
+      init_constants();
+      init_edges();
+      init_directives();
+      init_feynman_parser();
+      init_labels2();
+      init_vertices();
+      init_options();
+      init_paths();
+      init_label_markup();
       init_layout();
       (function() {
         "use strict";
         const SVG_NS = "http://www.w3.org/2000/svg";
-        const EDGE_DEFINITIONS = /* @__PURE__ */ new Map([
-          ["plain", { type: "plain" }],
-          ["line", { type: "plain" }],
-          ["propagator", { type: "plain" }],
-          ["fermion", { type: "fermion", arrow: "forward" }],
-          ["anti fermion", { type: "fermion", arrow: "reverse" }],
-          ["anti-fermion", { type: "fermion", arrow: "reverse" }],
-          ["antifermion", { type: "fermion", arrow: "reverse" }],
-          ["photon", { type: "photon" }],
-          ["boson", { type: "photon" }],
-          ["charged boson", { type: "photon", arrow: "forward" }],
-          ["charged-boson", { type: "photon", arrow: "forward" }],
-          ["anti charged boson", { type: "photon", arrow: "reverse" }],
-          ["anti-charged-boson", { type: "photon", arrow: "reverse" }],
-          ["gluon", { type: "gluon" }],
-          ["scalar", { type: "scalar" }],
-          ["charged scalar", { type: "scalar", arrow: "forward" }],
-          ["charged-scalar", { type: "scalar", arrow: "forward" }],
-          ["anti charged scalar", { type: "scalar", arrow: "reverse" }],
-          ["anti-charged-scalar", { type: "scalar", arrow: "reverse" }],
-          ["ghost", { type: "ghost" }],
-          ["invisible", { type: "invisible", hidden: true }],
-          ["hidden", { type: "invisible", hidden: true }]
-        ]);
-        const SIZE_PRESETS = {
-          small: { width: 420, minHeight: 280, marginX: 70, marginY: 46, externalGap: 82 },
-          medium: { width: 520, minHeight: 330, marginX: 82, marginY: 52, externalGap: 100 },
-          large: { width: 760, minHeight: 480, marginX: 110, marginY: 70, externalGap: 140 }
-        };
-        const DEFAULT_DIAGRAM_OPTIONS = {
-          layout: "spring",
-          orientation: "horizontal",
-          size: "medium"
-        };
-        const GLUON_ENDPOINT_RAMP_LOOPS = 0.62;
         const GLUON_JUNCTION_CAP_RADIUS = 1.7;
         const VISUAL_DEFAULTS = Object.freeze({
           edgeStrokeWidth: 2.6,
@@ -96975,6 +99171,7 @@
           vertexMarkStrokeWidth: 2.4,
           labelFontSize: 32,
           edgeLabelFontSize: 26,
+          mathLabelFontScale: 0.72,
           labelFontFamily: '"Latin Modern Math", "Latin Modern Roman", "Computer Modern Serif", "CMU Serif", "STIX Two Text", "Times New Roman", serif',
           labelFontStyle: "italic",
           scriptFontSizePercent: 82,
@@ -97019,64 +99216,6 @@
           },
           extender: "M5.021171 .169365C5.021171-.089664 5.011208-.099626 4.742217-.099626H4.104608C3.835616-.099626 3.825654-.089664 3.825654 .169365V2.819427C3.825654 3.078456 3.835616 3.088418 4.104608 3.088418H4.742217C5.011208 3.088418 5.021171 3.078456 5.021171 2.819427V.169365Z"
         });
-        const VERTEX_SHAPES = /* @__PURE__ */ new Map([
-          ["dot", "dot"],
-          ["square dot", "square-dot"],
-          ["square-dot", "square-dot"],
-          ["square", "square-dot"],
-          ["empty dot", "empty-dot"],
-          ["empty-dot", "empty-dot"],
-          ["crossed dot", "crossed-dot"],
-          ["crossed-dot", "crossed-dot"],
-          ["cross dot", "crossed-dot"],
-          ["cross-dot", "crossed-dot"],
-          ["cross", "cross"],
-          ["blob", "blob"],
-          ["disk", "disk"],
-          ["large blob", "disk"],
-          ["large-blob", "disk"]
-        ]);
-        const BLOB_VERTEX_DEFAULT_RADII = Object.freeze({
-          blob: 18,
-          disk: 44
-        });
-        const BLOB_VERTEX_SIZE_PRESETS = /* @__PURE__ */ new Map([
-          ["tiny", 8],
-          ["small", 14],
-          ["medium", BLOB_VERTEX_DEFAULT_RADII.blob],
-          ["large", 28],
-          ["huge", BLOB_VERTEX_DEFAULT_RADII.disk],
-          ["disk", BLOB_VERTEX_DEFAULT_RADII.disk]
-        ]);
-        const BLOB_HATCHES = /* @__PURE__ */ new Map([
-          ["hatched", "diagonal"],
-          ["hatch", "diagonal"],
-          ["diagonal", "diagonal"],
-          ["diagonal right", "diagonal"],
-          ["forward diagonal", "diagonal"],
-          ["slash", "diagonal"],
-          ["north east", "diagonal"],
-          ["north east lines", "diagonal"],
-          ["ne", "diagonal"],
-          ["diagonal reverse", "diagonal-reverse"],
-          ["diagonal left", "diagonal-reverse"],
-          ["reverse diagonal", "diagonal-reverse"],
-          ["backward diagonal", "diagonal-reverse"],
-          ["backslash", "diagonal-reverse"],
-          ["north west", "diagonal-reverse"],
-          ["north west lines", "diagonal-reverse"],
-          ["nw", "diagonal-reverse"],
-          ["cross", "cross"],
-          ["cross hatch", "cross"],
-          ["crosshatch", "cross"],
-          ["cross hatched", "cross"],
-          ["horizontal", "horizontal"],
-          ["horizontal lines", "horizontal"],
-          ["vertical", "vertical"],
-          ["vertical lines", "vertical"],
-          ["grid", "grid"],
-          ["grid lines", "grid"]
-        ]);
         const BLOB_HATCH_PATTERNS = Object.freeze({
           diagonal: {
             size: 8,
@@ -97103,101 +99242,10 @@
             paths: ["M 0 2 L 8 2", "M 2 0 L 2 8"]
           }
         });
-        const LATEX_SYMBOLS = new Map(Object.entries({
-          alpha: "α",
-          beta: "β",
-          gamma: "γ",
-          delta: "δ",
-          epsilon: "ε",
-          varepsilon: "ϵ",
-          zeta: "ζ",
-          eta: "η",
-          theta: "θ",
-          vartheta: "ϑ",
-          iota: "ι",
-          kappa: "κ",
-          lambda: "λ",
-          mu: "μ",
-          nu: "ν",
-          xi: "ξ",
-          pi: "π",
-          rho: "ρ",
-          sigma: "σ",
-          tau: "τ",
-          upsilon: "υ",
-          phi: "φ",
-          varphi: "ϕ",
-          chi: "χ",
-          psi: "ψ",
-          omega: "ω",
-          Gamma: "Γ",
-          Delta: "Δ",
-          Theta: "Θ",
-          Lambda: "Λ",
-          Xi: "Ξ",
-          Pi: "Π",
-          Sigma: "Σ",
-          Upsilon: "Υ",
-          Phi: "Φ",
-          Psi: "Ψ",
-          Omega: "Ω",
-          ell: "ℓ",
-          hbar: "ℏ",
-          partial: "∂",
-          nabla: "∇",
-          infty: "∞",
-          pm: "±",
-          mp: "∓",
-          times: "×",
-          cdot: "⋅",
-          to: "→",
-          rightarrow: "→",
-          leftarrow: "←",
-          le: "≤",
-          ge: "≥",
-          neq: "≠",
-          prime: "′"
-        }));
-        const LATEX_ESCAPES = /* @__PURE__ */ new Map([
-          ["\\", "\\"],
-          ["^", "^"],
-          ["_", "_"],
-          ["{", "{"],
-          ["}", "}"]
-        ]);
-        const UNICODE_SUPERSCRIPTS = /* @__PURE__ */ new Map([
-          ["⁺", "+"],
-          ["⁻", "-"],
-          ["⁰", "0"],
-          ["¹", "1"],
-          ["²", "2"],
-          ["³", "3"],
-          ["⁴", "4"],
-          ["⁵", "5"],
-          ["⁶", "6"],
-          ["⁷", "7"],
-          ["⁸", "8"],
-          ["⁹", "9"]
-        ]);
-        const UNICODE_SUBSCRIPTS = /* @__PURE__ */ new Map([
-          ["₊", "+"],
-          ["₋", "-"],
-          ["₀", "0"],
-          ["₁", "1"],
-          ["₂", "2"],
-          ["₃", "3"],
-          ["₄", "4"],
-          ["₅", "5"],
-          ["₆", "6"],
-          ["₇", "7"],
-          ["₈", "8"],
-          ["₉", "9"]
-        ]);
-        const MATHJAX_COMPLEX_COMMANDS = /\\(frac|sqrt|sum|prod|int|oint|text|mathbf|mathrm|mathcal|mathbb|hat|tilde|vec|begin)\b/;
-        const XHTML_NS = "http://www.w3.org/1999/xhtml";
         let diagramSerial = 0;
-        function parseFeynman(source) {
-          const diagram = {
+        let mathLabelSerial = 0;
+        function createEmptyFeynmanDiagram() {
+          return {
             incoming: [],
             outgoing: [],
             edges: [],
@@ -97206,814 +99254,40 @@
             manualPositions: {},
             vertices: {},
             options: { ...DEFAULT_DIAGRAM_OPTIONS },
-            errors: []
-          };
-          String(source || "").split(/\r?\n/).forEach((rawLine, index) => {
-            const lineNumber = index + 1;
-            const line = rawLine.trim();
-            if (!line || line.startsWith("#")) {
-              return;
-            }
-            const parts = line.split(/\s+/);
-            const command = parts[0];
-            const rest = parts.slice(1);
-            if (command === "incoming") {
-              diagram.incoming.push(...rest);
-              return;
-            }
-            if (command === "outgoing") {
-              diagram.outgoing.push(...rest);
-              return;
-            }
-            if (command === "layout") {
-              setDiagramOption(diagram, "layout", rest.join(" "), lineNumber);
-              return;
-            }
-            if (command === "orientation" || command === "orient") {
-              setDiagramOption(diagram, "orientation", rest.join(" "), lineNumber);
-              return;
-            }
-            if (isTikzOrientationCommand(command)) {
-              parseTikzOrientationCommand(command, rest, diagram, lineNumber);
-              return;
-            }
-            if (command === "size") {
-              setDiagramOption(diagram, "size", rest[0], lineNumber);
-              return;
-            }
-            if (command === "options" || command === "option") {
-              parseDiagramOptions(rest, diagram, lineNumber);
-              return;
-            }
-            if (command === "position" || command === "at") {
-              parseManualPosition(rest, diagram, lineNumber);
-              return;
-            }
-            if (command === "label") {
-              parseLabels(line.slice(command.length).trim(), diagram.labels, diagram.errors, lineNumber);
-              return;
-            }
-            if (command === "brace") {
-              parseBrace(line.slice(command.length).trim(), diagram, lineNumber);
-              return;
-            }
-            if (command === "vertex" || command === "vertices") {
-              parseVertices(line.slice(command.length).trim(), diagram.vertices, diagram.errors, lineNumber);
-              return;
-            }
-            const edgeCommand = matchEdgeCommand(parts);
-            if (edgeCommand) {
-              parseEdges(
-                line.slice(edgeCommand.words.join(" ").length).trim(),
-                edgeCommand.name,
-                edgeCommand.definition,
-                diagram,
-                lineNumber
-              );
-              return;
-            }
-            diagram.errors.push(`Line ${lineNumber}: unknown command "${command}"`);
-          });
-          return diagram;
-        }
-        function matchEdgeCommand(parts) {
-          const maxWords = Math.min(3, parts.length);
-          for (let wordCount = maxWords; wordCount > 0; wordCount -= 1) {
-            const name = parts.slice(0, wordCount).join(" ");
-            const definition = EDGE_DEFINITIONS.get(name);
-            if (definition) {
-              return {
-                name,
-                words: parts.slice(0, wordCount),
-                definition
-              };
-            }
-          }
-          return null;
-        }
-        function parseEdges(source, command, definition, diagram, lineNumber) {
-          const specs = splitEdgeSpecs(source);
-          if (!specs.length) {
-            diagram.errors.push(`Line ${lineNumber}: ${command} requires at least one edge`);
-            return;
-          }
-          specs.forEach((spec) => {
-            const edge = parseEdgeSpec(spec, command, definition, diagram.errors, lineNumber);
-            if (edge) {
-              diagram.edges.push(edge);
-            }
-          });
-        }
-        function parseEdgeSpec(spec, command, definition, errors, lineNumber) {
-          const match = spec.match(/^([A-Za-z0-9_.-]+)->([A-Za-z0-9_.-]+)(.*)$/);
-          if (!match) {
-            errors.push(`Line ${lineNumber}: invalid ${command} edge "${spec}"`);
-            return null;
-          }
-          const optionSource = parseEdgeOptionSource(match[3], spec, command, errors, lineNumber);
-          if (optionSource === null) {
-            return null;
-          }
-          return {
-            ...definition,
-            from: match[1],
-            to: match[2],
-            ...parseEdgeOptions(optionSource)
+            errors: [],
+            warnings: []
           };
         }
-        function parseEdgeOptionSource(rest, spec, command, errors, lineNumber) {
-          const source = String(rest || "").trim();
-          if (!source) {
-            return "";
-          }
-          if (!source.startsWith("[") || !source.endsWith("]")) {
-            errors.push(`Line ${lineNumber}: invalid ${command} edge "${spec}"`);
-            return null;
-          }
-          return source.slice(1, -1);
+        function parseFeynman(source) {
+          return new FeynmanParser(source, {
+            createEmptyFeynmanDiagram,
+            matchEdgeCommand,
+            parseAlignmentCommand,
+            parseBrace,
+            parseDiagramOptions,
+            parseEdges,
+            parseExplicitTikzOrientationCommand,
+            parseLabels,
+            parseManualPosition,
+            parseTikzOrientationCommand,
+            parseVertices,
+            setDiagramOption,
+            isTikzOrientationCommand
+          }).parse();
         }
-        function splitEdgeSpecs(source) {
-          const specs = [];
-          let buffer = "";
-          let bracketDepth = 0;
-          let quote = null;
-          for (const character of String(source || "")) {
-            if (quote) {
-              buffer += character;
-              if (character === quote) {
-                quote = null;
-              }
-              continue;
-            }
-            if (character === '"' || character === "'") {
-              quote = character;
-              buffer += character;
-              continue;
-            }
-            if (character === "[") {
-              bracketDepth += 1;
-              buffer += character;
-              continue;
-            }
-            if (character === "]") {
-              bracketDepth = Math.max(0, bracketDepth - 1);
-              buffer += character;
-              continue;
-            }
-            if (/\s/.test(character) && bracketDepth === 0) {
-              if (buffer.trim()) {
-                specs.push(buffer.trim());
-                buffer = "";
-              }
-              continue;
-            }
-            buffer += character;
-          }
-          if (buffer.trim()) {
-            specs.push(buffer.trim());
-          }
-          return specs;
-        }
-        function parseEdgeOptions(source) {
-          const options = {};
-          splitOptionList(source).map((item) => item.trim()).filter(Boolean).forEach((item) => {
-            const parsed = parseOptionItem(item);
-            const name = normalizeOptionName(parsed.name);
-            if (name === "hidden" || name === "invisible" || name === "draw" && parsed.value === "none") {
-              options.hidden = true;
-            }
-            if (name === "reverse" || name === "anti") {
-              options.arrow = "reverse";
-            }
-            if (name === "forward") {
-              options.arrow = "forward";
-            }
-            applyCurveOption(options, name, parsed.value);
-            if (name === "out") {
-              const outAngle = Number(parsed.value);
-              if (Number.isFinite(outAngle)) {
-                options.outAngle = outAngle;
-              }
-            }
-            if (name === "in") {
-              const inAngle = Number(parsed.value);
-              if (Number.isFinite(inAngle)) {
-                options.inAngle = inAngle;
-              }
-            }
-            if (name === "looseness") {
-              const looseness = Number(parsed.value);
-              if (Number.isFinite(looseness) && looseness > 0) {
-                options.looseness = looseness;
-              }
-            }
-            if (name === "relative") {
-              options.relativeAngles = parsed.value !== "false";
-            }
-            if (name === "edge label" || name === "label") {
-              options.label = cleanLabelValue(parsed.value);
-              options.labelSide = "left";
-            }
-            if (name === "edge label'" || name === "label'") {
-              options.label = cleanLabelValue(parsed.value);
-              options.labelSide = "right";
-            }
-            if (name === "momentum" || name === "reversed momentum" || name === "rmomentum") {
-              const momentum = parseMomentumValue(parsed.value);
-              options.label = momentum.label;
-              options.labelSide = "left";
-              options.labelPlacement = "momentum";
-              options.momentumDirection = name === "momentum" ? "forward" : "reverse";
-              options.momentum = momentum.options;
-            }
-            if (name === "momentum'" || name === "reversed momentum'" || name === "rmomentum'") {
-              const momentum = parseMomentumValue(parsed.value);
-              options.label = momentum.label;
-              options.labelSide = "right";
-              options.labelPlacement = "momentum-prime";
-              options.momentumDirection = name === "momentum'" ? "forward" : "reverse";
-              options.momentum = momentum.options;
-            }
-          });
-          return options;
-        }
-        function parseMomentumValue(value) {
-          let text = unwrapLabelValue(value);
-          const options = {};
-          const optionMatch = text.match(/^\[([^\]]*)\]\s*/);
-          if (optionMatch) {
-            Object.assign(options, parseMomentumOptions(optionMatch[1]));
-            text = text.slice(optionMatch[0].length).trim();
-          }
-          return {
-            label: cleanLabelValue(text),
-            options
-          };
-        }
-        function unwrapLabelValue(value) {
-          let text = String(value || "").trim();
-          if (text.startsWith("{") && text.endsWith("}") || text.startsWith('"') && text.endsWith('"') || text.startsWith("'") && text.endsWith("'")) {
-            text = text.slice(1, -1).trim();
-          }
-          return text;
-        }
-        function parseMomentumOptions(source) {
-          const options = {};
-          splitOptionList(source).map((item) => item.trim()).filter(Boolean).forEach((item) => {
-            const parsed = parseOptionItem(item);
-            const name = normalizeOptionName(parsed.name);
-            if (name === "arrow distance") {
-              const distance2 = parseDistanceValue(parsed.value);
-              if (Number.isFinite(distance2) && distance2 >= 0) {
-                options.arrowDistance = distance2;
-              }
-            }
-            if (name === "label distance") {
-              const distance2 = parseDistanceValue(parsed.value);
-              if (Number.isFinite(distance2) && distance2 >= 0) {
-                options.labelDistance = distance2;
-              }
-            }
-            if (name === "arrow shorten") {
-              const shorten = parseFractionValue(parsed.value);
-              if (Number.isFinite(shorten)) {
-                options.arrowShorten = clamp3(shorten, 0, 0.45);
-              }
-            }
-          });
-          return options;
-        }
-        function parseDistanceValue(value) {
-          const match = String(value || "").trim().match(/^(-?\d+(?:\.\d+)?)(px|pt|mm|cm|em)?$/i);
-          if (!match) {
-            return NaN;
-          }
-          const number = Number(match[1]);
-          const unit = (match[2] || "px").toLowerCase();
-          const scale = {
-            px: 1,
-            pt: 4 / 3,
-            mm: 96 / 25.4,
-            cm: 96 / 2.54,
-            em: 16
-          }[unit] ?? 1;
-          return number * scale;
-        }
-        function parseFractionValue(value) {
-          const text = String(value || "").trim();
-          if (text.endsWith("%")) {
-            return Number(text.slice(0, -1)) / 100;
-          }
-          return Number(text);
-        }
-        function splitOptionList(source) {
-          const items = [];
-          let buffer = "";
-          let braceDepth = 0;
-          let bracketDepth = 0;
-          let quote = null;
-          for (const character of String(source || "")) {
-            if (quote) {
-              buffer += character;
-              if (character === quote) {
-                quote = null;
-              }
-              continue;
-            }
-            if (character === '"') {
-              quote = character;
-              buffer += character;
-              continue;
-            }
-            if (character === "{") {
-              braceDepth += 1;
-              buffer += character;
-              continue;
-            }
-            if (character === "}") {
-              braceDepth = Math.max(0, braceDepth - 1);
-              buffer += character;
-              continue;
-            }
-            if (character === "[") {
-              bracketDepth += 1;
-              buffer += character;
-              continue;
-            }
-            if (character === "]") {
-              bracketDepth = Math.max(0, bracketDepth - 1);
-              buffer += character;
-              continue;
-            }
-            if (character === "," && braceDepth === 0 && bracketDepth === 0) {
-              items.push(buffer);
-              buffer = "";
-              continue;
-            }
-            buffer += character;
-          }
-          if (buffer) {
-            items.push(buffer);
-          }
-          return items;
-        }
-        function parseOptionItem(item) {
-          const separator = item.indexOf("=");
-          if (separator === -1) {
-            return {
-              name: item.trim(),
-              value: ""
-            };
-          }
-          return {
-            name: item.slice(0, separator).trim(),
-            value: item.slice(separator + 1).trim()
-          };
-        }
-        function normalizeOptionName(value) {
-          return String(value || "").trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
-        }
-        function applyCurveOption(options, name, value) {
-          const normalizedValue = String(value || "").trim();
-          if (name === "half left") {
-            options.curve = { side: "left", amount: 2 / 3, shape: "semicircle" };
-            return;
-          }
-          if (name === "half right") {
-            options.curve = { side: "right", amount: 2 / 3, shape: "semicircle" };
-            return;
-          }
-          if (name === "quarter left") {
-            options.curve = { side: "left", amount: 0.28 };
-            return;
-          }
-          if (name === "quarter right") {
-            options.curve = { side: "right", amount: 0.28 };
-            return;
-          }
-          if (name === "bend left") {
-            options.curve = {
-              side: "left",
-              amount: bendAmountFromValue(normalizedValue)
-            };
-            return;
-          }
-          if (name === "bend right") {
-            options.curve = {
-              side: "right",
-              amount: bendAmountFromValue(normalizedValue)
-            };
-          }
-        }
-        function bendAmountFromValue(value) {
-          const angle = Number(value);
-          if (!Number.isFinite(angle) || angle <= 0) {
-            return 0.35;
-          }
-          return clamp3(angle / 90, 0.12, 0.8);
-        }
-        function cleanLabelValue(value) {
-          let text = String(value || "").trim();
-          if (text.startsWith("{") && text.endsWith("}") || text.startsWith('"') && text.endsWith('"') || text.startsWith("'") && text.endsWith("'")) {
-            text = text.slice(1, -1).trim();
-          }
-          text = text.replace(/^\[[^\]]*\]\s*/, "");
-          if (text.startsWith("\\(") && text.endsWith("\\)")) {
-            text = text.slice(2, -2).trim();
-          }
-          return text;
-        }
-        function parseDiagramOptions(tokens, diagram, lineNumber) {
-          tokens.forEach((token) => {
-            const [key, ...valueParts] = token.split("=");
-            if (!valueParts.length) {
-              diagram.errors.push(`Line ${lineNumber}: option "${token}" must use key=value`);
-              return;
-            }
-            setDiagramOption(diagram, key, valueParts.join("="), lineNumber);
-          });
-        }
-        function setDiagramOption(diagram, key, value, lineNumber) {
-          const normalizedKey = String(key || "").trim().toLowerCase().replace(/-/g, "_");
-          const normalizedValue = String(value || "").trim();
-          if (!normalizedValue) {
-            diagram.errors.push(`Line ${lineNumber}: ${key} requires a value`);
-            return;
-          }
-          if (normalizedKey === "layout") {
-            const layout = normalizeLayoutName(normalizedValue);
-            if (!layout) {
-              diagram.errors.push(`Line ${lineNumber}: unsupported layout "${normalizedValue}"`);
-              return;
-            }
-            diagram.options.layout = layout;
-            return;
-          }
-          if (normalizedKey === "orientation" || normalizedKey === "orient") {
-            const orientation2 = normalizeOrientation(normalizedValue);
-            if (!orientation2) {
-              diagram.errors.push(`Line ${lineNumber}: unsupported orientation "${normalizedValue}"`);
-              return;
-            }
-            diagram.options.orientation = orientation2;
-            return;
-          }
-          if (normalizedKey === "size") {
-            const size = normalizedValue.toLowerCase();
-            if (!SIZE_PRESETS[size]) {
-              diagram.errors.push(`Line ${lineNumber}: unsupported size "${normalizedValue}"`);
-              return;
-            }
-            diagram.options.size = size;
-            return;
-          }
-          if (normalizedKey === "width" || normalizedKey === "height" || normalizedKey === "margin_x" || normalizedKey === "margin_y") {
-            const number = Number(normalizedValue);
-            if (!Number.isFinite(number) || number <= 0) {
-              diagram.errors.push(`Line ${lineNumber}: ${key} must be a positive number`);
-              return;
-            }
-            diagram.options[normalizedKey] = number;
-            return;
-          }
-          diagram.errors.push(`Line ${lineNumber}: unknown option "${key}"`);
-        }
-        function normalizeLayoutName(value) {
-          const normalized = value.toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
-          if (normalized === "layered" || normalized === "layered layout") {
-            return "layered";
-          }
-          if (normalized === "spring" || normalized === "spring layout") {
-            return "spring";
-          }
-          if (normalized === "spring electrical" || normalized === "spring electrical layout" || normalized === "electrical" || normalized === "electrical layout") {
-            return "spring-electrical";
-          }
-          if (normalized === "tree" || normalized === "tree layout") {
-            return "tree";
-          }
-          return null;
-        }
-        function normalizeQuality(value) {
-          const normalized = String(value || "balanced").toLowerCase();
-          if (normalized === "fast" || normalized === "high") {
-            return normalized;
-          }
-          return "balanced";
-        }
-        function normalizeOrientation(value) {
-          const normalized = value.toLowerCase().replace(/_/g, "-").replace(/\s+/g, "-").trim();
-          if (normalized === "horizontal") {
-            return "horizontal";
-          }
-          if (normalized === "horizontal'" || normalized === "horizontal-reverse" || normalized === "horizontal-flipped") {
-            return "horizontal-reverse";
-          }
-          if (normalized === "vertical") {
-            return "vertical";
-          }
-          if (normalized === "vertical'" || normalized === "vertical-reverse" || normalized === "vertical-flipped") {
-            return "vertical-reverse";
-          }
-          return null;
-        }
-        function isTikzOrientationCommand(command) {
-          return command === "horizontal" || command === "horizontal'" || command === "vertical" || command === "vertical'";
-        }
-        function parseTikzOrientationCommand(command, parts, diagram, lineNumber) {
-          const axis = command.startsWith("vertical") ? "vertical" : "horizontal";
-          const flip = command.endsWith("'");
-          if (parts.length !== 3 || parts[1] !== "to" || !isNodeIdentifier(parts[0]) || !isNodeIdentifier(parts[2])) {
-            diagram.errors.push(`Line ${lineNumber}: ${command} must use "${command} a to b"`);
-            return;
-          }
-          diagram.options.tikzOrientation = {
-            axis,
-            from: parts[0],
-            to: parts[2],
-            flip,
-            angle: axis === "vertical" ? 90 : 0
-          };
-        }
-        function isNodeIdentifier(value) {
-          return /^[A-Za-z0-9_.-]+$/.test(String(value || ""));
-        }
-        function normalizeTikzOrientation(value) {
-          if (!value || typeof value !== "object") {
-            return null;
-          }
-          const axis = value.axis === "vertical" ? "vertical" : "horizontal";
-          const from = String(value.from || "").trim();
-          const to = String(value.to || "").trim();
-          if (!isNodeIdentifier(from) || !isNodeIdentifier(to)) {
-            return null;
-          }
-          return {
-            axis,
-            from,
-            to,
-            flip: Boolean(value.flip),
-            angle: axis === "vertical" ? 90 : 0
-          };
-        }
-        function parseManualPosition(parts, diagram, lineNumber) {
-          if (parts.length !== 3) {
-            diagram.errors.push(`Line ${lineNumber}: position must use "position node x y"`);
-            return;
-          }
-          const [node, rawX, rawY] = parts;
-          const x = Number(rawX);
-          const y = Number(rawY);
-          if (!node || !Number.isFinite(x) || !Number.isFinite(y)) {
-            diagram.errors.push(`Line ${lineNumber}: position coordinates must be numbers`);
-            return;
-          }
-          diagram.manualPositions[node] = { x, y };
-        }
-        function parseLabels(source, labels, errors, lineNumber) {
-          const pattern = /([^\s:]+):(?:"([^"]*)"|'([^']*)'|(\S+))/g;
-          let match;
-          let matched = false;
-          while ((match = pattern.exec(source)) !== null) {
-            matched = true;
-            labels[match[1]] = match[2] ?? match[3] ?? match[4] ?? "";
-          }
-          if (!matched && source) {
-            errors.push(`Line ${lineNumber}: labels must use node:text pairs`);
-          }
-        }
-        function parseVertices(source, vertices, errors, lineNumber) {
-          const specs = splitEdgeSpecs(source);
-          if (!specs.length && source) {
-            errors.push(`Line ${lineNumber}: vertices must use node:shape pairs`);
-            return;
-          }
-          specs.forEach((spec) => {
-            const parsed = parseVertexSpec(spec, errors, lineNumber);
-            if (parsed) {
-              vertices[parsed.node] = parsed.definition;
-            }
-          });
-        }
-        function parseVertexSpec(spec, errors, lineNumber) {
-          const separator = spec.indexOf(":");
-          if (separator <= 0 || separator === spec.length - 1) {
-            errors.push(`Line ${lineNumber}: vertices must use node:shape pairs`);
-            return null;
-          }
-          const node = spec.slice(0, separator).trim();
-          const rawDefinition = spec.slice(separator + 1).trim();
-          if (!node || /\s/.test(node)) {
-            errors.push(`Line ${lineNumber}: invalid vertex node "${node}"`);
-            return null;
-          }
-          const definition = parseVertexDefinition(rawDefinition, errors, lineNumber);
-          if (!definition) {
-            return null;
-          }
-          return { node, definition };
-        }
-        function parseVertexDefinition(rawDefinition, errors, lineNumber) {
-          const parsed = splitVertexShapeAndOptions(rawDefinition);
-          const rawShape = unwrapLabelValue(parsed.shape);
-          const shape = normalizeVertexShape(rawShape);
-          if (!shape) {
-            errors.push(`Line ${lineNumber}: unsupported vertex shape "${rawShape}"`);
-            return null;
-          }
-          const options = parseVertexOptions(parsed.options, errors, lineNumber);
-          if (!options) {
-            return null;
-          }
-          if ((options.hatch || options.size) && shape !== "blob" && shape !== "disk") {
-            errors.push(`Line ${lineNumber}: vertex options are only supported for blob and disk vertices`);
-            return null;
-          }
-          if (!Object.keys(options).length) {
-            return shape;
-          }
-          return { shape, ...options };
-        }
-        function splitVertexShapeAndOptions(rawDefinition) {
-          const source = String(rawDefinition || "").trim();
-          if (!source.endsWith("]")) {
-            return { shape: source, options: "" };
-          }
-          let quote = null;
-          let bracketDepth = 0;
-          let optionStart = -1;
-          for (let index = 0; index < source.length; index += 1) {
-            const character = source[index];
-            if (quote) {
-              if (character === quote) {
-                quote = null;
-              }
-              continue;
-            }
-            if (character === '"' || character === "'") {
-              quote = character;
-              continue;
-            }
-            if (character === "[") {
-              if (bracketDepth === 0) {
-                optionStart = index;
-              }
-              bracketDepth += 1;
-              continue;
-            }
-            if (character === "]") {
-              bracketDepth = Math.max(0, bracketDepth - 1);
-              if (bracketDepth === 0 && index !== source.length - 1) {
-                optionStart = -1;
-              }
-            }
-          }
-          if (optionStart === -1 || bracketDepth !== 0) {
-            return { shape: source, options: "" };
-          }
-          return {
-            shape: source.slice(0, optionStart).trim(),
-            options: source.slice(optionStart + 1, -1)
-          };
-        }
-        function parseVertexOptions(source, errors, lineNumber) {
-          const options = {};
-          let valid = true;
-          splitOptionList(source).map((item) => item.trim()).filter(Boolean).forEach((item) => {
-            const parsed = parseOptionItem(item);
-            const name = normalizeOptionName(parsed.name);
-            if (name === "hatch" || name === "hatched" || name === "pattern") {
-              const hatch = normalizeBlobHatch(parsed.value || "diagonal");
-              if (!hatch) {
-                errors.push(`Line ${lineNumber}: unsupported blob hatch "${parsed.value}"`);
-                valid = false;
-                return;
-              }
-              options.hatch = hatch;
-              return;
-            }
-            if (name === "fill") {
-              const normalizedValue = normalizeOptionName(unwrapLabelValue(parsed.value || "hatched"));
-              if (normalizedValue === "shaded" || normalizedValue === "solid" || normalizedValue === "none") {
-                return;
-              }
-              const hatch = normalizeBlobHatch(parsed.value || "diagonal");
-              if (!hatch) {
-                errors.push(`Line ${lineNumber}: unsupported blob fill "${parsed.value}"`);
-                valid = false;
-                return;
-              }
-              options.hatch = hatch;
-              return;
-            }
-            if (name === "size" || name === "radius") {
-              const size = parseBlobVertexSize(parsed.value);
-              if (!Number.isFinite(size) || size <= 0) {
-                errors.push(`Line ${lineNumber}: blob vertex size must be a positive number or preset`);
-                valid = false;
-                return;
-              }
-              options.size = size;
-              return;
-            }
-            if (name === "diameter") {
-              const diameter = parseBlobVertexSize(parsed.value);
-              if (!Number.isFinite(diameter) || diameter <= 0) {
-                errors.push(`Line ${lineNumber}: blob vertex diameter must be a positive number or preset`);
-                valid = false;
-                return;
-              }
-              options.size = diameter / 2;
-              return;
-            }
-            errors.push(`Line ${lineNumber}: unknown vertex option "${parsed.name}"`);
-            valid = false;
-          });
-          return valid ? options : null;
-        }
-        function normalizeBlobHatch(value) {
-          const normalized = normalizeOptionName(unwrapLabelValue(value));
-          return BLOB_HATCHES.get(normalized) ?? null;
-        }
-        function parseBlobVertexSize(value) {
-          const normalized = normalizeOptionName(unwrapLabelValue(value));
-          const preset = BLOB_VERTEX_SIZE_PRESETS.get(normalized);
-          if (preset) {
-            return preset;
-          }
-          return parseDistanceValue(unwrapLabelValue(value));
-        }
-        function normalizeVertexShape(value) {
-          const normalized = String(value || "").trim().toLowerCase().replace(/_/g, "-").replace(/\s+/g, " ");
-          return VERTEX_SHAPES.get(normalized) ?? VERTEX_SHAPES.get(normalized.replace(/\s+/g, "-")) ?? null;
-        }
-        function parseBrace(source, diagram, lineNumber) {
-          const match = String(source || "").trim().match(/^([A-Za-z0-9_.-]+)->([A-Za-z0-9_.-]+)(?:\[([^\]]*)\])?:(?:"([^"]*)"|'([^']*)'|(.+))$/);
-          if (!match) {
-            diagram.errors.push(`Line ${lineNumber}: braces must use "brace from->to[side]:label"`);
-            return;
-          }
-          const side = normalizeBraceSide(match[3] || "left");
-          if (!side) {
-            diagram.errors.push(`Line ${lineNumber}: unsupported brace side "${match[3]}"`);
-            return;
-          }
-          diagram.braces.push({
-            from: match[1],
-            to: match[2],
-            side,
-            label: cleanLabelValue(match[4] ?? match[5] ?? match[6] ?? "")
-          });
-        }
-        function normalizeBraceSide(value) {
-          const normalized = String(value || "").trim().toLowerCase();
-          if (normalized === "left" || normalized === "right" || normalized === "top" || normalized === "bottom") {
-            return normalized;
-          }
-          return null;
-        }
-        let elkInstance = null;
+        const layoutEngine = createLayoutEngine({
+          applyParallelPropagatorCurves,
+          finalizeLayout,
+          layoutFeynmanPreparedFallbackRaw,
+          layoutFeynmanPreparedRaw,
+          profileNow,
+          resolveLayoutOptions
+        });
         async function layoutFeynman(diagram, options) {
-          const prepared = prepareFeynmanLayout(diagram, options);
-          const layoutDiagram = prepared.compatibleDiagram;
-          const layoutOptions = resolveLayoutOptions(layoutDiagram, options);
-          let rawLayout;
-          applyParallelPropagatorCurves(layoutDiagram, prepared);
-          try {
-            const layoutStartedAt = profileNow();
-            rawLayout = await layoutFeynmanPreparedRaw(layoutDiagram, layoutOptions, prepared);
-            prepared.profile?.push("layout", profileNow() - layoutStartedAt);
-          } catch (error2) {
-            const fallbackStartedAt = profileNow();
-            rawLayout = layoutFeynmanPreparedFallbackRaw(layoutDiagram, layoutOptions, prepared);
-            prepared.profile?.push("layout-fallback", profileNow() - fallbackStartedAt);
-          }
-          const finalLayout = applyIncrementalStability(
-            finalizeLayout(layoutDiagram, rawLayout, layoutOptions),
-            prepared.incremental
-          );
-          return attachLayoutAnalysis(
-            finalLayout,
-            prepared,
-            { enabled: layoutOptions.debug || layoutOptions.profile, elkGraph: prepared.compiledElkGraph }
-          );
+          return layoutEngine.layoutFeynman(diagram, options);
         }
         function layoutFeynmanFallbackSync(diagram, options) {
-          const prepared = prepareFeynmanLayout(diagram, options);
-          const layoutDiagram = prepared.compatibleDiagram;
-          const layoutOptions = resolveLayoutOptions(layoutDiagram, options);
-          applyParallelPropagatorCurves(layoutDiagram, prepared);
-          const fallbackStartedAt = profileNow();
-          const rawLayout = layoutFeynmanPreparedFallbackRaw(layoutDiagram, layoutOptions, prepared);
-          prepared.profile?.push("layout-fallback", profileNow() - fallbackStartedAt);
-          return attachLayoutAnalysis(
-            applyIncrementalStability(
-              finalizeLayout(layoutDiagram, rawLayout, layoutOptions),
-              prepared.incremental
-            ),
-            prepared,
-            { enabled: layoutOptions.debug || layoutOptions.profile, elkGraph: prepared.compiledElkGraph }
-          );
+          return layoutEngine.layoutFeynmanFallbackSync(diagram, options);
         }
         async function layoutFeynmanPreparedRaw(diagram, layoutOptions, prepared) {
           const loopCandidateLayout = layoutLoopCandidate(diagram, layoutOptions, prepared);
@@ -98087,16 +99361,11 @@
           return layoutLayered(diagram, layoutOptions);
         }
         async function layoutFeynmanWithElk(diagram, layoutOptions, prepared) {
-          const elk = getElk();
-          const graph = buildSemanticElkGraph(
-            prepared.semantic,
-            layoutOptions,
-            (node) => elkNodeDimensions(node, diagram),
-            prepared.externalOrdering
-          );
-          prepared.compiledElkGraph = graph;
-          const result = await elk.layout(graph);
-          return normalizeElkLayout(diagram, layoutOptions, result);
+          return layoutWithElk(diagram, layoutOptions, prepared, {
+            buildSemanticElkGraph,
+            elkNodeDimensions,
+            normalizeElkLayout
+          });
         }
         function applyParallelPropagatorCurves(diagram, prepared) {
           (prepared.parallelCurvePlan || []).forEach((assignment) => {
@@ -98125,14 +99394,6 @@
             edge.autoLoopCurve = true;
           });
         }
-        function getElk() {
-          if (!elkInstance) {
-            elkInstance = new import_elk_bundled.default({
-              algorithms: ["layered", "mrtree", "force"]
-            });
-          }
-          return elkInstance;
-        }
         function profileNow() {
           return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
         }
@@ -98147,6 +99408,7 @@
           const outgoingCount = Math.max(diagram.outgoing.length, 1);
           const orientation2 = normalizeOrientation(merged.orientation) || DEFAULT_DIAGRAM_OPTIONS.orientation;
           const tikzOrientation = normalizeTikzOrientation(merged.tikzOrientation || merged.tikz_orientation);
+          const alignments = normalizeAlignmentConstraints(merged.alignments || merged.alignmentConstraints);
           const portrait = orientation2.startsWith("vertical") || tikzOrientation?.axis === "vertical";
           const width = merged.width ?? (portrait ? size.minHeight : size.width);
           const defaultHeight = Math.max(size.minHeight, 70 + Math.max(incomingCount, outgoingCount) * size.externalGap);
@@ -98160,6 +99422,7 @@
             marginX: merged.margin_x ?? merged.marginX ?? defaultMarginX,
             marginY: merged.margin_y ?? merged.marginY ?? size.marginY,
             tikzOrientation,
+            alignments,
             orientationMode: merged.orientationMode,
             direction: merged.direction,
             deterministicSeed: merged.deterministicSeed,
@@ -98177,6 +99440,19 @@
             ...options || {}
           };
           return normalizeLayoutName(merged.layout) || DEFAULT_DIAGRAM_OPTIONS.layout;
+        }
+        function normalizeAlignmentConstraints(value) {
+          if (!Array.isArray(value)) {
+            return [];
+          }
+          return value.map((constraint) => {
+            const axis = constraint?.axis === "vertical" ? "vertical" : constraint?.axis === "horizontal" ? "horizontal" : null;
+            const nodes = Array.isArray(constraint?.nodes) ? constraint.nodes.map((node) => String(node || "").trim()).filter(isNodeIdentifier) : [];
+            if (!axis || nodes.length < 2) {
+              return null;
+            }
+            return { axis, nodes };
+          }).filter(Boolean);
         }
         function diagramWithInferredTerminals(diagram, layout) {
           if (layout === "tree") {
@@ -98307,9 +99583,11 @@
           const definition = diagram.vertices?.[node] ?? null;
           const shape = vertexDefinitionShape(definition);
           if (shape === "blob" || shape === "disk") {
-            const radius = vertexDefinitionOptions(definition).size ?? BLOB_VERTEX_DEFAULT_RADII[shape];
-            const size = Math.max(12, radius * 2);
-            return { width: size, height: size };
+            const radii = blobVertexRadii(shape, definition);
+            return {
+              width: Math.max(12, radii.rx * 2),
+              height: Math.max(12, radii.ry * 2)
+            };
           }
           return { width: 8, height: 8 };
         }
@@ -98387,6 +99665,11 @@
           }
           straightenSingleTerminalLegs(diagram, positions, axes);
           alignInternalsAcrossInvisibleTerminalPairs(diagram, positions, axes);
+          enforceDeclaredExternalOrder(diagram, positions, axes);
+          if (!layoutOptions.tikzOrientation) {
+            alignInternalsToDeclaredTerminalRows(diagram, positions, axes, layoutOptions);
+          }
+          applyAlignmentConstraints(diagram, positions, layoutOptions);
           fitLayoutTranslationToEdgeBounds(diagram, positions, layoutOptions);
         }
         function elkRawPositions(elkGraph) {
@@ -98796,10 +100079,6 @@
               }
               if (canMoveTerminalCross(terminal, axes.crossOf(positions[internal]), positions, axes, kind)) {
                 axes.setCross(positions[terminal], axes.crossOf(positions[internal]));
-                return;
-              }
-              if (!manual.has(internal)) {
-                axes.setCross(positions[internal], axes.crossOf(positions[terminal]));
               }
             });
           });
@@ -98971,6 +100250,7 @@
           }
           fanTikzOrientationMixedTerminalPairs(diagram, layout, orientation2);
           fanTikzOrientationProcessTerminalGroups(diagram, layout, orientation2);
+          enforceDeclaredExternalOrder(diagram, layout.positions, diagramAxes(layoutOptions));
           fitLayoutPositions(layout, layoutOptions);
         }
         function fanTikzOrientationMixedTerminalPairs(diagram, layout, orientation2) {
@@ -98980,8 +100260,8 @@
             return;
           }
           const axis = lineVector2(from, to);
-          const axisGap = clamp3(Math.min(layout.width, layout.height) * 0.24, 72, 104);
-          const fanGap = orientation2.axis === "vertical" ? clamp3(Math.min(layout.width, layout.height) * 0.45, 126, 150) : clamp3(Math.min(layout.width, layout.height) * 0.33, 84, 126);
+          const axisGap = clamp5(Math.min(layout.width, layout.height) * 0.24, 72, 104);
+          const fanGap = orientation2.axis === "vertical" ? clamp5(Math.min(layout.width, layout.height) * 0.45, 126, 150) : clamp5(Math.min(layout.width, layout.height) * 0.33, 84, 126);
           [
             { internal: orientation2.from, outward: -1 },
             { internal: orientation2.to, outward: 1 }
@@ -99045,8 +100325,8 @@
             return;
           }
           const axis = lineVector2(from, to);
-          const axisGap = clamp3(Math.min(layout.width, layout.height) * 0.24, 72, 104);
-          const fanGap = clamp3(Math.min(layout.width, layout.height) * 0.33, 84, 126);
+          const axisGap = clamp5(Math.min(layout.width, layout.height) * 0.24, 72, 104);
+          const fanGap = clamp5(Math.min(layout.width, layout.height) * 0.33, 84, 126);
           [
             { internal: orientation2.from, kind: "incoming", outward: -1 },
             { internal: orientation2.to, kind: "outgoing", outward: 1 }
@@ -99133,7 +100413,7 @@
         function layoutSymmetricContact(diagram, layoutOptions, prepared) {
           const { width, height, marginX, marginY } = layoutOptions;
           const positions = initialFixedPositions(diagram, diagramAxes(layoutOptions));
-          const center = {
+          const structuralCenter = {
             x: width / 2,
             y: height / 2
           };
@@ -99145,22 +100425,38 @@
           );
           if (centerNode && !positions[centerNode]) {
             positions[centerNode] = {
-              ...center,
+              ...structuralCenter,
               kind: nodeKind(centerNode, diagram),
               labelSide: labelSideForKind2(nodeKind(centerNode, diagram), layoutOptions.orientation)
             };
           }
-          placeNodesOnRing(externalNodes, center, radius, positions, diagram, layoutOptions, -3 * Math.PI / 4);
+          const contactCenter = centerNode && positions[centerNode] ? positions[centerNode] : structuralCenter;
+          placeNodesOnRing(
+            externalNodes,
+            contactCenter,
+            radius,
+            positions,
+            diagram,
+            layoutOptions,
+            contactStarStartAngle(externalNodes.length)
+          );
           Array.from(collectNodes(diagram)).sort().forEach((node) => {
             if (!positions[node]) {
               positions[node] = {
-                ...center,
+                ...contactCenter,
                 kind: nodeKind(node, diagram),
                 labelSide: labelSideForKind2(nodeKind(node, diagram), layoutOptions.orientation)
               };
             }
           });
           return { width, height, positions, options: layoutOptions };
+        }
+        function contactStarStartAngle(count) {
+          if (count % 2 === 1) {
+            const medianIndex = Math.floor(count / 2);
+            return -Math.PI / 2 - 2 * Math.PI * medianIndex / count;
+          }
+          return -Math.PI / 2 - Math.PI / Math.max(count, 1);
         }
         function layoutSymmetricUnclassifiedRefinement(diagram, layoutOptions, prepared) {
           const refinement = prepared.symmetricUnclassified;
@@ -99747,8 +101043,8 @@
           const { width, height, marginX, marginY } = layoutOptions;
           const next = {
             ...position,
-            x: clamp3(position.x + force.x, marginX, width - marginX),
-            y: clamp3(position.y + force.y, marginY, height - marginY)
+            x: clamp5(position.x + force.x, marginX, width - marginX),
+            y: clamp5(position.y + force.y, marginY, height - marginY)
           };
           if (position.kind !== "internal" || !diagram.incoming.length && !diagram.outgoing.length) {
             return next;
@@ -99757,7 +101053,7 @@
           const layerMax = Math.max(axes.layerStart, axes.layerEnd);
           const terminalGap = Math.min(72, Math.max(42, (layerMax - layerMin) * 0.24));
           if (layerMax - layerMin > 2 * terminalGap) {
-            next.x = clamp3(next.x, layerMin + terminalGap, layerMax - terminalGap);
+            next.x = clamp5(next.x, layerMin + terminalGap, layerMax - terminalGap);
           }
           return next;
         }
@@ -99801,6 +101097,182 @@
           });
           return locks;
         }
+        function alignInternalsToDeclaredTerminalRows(diagram, positions, axes, layoutOptions) {
+          if (!diagram.incoming.length && !diagram.outgoing.length) {
+            return;
+          }
+          const pinned = /* @__PURE__ */ new Set([
+            ...diagram.incoming,
+            ...diagram.outgoing,
+            ...Object.keys(diagram.manualPositions || {})
+          ]);
+          terminalCrossLocks(diagram, positions, axes, pinned).forEach((cross, node) => {
+            if (positions[node]?.kind === "internal") {
+              axes.setCross(positions[node], cross);
+            }
+          });
+          if (layoutOptions.layout === "spring") {
+            alignJunctionsToTerminalRowCorridors(diagram, positions, axes, pinned);
+          }
+          alignTerminalLaneInternals(diagram, positions, axes, pinned);
+        }
+        function alignJunctionsToTerminalRowCorridors(diagram, positions, axes, pinned) {
+          if (axes.stackInternals) {
+            return;
+          }
+          const externalKinds = /* @__PURE__ */ new Set(["incoming", "outgoing"]);
+          const directLocks = terminalCrossLocks(diagram, positions, axes, pinned);
+          const adjacency = visibleAdjacencyForLayout(diagram, Object.keys(positions));
+          const tolerance = 1;
+          adjacency.forEach((neighbors, node) => {
+            const position = positions[node];
+            if (!position || position.kind !== "internal" || pinned.has(node) || directLocks.has(node)) {
+              return;
+            }
+            const crosses = [];
+            neighbors.forEach((neighbor) => {
+              const neighborPosition = positions[neighbor];
+              if (!neighborPosition) {
+                return;
+              }
+              if (externalKinds.has(neighborPosition.kind)) {
+                crosses.push(axes.crossOf(neighborPosition));
+                return;
+              }
+              if (directLocks.has(neighbor)) {
+                crosses.push(directLocks.get(neighbor));
+              }
+            });
+            if (crosses.length < 2) {
+              return;
+            }
+            const groups = groupNearbyCrosses(crosses, tolerance);
+            if (groups.length < 2) {
+              return;
+            }
+            const largest = Math.max(...groups.map((group) => group.count));
+            const dominantGroups = groups.filter((group) => group.count === largest);
+            const target = dominantGroups.length === 1 && largest > 1 ? dominantGroups[0].sum / dominantGroups[0].count : crosses.reduce((sum, cross) => sum + cross, 0) / crosses.length;
+            axes.setCross(position, target);
+          });
+        }
+        function groupNearbyCrosses(crosses, tolerance) {
+          const groups = [];
+          crosses.filter(Number.isFinite).sort((left, right) => left - right).forEach((cross) => {
+            const last = groups[groups.length - 1];
+            if (!last || Math.abs(cross - last.center) > tolerance) {
+              groups.push({ center: cross, sum: cross, count: 1 });
+              return;
+            }
+            last.sum += cross;
+            last.count += 1;
+            last.center = last.sum / last.count;
+          });
+          return groups;
+        }
+        function alignTerminalLaneInternals(diagram, positions, axes, pinned) {
+          if (diagram.incoming.length <= 1 && diagram.outgoing.length <= 1) {
+            return;
+          }
+          const tolerance = 1;
+          const moved = /* @__PURE__ */ new Set();
+          diagram.incoming.forEach((incoming) => {
+            const incomingPosition = positions[incoming];
+            if (!incomingPosition) {
+              return;
+            }
+            diagram.outgoing.forEach((outgoing) => {
+              const outgoingPosition = positions[outgoing];
+              if (!outgoingPosition || Math.abs(axes.crossOf(incomingPosition) - axes.crossOf(outgoingPosition)) > tolerance) {
+                return;
+              }
+              const path = terminalLanePath(diagram, positions, axes, incoming, outgoing, axes.crossOf(incomingPosition), tolerance);
+              if (!path) {
+                return;
+              }
+              const internals = path.filter((node) => positions[node]?.kind === "internal" && !pinned.has(node) && !moved.has(node));
+              if (!internals.length) {
+                return;
+              }
+              internals.forEach((node, index) => {
+                positions[node].x = axes.layerStart + (axes.layerEnd - axes.layerStart) * (index + 1) / (internals.length + 1);
+                moved.add(node);
+              });
+            });
+          });
+        }
+        function terminalLanePath(diagram, positions, axes, incoming, outgoing, cross, tolerance) {
+          const allowed = /* @__PURE__ */ new Set([incoming, outgoing]);
+          Object.entries(positions).forEach(([node, position]) => {
+            if (position.kind === "internal" && Math.abs(axes.crossOf(position) - cross) <= tolerance) {
+              allowed.add(node);
+            }
+          });
+          const adjacency = new Map(Array.from(allowed).map((node) => [node, []]));
+          diagram.edges.forEach((edge) => {
+            if (edge.hidden || !allowed.has(edge.from) || !allowed.has(edge.to)) {
+              return;
+            }
+            adjacency.get(edge.from).push(edge.to);
+            adjacency.get(edge.to).push(edge.from);
+          });
+          adjacency.forEach((neighbors) => {
+            neighbors.sort((left, right) => left.localeCompare(right));
+          });
+          const queue = [[incoming]];
+          const visited = /* @__PURE__ */ new Set([incoming]);
+          while (queue.length) {
+            const path = queue.shift();
+            const node = path[path.length - 1];
+            if (node === outgoing) {
+              return path;
+            }
+            (adjacency.get(node) || []).forEach((neighbor) => {
+              if (visited.has(neighbor)) {
+                return;
+              }
+              visited.add(neighbor);
+              queue.push([...path, neighbor]);
+            });
+          }
+          return null;
+        }
+        function applyAlignmentConstraints(diagram, positions, layoutOptions) {
+          const alignments = layoutOptions.alignments || [];
+          if (!alignments.length) {
+            return;
+          }
+          const manual = new Set(Object.keys(diagram.manualPositions || {}));
+          alignments.forEach((alignment) => {
+            const coordinate = alignment.axis === "vertical" ? "x" : "y";
+            const crossCoordinate = alignment.axis === "vertical" ? "y" : "x";
+            const positioned = alignment.nodes.map((node) => ({ node, position: positions[node] })).filter((entry) => entry.position && Number.isFinite(entry.position[coordinate]));
+            if (positioned.length < 2) {
+              return;
+            }
+            const anchors = positioned.filter((entry) => manual.has(entry.node));
+            const source = anchors.length ? anchors : positioned;
+            const target = source.reduce((sum, entry) => sum + entry.position[coordinate], 0) / source.length;
+            positioned.forEach(({ node, position }) => {
+              if (!manual.has(node)) {
+                position[coordinate] = target;
+              }
+            });
+            orderAlignedNodesAlongCrossAxis(positioned, crossCoordinate, manual);
+          });
+        }
+        function orderAlignedNodesAlongCrossAxis(positioned, crossCoordinate, manual) {
+          if (positioned.length < 2 || positioned.some((entry) => manual.has(entry.node))) {
+            return;
+          }
+          const slots = positioned.map((entry) => entry.position[crossCoordinate]).filter((value) => Number.isFinite(value)).sort((left, right) => left - right);
+          if (slots.length !== positioned.length) {
+            return;
+          }
+          positioned.forEach((entry, index) => {
+            entry.position[crossCoordinate] = slots[index];
+          });
+        }
         function applyCrossLocks(positions, crossLocks, axes) {
           crossLocks.forEach((cross, node) => {
             if (positions[node]) {
@@ -99814,10 +101286,11 @@
           }
           axes.setCross(position, cross);
         }
-        function diagramAxes({ width, height, marginX, marginY, orientation: orientation2 }) {
+        function diagramAxes({ width, height, marginX, marginY, orientation: orientation2, tikzOrientation }) {
           const reverse = orientation2.endsWith("reverse");
           return {
             orientation: orientation2,
+            clockwiseBoundaryOrder: !tikzOrientation,
             stackInternals: orientation2.startsWith("vertical"),
             layerStart: reverse ? width - marginX : marginX,
             layerEnd: reverse ? marginX : width - marginX,
@@ -99916,7 +101389,7 @@
             uy: dy / distance2
           };
         }
-        function clamp3(value, min, max) {
+        function clamp5(value, min, max) {
           return Math.max(min, Math.min(max, value));
         }
         function collectNodes(diagram) {
@@ -99948,11 +101421,49 @@
             if (!positions[node]) {
               positions[node] = axes.point(
                 layer,
-                crossCoordinateAt(index, count, crossStart, crossEnd),
+                externalCrossCoordinateAt(index, count, crossStart, crossEnd, layer, axes, kind),
                 kind
               );
             }
           });
+        }
+        function enforceDeclaredExternalOrder(diagram, positions, axes) {
+          const manual = new Set(Object.keys(diagram.manualPositions || {}));
+          [
+            { nodes: diagram.incoming, kind: "incoming" },
+            { nodes: diagram.outgoing, kind: "outgoing" }
+          ].forEach(({ nodes, kind }) => {
+            if (nodes.length <= 1) {
+              return;
+            }
+            const count = Math.max(nodes.length, 1);
+            nodes.forEach((node, index) => {
+              if (!positions[node] || manual.has(node)) {
+                return;
+              }
+              axes.setCross(
+                positions[node],
+                externalCrossCoordinateAt(
+                  index,
+                  count,
+                  axes.crossStart,
+                  axes.crossEnd,
+                  kind === "incoming" ? axes.layerStart : axes.layerEnd,
+                  axes,
+                  kind
+                )
+              );
+              positions[node].kind = kind;
+            });
+          });
+        }
+        function externalCrossCoordinateAt(index, count, crossStart, crossEnd, layer, axes, kind) {
+          if (!axes.clockwiseBoundaryOrder || kind !== "incoming" && kind !== "outgoing") {
+            return crossCoordinateAt(index, count, crossStart, crossEnd);
+          }
+          const midpoint = (axes.layerStart + axes.layerEnd) / 2;
+          const isLeftBoundary = layer <= midpoint;
+          return isLeftBoundary ? crossCoordinateAt(index, count, crossEnd, crossStart) : crossCoordinateAt(index, count, crossStart, crossEnd);
         }
         function crossCoordinateAt(index, count, crossStart, crossEnd) {
           if (count <= 1) {
@@ -100091,6 +101602,7 @@
           renderLabels(diagram, layout).forEach((label) => {
             svg.appendChild(label);
           });
+          await materializePendingMathLabels(svg);
           figure.appendChild(svg);
           if (diagram.errors.length) {
             const errors = document.createElement("figcaption");
@@ -100132,7 +101644,7 @@
           }).filter(Boolean);
         }
         function isOverlayEdge(edge) {
-          return edge.type === "ghost";
+          return edge.type === "ghost" || edge.overlay;
         }
         function renderJunctionCaps(diagram, layout) {
           return junctionCapNodes(diagram, layout).map((cap) => createSvg("circle", {
@@ -100234,6 +101746,33 @@
               d: edgePath(edge, from, to)
             });
           }
+          if (edge.type === "dashed") {
+            return createSvg("path", {
+              class: "feynman-diagram__edge feynman-diagram__edge--dashed",
+              d: edgePath(edge, from, to)
+            });
+          }
+          if (edge.type === "dashdot") {
+            return createSvg("path", {
+              class: "feynman-diagram__edge feynman-diagram__edge--dashdot",
+              d: edgePath(edge, from, to)
+            });
+          }
+          if (edge.type === "triangle") {
+            return createSvg("path", {
+              class: "feynman-diagram__edge feynman-diagram__edge--triangle",
+              d: trianglePathForEdge(edge, from, to, 7, 16)
+            });
+          }
+          if (edge.type === "square") {
+            return createSvg("path", {
+              class: "feynman-diagram__edge feynman-diagram__edge--square",
+              d: squarePathForEdge(edge, from, to, 6, 18)
+            });
+          }
+          if (edge.type === "double") {
+            return renderDoubleEdge(edge, from, to);
+          }
           if (edge.arrow) {
             return renderDirectedEdge(edge, from, to, "feynman-diagram__edge feynman-diagram__edge--scalar");
           }
@@ -100292,7 +101831,7 @@
           };
           return createSvg("path", {
             class: options.className || "feynman-diagram__arrow",
-            d: `M ${round(tip.x)} ${round(tip.y)} L ${round(left.x)} ${round(left.y)} L ${round(right.x)} ${round(right.y)} Z`
+            d: `M ${round2(tip.x)} ${round2(tip.y)} L ${round2(left.x)} ${round2(left.y)} L ${round2(right.x)} ${round2(right.y)} Z`
           });
         }
         function renderVertex(node, position, diagram, index = 0) {
@@ -100360,9 +101899,10 @@
             const group = createSvg("g", {
               class: `feynman-diagram__vertex-group feynman-diagram__vertex-group--${shape}`
             });
-            const radius = options.size ?? BLOB_VERTEX_DEFAULT_RADII[shape];
+            const radii = blobVertexRadii(shape, definition);
+            const circular = Math.abs(radii.rx - radii.ry) < 1e-3;
             const hatch = options.hatch;
-            const circleAttributes = {
+            const shapeAttributes = {
               class: [
                 "feynman-diagram__vertex",
                 "feynman-diagram__vertex--blob",
@@ -100370,19 +101910,27 @@
                 hatch ? "feynman-diagram__vertex--blob-hatched" : "feynman-diagram__vertex--blob-shaded"
               ].join(" "),
               cx: position.x,
-              cy: position.y,
-              r: radius
+              cy: position.y
             };
-            if (hatch) {
-              circleAttributes.fill = `url(#${blobHatchPatternId(index, hatch)})`;
-            }
-            group.appendChild(createSvg("circle", {
+            const backdropAttributes = {
               class: "feynman-diagram__vertex-backdrop",
               cx: position.x,
-              cy: position.y,
-              r: radius + 1
-            }));
-            group.appendChild(createSvg("circle", circleAttributes));
+              cy: position.y
+            };
+            if (circular) {
+              shapeAttributes.r = radii.rx;
+              backdropAttributes.r = radii.rx + 1;
+            } else {
+              shapeAttributes.rx = radii.rx;
+              shapeAttributes.ry = radii.ry;
+              backdropAttributes.rx = radii.rx + 1;
+              backdropAttributes.ry = radii.ry + 1;
+            }
+            if (hatch) {
+              shapeAttributes.fill = `url(#${blobHatchPatternId(index, hatch)})`;
+            }
+            group.appendChild(createSvg(circular ? "circle" : "ellipse", backdropAttributes));
+            group.appendChild(createSvg(circular ? "circle" : "ellipse", shapeAttributes));
             return group;
           }
           return null;
@@ -100402,305 +101950,32 @@
           }
           return definition;
         }
+        function blobVertexRadii(shape, definition) {
+          const options = vertexDefinitionOptions(definition);
+          const radius = options.size ?? BLOB_VERTEX_DEFAULT_RADII[shape];
+          return {
+            rx: options.rx ?? radius,
+            ry: options.ry ?? radius
+          };
+        }
         function blobHatchPatternId(index, hatch) {
           return `feynman-hatch-${hatch}-${index}`;
         }
-        function wavePath(from, to, amplitude, wavelength) {
-          return wavePathForEdge({}, from, to, amplitude, wavelength);
-        }
-        function wavePathForEdge(edge, from, to, amplitude, wavelength) {
+        function renderDoubleEdge(edge, from, to) {
+          const path = createSvg("path", {
+            class: "feynman-diagram__edge feynman-diagram__edge--double",
+            d: doubleLinePathForEdge(edge, from, to, 4.6)
+          });
+          if (!edge.arrow) {
+            return path;
+          }
+          const group = createSvg("g", {
+            class: "feynman-diagram__edge-group"
+          });
           const geometry = edgeGeometry2(edge, from, to);
-          const length = geometryLength(geometry);
-          const cycles = Math.max(2, Math.round(length / wavelength));
-          const steps = cycles * 12;
-          const points = [];
-          for (let step = 0; step <= steps; step += 1) {
-            const t = step / steps;
-            const phase = t * cycles * Math.PI * 2;
-            const offset = Math.sin(phase) * amplitude;
-            const sample = geometrySample2(geometry, t);
-            const normal = perpendicularVector(sample.tangent);
-            points.push({
-              x: sample.point.x + normal.x * offset,
-              y: sample.point.y + normal.y * offset
-            });
-          }
-          return pointsToPath(points);
-        }
-        function gluonPath(from, to, radius, loopLength) {
-          return gluonPathForEdge({}, from, to, radius, loopLength);
-        }
-        function gluonPathForEdge(edge, from, to, radius, loopLength) {
-          const geometry = edgeGeometry2(edge, from, to);
-          const length = geometryLength(geometry);
-          const loops = Math.max(3, Math.round(length / loopLength));
-          const steps = loops * 18;
-          const points = [];
-          for (let step = 0; step <= steps; step += 1) {
-            const t = step / steps;
-            const phase = t * loops * Math.PI * 2;
-            const sample = geometrySample2(geometry, t);
-            const tangent = normalizeVector2(sample.tangent.x, sample.tangent.y);
-            const normal = perpendicularVector(tangent);
-            const taper = gluonEndpointTaper(t, loops);
-            const along = Math.sin(phase) * radius * taper;
-            const offset = Math.cos(phase) * radius * taper;
-            points.push({
-              x: sample.point.x + tangent.ux * along + normal.x * offset,
-              y: sample.point.y + tangent.uy * along + normal.y * offset
-            });
-          }
-          return pointsToPath(points);
-        }
-        function gluonEndpointTaper(t, loops) {
-          const loopsFromEndpoint = Math.min(t, 1 - t) * loops;
-          const edgeProgress = Math.min(1, Math.max(0, loopsFromEndpoint / GLUON_ENDPOINT_RAMP_LOOPS));
-          return edgeProgress * edgeProgress * (3 - 2 * edgeProgress);
-        }
-        function edgePath(edge, from, to) {
-          return geometryToPath(edgeGeometry2(edge, from, to));
-        }
-        function edgeGeometry2(edge, from, to) {
-          const outAngle = Number(edge?.outAngle);
-          const inAngle = Number(edge?.inAngle);
-          if (samePoint2(from, to)) {
-            return selfLoopGeometry2(edge, from, outAngle, inAngle);
-          }
-          if (Number.isFinite(outAngle) || Number.isFinite(inAngle)) {
-            return angleCurveGeometry2(edge, from, to, outAngle, inAngle);
-          }
-          if (edge?.curve) {
-            return offsetCurveGeometry2(edge, from, to);
-          }
-          return {
-            kind: "line",
-            from,
-            to
-          };
-        }
-        function selfLoopGeometry2(edge, point, outAngle, inAngle) {
-          const amount = clamp3(edge?.curve?.amount ?? 0.72, 0.28, 1.1);
-          const radius = 68 * amount;
-          if (Number.isFinite(outAngle) || Number.isFinite(inAngle)) {
-            const outVector = angleUnitVector2(Number.isFinite(outAngle) ? outAngle : 135);
-            const inVector = angleUnitVector2(Number.isFinite(inAngle) ? inAngle : 45);
-            return {
-              kind: "cubic",
-              from: point,
-              c1: {
-                x: point.x + outVector.x * radius * 1.65,
-                y: point.y + outVector.y * radius * 1.65
-              },
-              c2: {
-                x: point.x + inVector.x * radius * 1.65,
-                y: point.y + inVector.y * radius * 1.65
-              },
-              to: point
-            };
-          }
-          const side = selfLoopSideVector2(edge?.curve?.side);
-          const tangent = { x: -side.y, y: side.x };
-          return {
-            kind: "cubic",
-            from: point,
-            c1: {
-              x: point.x - tangent.x * radius + side.x * radius * 1.7,
-              y: point.y - tangent.y * radius + side.y * radius * 1.7
-            },
-            c2: {
-              x: point.x + tangent.x * radius + side.x * radius * 1.7,
-              y: point.y + tangent.y * radius + side.y * radius * 1.7
-            },
-            to: point
-          };
-        }
-        function samePoint2(from, to) {
-          return Math.abs(from.x - to.x) < 1e-3 && Math.abs(from.y - to.y) < 1e-3;
-        }
-        function selfLoopSideVector2(side) {
-          if (side === "right") {
-            return { x: 1, y: 0 };
-          }
-          if (side === "bottom") {
-            return { x: 0, y: 1 };
-          }
-          if (side === "left") {
-            return { x: -1, y: 0 };
-          }
-          return { x: 0, y: -1 };
-        }
-        function offsetCurveGeometry2(edge, from, to) {
-          const vector = lineVector2(from, to);
-          const normal = leftNormalVector2(vector);
-          const side = edge.curve.side === "right" ? -1 : 1;
-          const looseness = edge.looseness ?? 1;
-          const offset = vector.length * edge.curve.amount * looseness * side;
-          if (edge.curve.shape === "semicircle") {
-            return {
-              kind: "cubic",
-              from,
-              c1: {
-                x: from.x + normal.x * offset,
-                y: from.y + normal.y * offset
-              },
-              c2: {
-                x: to.x + normal.x * offset,
-                y: to.y + normal.y * offset
-              },
-              to
-            };
-          }
-          return {
-            kind: "cubic",
-            from,
-            c1: {
-              x: from.x + vector.dx * 0.33 + normal.x * offset,
-              y: from.y + vector.dy * 0.33 + normal.y * offset
-            },
-            c2: {
-              x: from.x + vector.dx * 0.67 + normal.x * offset,
-              y: from.y + vector.dy * 0.67 + normal.y * offset
-            },
-            to
-          };
-        }
-        function angleCurveGeometry2(edge, from, to, outAngle, inAngle) {
-          const vector = lineVector2(from, to);
-          const looseness = edge?.looseness ?? 1;
-          const handle = vector.length * 0.46 * looseness;
-          const relativeBase = edge?.relativeAngles ? vectorAngle2(vector) : 0;
-          const resolvedOut = Number.isFinite(outAngle) ? relativeBase + outAngle : vectorAngle2(vector);
-          const resolvedIn = Number.isFinite(inAngle) ? relativeBase + inAngle : vectorAngle2(vector) + 180;
-          const outVector = angleUnitVector2(resolvedOut);
-          const inVector = angleUnitVector2(resolvedIn);
-          return {
-            kind: "cubic",
-            from,
-            c1: {
-              x: from.x + outVector.x * handle,
-              y: from.y + outVector.y * handle
-            },
-            c2: {
-              x: to.x + inVector.x * handle,
-              y: to.y + inVector.y * handle
-            },
-            to
-          };
-        }
-        function geometryToPath(geometry) {
-          if (geometry.kind === "cubic") {
-            return [
-              `M ${round(geometry.from.x)} ${round(geometry.from.y)}`,
-              `C ${round(geometry.c1.x)} ${round(geometry.c1.y)}`,
-              `${round(geometry.c2.x)} ${round(geometry.c2.y)}`,
-              `${round(geometry.to.x)} ${round(geometry.to.y)}`
-            ].join(" ");
-          }
-          return `M ${round(geometry.from.x)} ${round(geometry.from.y)} L ${round(geometry.to.x)} ${round(geometry.to.y)}`;
-        }
-        function geometryPoint2(geometry, t) {
-          if (geometry.kind === "cubic") {
-            return cubicPoint2(geometry.from, geometry.c1, geometry.c2, geometry.to, t);
-          }
-          return {
-            x: geometry.from.x + (geometry.to.x - geometry.from.x) * t,
-            y: geometry.from.y + (geometry.to.y - geometry.from.y) * t
-          };
-        }
-        function geometryTangent2(geometry, t) {
-          if (geometry.kind === "cubic") {
-            return cubicTangent2(geometry.from, geometry.c1, geometry.c2, geometry.to, t);
-          }
-          return {
-            x: geometry.to.x - geometry.from.x,
-            y: geometry.to.y - geometry.from.y
-          };
-        }
-        function geometrySample2(geometry, t) {
-          return {
-            point: geometryPoint2(geometry, t),
-            tangent: geometryTangent2(geometry, t)
-          };
-        }
-        function geometryLength(geometry) {
-          const steps = geometry.kind === "cubic" ? 48 : 1;
-          let length = 0;
-          let previous = geometryPoint2(geometry, 0);
-          for (let step = 1; step <= steps; step += 1) {
-            const next = geometryPoint2(geometry, step / steps);
-            length += Math.hypot(next.x - previous.x, next.y - previous.y);
-            previous = next;
-          }
-          return length;
-        }
-        function cubicPoint2(p0, p1, p2, p3, t) {
-          const mt = 1 - t;
-          return {
-            x: mt ** 3 * p0.x + 3 * mt ** 2 * t * p1.x + 3 * mt * t ** 2 * p2.x + t ** 3 * p3.x,
-            y: mt ** 3 * p0.y + 3 * mt ** 2 * t * p1.y + 3 * mt * t ** 2 * p2.y + t ** 3 * p3.y
-          };
-        }
-        function cubicTangent2(p0, p1, p2, p3, t) {
-          const mt = 1 - t;
-          return {
-            x: 3 * mt ** 2 * (p1.x - p0.x) + 6 * mt * t * (p2.x - p1.x) + 3 * t ** 2 * (p3.x - p2.x),
-            y: 3 * mt ** 2 * (p1.y - p0.y) + 6 * mt * t * (p2.y - p1.y) + 3 * t ** 2 * (p3.y - p2.y)
-          };
-        }
-        function lineVector2(from, to) {
-          const dx = to.x - from.x;
-          const dy = to.y - from.y;
-          const length = Math.hypot(dx, dy) || 1;
-          return {
-            dx,
-            dy,
-            length,
-            ux: dx / length,
-            uy: dy / length,
-            px: -dy / length,
-            py: dx / length
-          };
-        }
-        function normalizeVector2(dx, dy) {
-          const length = Math.hypot(dx, dy) || 1;
-          return {
-            ux: dx / length,
-            uy: dy / length,
-            px: -dy / length,
-            py: dx / length
-          };
-        }
-        function perpendicularVector(vector) {
-          const normalized = normalizeVector2(vector.x ?? vector.dx ?? vector.ux, vector.y ?? vector.dy ?? vector.uy);
-          return {
-            x: normalized.px,
-            y: normalized.py
-          };
-        }
-        function leftNormalVector2(vector) {
-          return {
-            x: vector.dy / vector.length,
-            y: -vector.dx / vector.length
-          };
-        }
-        function vectorAngle2(vector) {
-          return Math.atan2(-vector.dy, vector.dx) * 180 / Math.PI;
-        }
-        function angleUnitVector2(degrees) {
-          const radians = degrees * Math.PI / 180;
-          return {
-            x: Math.cos(radians),
-            y: -Math.sin(radians)
-          };
-        }
-        function projectPoint(origin, vector, along, offset) {
-          return {
-            x: origin.x + vector.ux * along + vector.px * offset,
-            y: origin.y + vector.uy * along + vector.py * offset
-          };
-        }
-        function pointsToPath(points) {
-          return points.map((point, index) => `${index === 0 ? "M" : "L"} ${round(point.x)} ${round(point.y)}`).join(" ");
+          group.appendChild(path);
+          group.appendChild(renderArrowGlyphOnGeometry(geometry, edge.arrow === "reverse"));
+          return group;
         }
         function renderLabels(diagram, layout) {
           const declaredLabels = Object.entries(diagram.labels).map(([target, text]) => {
@@ -100955,16 +102230,16 @@
             const geometry = texBraceGeometry(x, braceY1, braceY2, side);
             return {
               kind: "tex-brace",
-              x: round(x),
+              x: round2(x),
               pieces: geometry.pieces,
               scale: geometry.scale,
               extenderRepeats: geometry.extenderRepeats,
               bounds: {
-                y1: round(braceY1),
-                y2: round(braceY2)
+                y1: round2(braceY1),
+                y2: round2(braceY2)
               },
               label: {
-                x: round(x + sign2 * labelGap),
+                x: round2(x + sign2 * labelGap),
                 y: mid2,
                 anchor: side === "right" ? "start" : "end"
               }
@@ -100977,10 +102252,10 @@
           const y = (side === "bottom" ? Math.max(from.y, to.y) : Math.min(from.y, to.y)) + sign * gap;
           const notch = Math.min(10, Math.max(5, (x2 - x1) / 8));
           const path = [
-            `M ${round(x1)} ${round(y)}`,
-            `C ${round(x1)} ${round(y + sign * curl)} ${round(mid - notch * 2)} ${round(y + sign * curl)} ${round(mid - notch)} ${round(y)}`,
-            `C ${round(mid - notch * 0.4)} ${round(y + sign * curl * 0.45)} ${round(mid + notch * 0.4)} ${round(y + sign * curl * 0.45)} ${round(mid + notch)} ${round(y)}`,
-            `C ${round(mid + notch * 2)} ${round(y + sign * curl)} ${round(x2)} ${round(y + sign * curl)} ${round(x2)} ${round(y)}`
+            `M ${round2(x1)} ${round2(y)}`,
+            `C ${round2(x1)} ${round2(y + sign * curl)} ${round2(mid - notch * 2)} ${round2(y + sign * curl)} ${round2(mid - notch)} ${round2(y)}`,
+            `C ${round2(mid - notch * 0.4)} ${round2(y + sign * curl * 0.45)} ${round2(mid + notch * 0.4)} ${round2(y + sign * curl * 0.45)} ${round2(mid + notch)} ${round2(y)}`,
+            `C ${round2(mid + notch * 2)} ${round2(y + sign * curl)} ${round2(x2)} ${round2(y + sign * curl)} ${round2(x2)} ${round2(y)}`
           ].join(" ");
           return {
             kind: "path",
@@ -101028,7 +102303,7 @@
           pieces.push(texBracePiece(sidePaths.bottom, x, topY, scale, bottomY));
           return {
             pieces,
-            scale: round(scale),
+            scale: round2(scale),
             extenderRepeats
           };
         }
@@ -101036,57 +102311,55 @@
           return {
             path,
             transform: [
-              `matrix(${round(scale)} 0 0 ${round(scale)}`,
-              `${round(x - TEX_BRACE_METRICS.centerX * scale)}`,
-              `${round(y + yOffset * scale)})`
+              `matrix(${round2(scale)} 0 0 ${round2(scale)}`,
+              `${round2(x - TEX_BRACE_METRICS.centerX * scale)}`,
+              `${round2(y + yOffset * scale)})`
             ].join(" ")
           };
         }
-        function mathJaxAvailable() {
-          return typeof window !== "undefined" && window.MathJax && typeof window.MathJax.typesetPromise === "function";
+        function mathJaxTexToSvgAvailable() {
+          return typeof window !== "undefined" && window.MathJax && typeof window.MathJax.tex2svgPromise === "function";
         }
-        function labelNeedsMathJax(source) {
-          const input = String(source ?? "");
-          if (!input.includes("\\")) {
-            return false;
+        function whenMathJaxReady() {
+          if (typeof window === "undefined") {
+            return Promise.resolve();
           }
-          if (MATHJAX_COMPLEX_COMMANDS.test(input)) {
-            return true;
+          if (window.MathJax?.startup?.promise) {
+            return window.MathJax.startup.promise;
           }
-          let index = 0;
-          while (index < input.length) {
-            if (input[index] === "_" || input[index] === "^") {
-              const script = rawScriptArgument(input, index + 1);
-              if (script && script.text.includes("\\")) {
-                const commands = script.text.match(/\\[A-Za-z]+/g) || [];
-                const plain = script.text.replace(/\\[A-Za-z]+/g, "").trim();
-                if (commands.length > 1 || commands.length === 1 && plain.length > 0) {
-                  return true;
-                }
-                if (commands.length === 1 && !LATEX_SYMBOLS.has(commands[0].slice(1))) {
-                  return true;
-                }
+          if (mathJaxTexToSvgAvailable()) {
+            return Promise.resolve();
+          }
+          return new Promise((resolve) => {
+            let attempts = 0;
+            const timer = window.setInterval(() => {
+              if (mathJaxTexToSvgAvailable() || attempts++ > 200) {
+                window.clearInterval(timer);
+                resolve();
               }
-              index = script ? script.next : index + 1;
-              continue;
-            }
-            if (input[index] === "\\") {
-              const command = readLatexCommand(input, index);
-              const nameMatch = input.slice(index + 1, command.next).match(/^[A-Za-z]+/);
-              if (nameMatch && !LATEX_SYMBOLS.has(nameMatch[0]) && nameMatch[0] !== "overline" && nameMatch[0] !== "bar") {
-                return true;
-              }
-              index = command.next;
-              continue;
-            }
-            index += 1;
-          }
-          return false;
+            }, 50);
+          });
         }
         function createDiagramLabel({ text, x, y, anchor, className }) {
           const source = String(text ?? "");
-          if (mathJaxAvailable() && labelNeedsMathJax(source)) {
-            return createMathJaxLabelElement({ text: source, x, y, anchor, className });
+          if (labelNeedsMathJax(source)) {
+            const group = createSvg("g", {
+              class: `${className} feynman-diagram__label--math-pending`.trim(),
+              "data-math-tex": source,
+              "data-label-x": x,
+              "data-label-y": y,
+              "data-label-anchor": anchor
+            });
+            const fallback = createSvg("text", {
+              class: "feynman-diagram__label feynman-diagram__label--fallback",
+              x,
+              y,
+              "text-anchor": anchor,
+              "dominant-baseline": "middle"
+            });
+            appendLabelMarkup(fallback, source);
+            group.appendChild(fallback);
+            return group;
           }
           const label = createSvg("text", {
             class: className,
@@ -101098,43 +102371,120 @@
           appendLabelMarkup(label, source);
           return label;
         }
-        function createMathJaxLabelElement({ text, x, y, anchor, className }) {
-          const estWidth = Math.max(56, String(text).length * VISUAL_DEFAULTS.labelFontSize * 0.38);
-          const estHeight = Math.ceil(VISUAL_DEFAULTS.labelFontSize * 1.6);
+        function mathJaxDisplayFontSize(className) {
+          const base = String(className || "").includes("edge") ? VISUAL_DEFAULTS.edgeLabelFontSize : VISUAL_DEFAULTS.labelFontSize;
+          return base * VISUAL_DEFAULTS.mathLabelFontScale;
+        }
+        function parseMathJaxSvgLength(value, emPixels) {
+          if (value == null || value === "") {
+            return 0;
+          }
+          const raw = String(value).trim();
+          const match = raw.match(/^([+-]?\d*\.?\d+(?:e[-+]?\d+)?)\s*(ex|em|px)?$/i);
+          if (!match) {
+            return Number.parseFloat(raw) || 0;
+          }
+          const amount = Number.parseFloat(match[1]);
+          const unit = (match[2] || "px").toLowerCase();
+          if (unit === "ex") {
+            return amount * emPixels * 0.431;
+          }
+          if (unit === "em") {
+            return amount * emPixels;
+          }
+          return amount;
+        }
+        function prefixSvgIds(root, prefix) {
+          const idMap = /* @__PURE__ */ new Map();
+          root.querySelectorAll("[id]").forEach((element) => {
+            const oldId = element.id;
+            const newId = `${prefix}__${oldId}`;
+            idMap.set(oldId, newId);
+            element.id = newId;
+          });
+          root.querySelectorAll("[href]").forEach((element) => {
+            const href = element.getAttribute("href");
+            if (href?.startsWith("#")) {
+              const mapped = idMap.get(href.slice(1));
+              if (mapped) {
+                element.setAttribute("href", `#${mapped}`);
+              }
+            }
+          });
+          root.querySelectorAll("*").forEach((element) => {
+            const xlinkHref = element.getAttributeNS("http://www.w3.org/1999/xlink", "href");
+            if (xlinkHref?.startsWith("#")) {
+              const mapped = idMap.get(xlinkHref.slice(1));
+              if (mapped) {
+                element.setAttributeNS("http://www.w3.org/1999/xlink", "href", `#${mapped}`);
+              }
+            }
+          });
+        }
+        function embedMathJaxSvgGroup(container, { x, y, anchor, className, idPrefix }) {
+          const sourceSvg = container?.querySelector?.("svg");
+          if (!sourceSvg) {
+            return createSvg("g");
+          }
+          const emPixels = mathJaxDisplayFontSize(className);
+          let width = parseMathJaxSvgLength(sourceSvg.getAttribute("width"), emPixels);
+          let height = parseMathJaxSvgLength(sourceSvg.getAttribute("height"), emPixels);
+          if (!(width > 0 && height > 0)) {
+            width = emPixels * 2.4;
+            height = emPixels * 1.05;
+          }
           const group = createSvg("g", {
-            class: `${className} feynman-diagram__label--mathjax`.trim(),
-            "data-mathjax-label": "true",
-            "data-label-x": x,
-            "data-label-y": y,
-            "data-label-anchor": anchor,
-            "data-label-est-width": estWidth,
-            "data-label-est-height": estHeight
+            class: `${className || ""} feynman-diagram__label--mathjax`.trim(),
+            transform: `translate(${round2(foreignObjectX(x, width, anchor))} ${round2(y - height / 2)})`
           });
-          const foreignObject = createSvg("foreignObject", {
-            class: "feynman-diagram__label-math-fo",
-            x: foreignObjectX(x, estWidth, anchor),
-            y: y - estHeight / 2,
-            width: estWidth,
-            height: estHeight,
-            overflow: "visible"
-          });
-          const div = document.createElementNS(XHTML_NS, "div");
-          div.setAttribute("xmlns", XHTML_NS);
-          div.className = "arithmatex feynman-diagram__label-math";
-          div.style.display = "flex";
-          div.style.alignItems = "center";
-          div.style.justifyContent = anchor === "end" ? "flex-end" : anchor === "start" ? "flex-start" : "center";
-          div.style.width = "100%";
-          div.style.height = "100%";
-          div.style.fontSize = `${Math.round(VISUAL_DEFAULTS.labelFontSize * 0.72)}px`;
-          div.style.fontFamily = VISUAL_DEFAULTS.labelFontFamily;
-          div.style.fontStyle = VISUAL_DEFAULTS.labelFontStyle;
-          div.style.lineHeight = "1";
-          div.style.color = "currentColor";
-          div.textContent = `\\(${text}\\)`;
-          foreignObject.appendChild(div);
-          group.appendChild(foreignObject);
+          const nested = document.importNode(sourceSvg, true);
+          nested.setAttribute("width", width);
+          nested.setAttribute("height", height);
+          nested.setAttribute("overflow", "visible");
+          nested.setAttribute("class", "feynman-diagram__label-math-svg");
+          prefixSvgIds(nested, idPrefix);
+          group.appendChild(nested);
           return group;
+        }
+        async function materializePendingMathLabels(root) {
+          if (!root?.querySelectorAll) {
+            return;
+          }
+          const pending = [...root.querySelectorAll("[data-math-tex]")];
+          if (!pending.length) {
+            return;
+          }
+          await whenMathJaxReady();
+          if (!mathJaxTexToSvgAvailable()) {
+            return;
+          }
+          await Promise.all(pending.map(async (group) => {
+            const tex = group.dataset.mathTex;
+            if (!tex) {
+              return;
+            }
+            try {
+              const fontSize = mathJaxDisplayFontSize(
+                group.getAttribute("class")?.replace("feynman-diagram__label--math-pending", "").trim()
+              );
+              const mathNode = await window.MathJax.tex2svgPromise(tex, {
+                display: false,
+                em: fontSize,
+                ex: fontSize * 0.431
+              });
+              const replacement = embedMathJaxSvgGroup(mathNode, {
+                x: Number(group.dataset.labelX),
+                y: Number(group.dataset.labelY),
+                anchor: group.dataset.labelAnchor || "middle",
+                className: group.getAttribute("class")?.replace("feynman-diagram__label--math-pending", "").trim(),
+                idPrefix: `feynman-math-${mathLabelSerial += 1}`
+              });
+              group.replaceWith(replacement);
+            } catch {
+              group.removeAttribute("data-math-tex");
+              group.classList.remove("feynman-diagram__label--math-pending");
+            }
+          }));
         }
         function foreignObjectX(x, width, anchor) {
           if (anchor === "start") {
@@ -101144,44 +102494,6 @@
             return x - width;
           }
           return x - width / 2;
-        }
-        function fitMathJaxLabelForeignObjects(root) {
-          if (!root?.querySelectorAll) {
-            return;
-          }
-          root.querySelectorAll("[data-mathjax-label]").forEach((group) => {
-            const div = group.querySelector(".feynman-diagram__label-math");
-            const foreignObject = group.querySelector("foreignObject");
-            if (!div || !foreignObject) {
-              return;
-            }
-            const rendered = div.querySelector("mjx-container") || div;
-            const width = Math.ceil(
-              (rendered.offsetWidth || Number(group.dataset.labelEstWidth) || 56) + 6
-            );
-            const height = Math.ceil(
-              (rendered.offsetHeight || Number(group.dataset.labelEstHeight) || 40) + 4
-            );
-            const x = Number(group.dataset.labelX);
-            const y = Number(group.dataset.labelY);
-            const anchor = group.dataset.labelAnchor || "middle";
-            foreignObject.setAttribute("width", width);
-            foreignObject.setAttribute("height", height);
-            foreignObject.setAttribute("x", foreignObjectX(x, width, anchor));
-            foreignObject.setAttribute("y", y - height / 2);
-          });
-        }
-        function typesetFeynmanMathLabels(root) {
-          if (!mathJaxAvailable()) {
-            return Promise.resolve();
-          }
-          const labels = root?.querySelectorAll ? [...root.querySelectorAll(".feynman-diagram__label-math")] : [];
-          if (!labels.length) {
-            return Promise.resolve();
-          }
-          return window.MathJax.typesetPromise(labels).then(() => {
-            fitMathJaxLabelForeignObjects(root);
-          });
         }
         function appendLabelMarkup(label, source) {
           const segments = parseLabelMarkup(source);
@@ -101202,217 +102514,6 @@
             label.appendChild(tspan);
           });
         }
-        function labelSegmentText(segment) {
-          if (segment.kind === "normal") {
-            return segment.text;
-          }
-          return segment.text.replace(/-/g, "−");
-        }
-        function parseLabelMarkup(source) {
-          const input = String(source ?? "");
-          const segments = [];
-          let buffer = "";
-          let index = 0;
-          const flush = () => {
-            if (!buffer) {
-              return;
-            }
-            pushLabelSegment(segments, "normal", buffer);
-            buffer = "";
-          };
-          while (index < input.length) {
-            const character = input[index];
-            if (character === "\\") {
-              const overline = readOverlineCommand(input, index);
-              if (overline) {
-                flush();
-                pushLabelSegment(segments, "normal", labelMarkupToText(overline.text), { overline: true });
-                index = overline.next;
-                continue;
-              }
-              const command = readLatexCommand(input, index);
-              buffer += command.text;
-              index = command.next;
-              continue;
-            }
-            if (UNICODE_SUPERSCRIPTS.has(character)) {
-              flush();
-              pushLabelSegment(segments, "sup", UNICODE_SUPERSCRIPTS.get(character));
-              index += 1;
-              continue;
-            }
-            if (UNICODE_SUBSCRIPTS.has(character)) {
-              flush();
-              pushLabelSegment(segments, "sub", UNICODE_SUBSCRIPTS.get(character));
-              index += 1;
-              continue;
-            }
-            if (character === "^" || character === "_") {
-              const script = readScriptArgument(input, index + 1);
-              if (!script) {
-                buffer += character;
-                index += 1;
-                continue;
-              }
-              flush();
-              pushLabelSegment(
-                segments,
-                character === "^" ? "sup" : "sub",
-                labelMarkupToText(script.text)
-              );
-              index = script.next;
-              continue;
-            }
-            buffer += character;
-            index += 1;
-          }
-          flush();
-          return segments;
-        }
-        function labelMarkupToText(source) {
-          return parseLabelMarkup(source).map((segment) => segment.text).join("");
-        }
-        function pushLabelSegment(segments, kind, text, options = {}) {
-          if (!text) {
-            return;
-          }
-          const previous = segments[segments.length - 1];
-          if (previous && previous.kind === kind && Boolean(previous.overline) === Boolean(options.overline)) {
-            previous.text += text;
-            return;
-          }
-          segments.push({ kind, text, ...options });
-        }
-        function readOverlineCommand(input, start) {
-          if (!input.startsWith("\\overline", start) && !input.startsWith("\\bar", start)) {
-            return null;
-          }
-          const commandLength = input.startsWith("\\overline", start) ? "\\overline".length : "\\bar".length;
-          const argument = readScriptArgument(input, start + commandLength);
-          if (!argument) {
-            return null;
-          }
-          return argument;
-        }
-        function readLatexCommand(input, start) {
-          let index = start + 1;
-          if (index >= input.length) {
-            return { text: "\\", next: index };
-          }
-          if (/[A-Za-z]/.test(input[index])) {
-            while (index < input.length && /[A-Za-z]/.test(input[index])) {
-              index += 1;
-            }
-            const command = input.slice(start + 1, index);
-            return {
-              text: LATEX_SYMBOLS.get(command) ?? `\\${command}`,
-              next: index
-            };
-          }
-          const escaped = LATEX_ESCAPES.get(input[index]);
-          return {
-            text: escaped ?? input[index],
-            next: index + 1
-          };
-        }
-        function readScriptArgument(input, start) {
-          if (start >= input.length) {
-            return null;
-          }
-          if (input[start] === "{") {
-            return readBracedScriptArgument(input, start);
-          }
-          if (input[start] === "\\") {
-            const command = readLatexCommand(input, start);
-            return {
-              text: command.text,
-              next: command.next
-            };
-          }
-          return {
-            text: input[start],
-            next: start + 1
-          };
-        }
-        function rawScriptArgument(input, start) {
-          if (start >= input.length) {
-            return null;
-          }
-          if (input[start] === "{") {
-            return readRawBracedScriptArgument(input, start);
-          }
-          if (input[start] === "\\") {
-            const command = readLatexCommand(input, start);
-            return {
-              text: input.slice(start, command.next),
-              next: command.next
-            };
-          }
-          return {
-            text: input[start],
-            next: start + 1
-          };
-        }
-        function readRawBracedScriptArgument(input, start) {
-          let depth = 0;
-          let text = "";
-          for (let index = start; index < input.length; index += 1) {
-            const character = input[index];
-            if (character === "{") {
-              depth += 1;
-              if (depth > 1) {
-                text += character;
-              }
-              continue;
-            }
-            if (character === "}") {
-              depth -= 1;
-              if (depth === 0) {
-                return {
-                  text,
-                  next: index + 1
-                };
-              }
-              text += character;
-              continue;
-            }
-            text += character;
-          }
-          return null;
-        }
-        function readBracedScriptArgument(input, start) {
-          let depth = 0;
-          let text = "";
-          for (let index = start; index < input.length; index += 1) {
-            const character = input[index];
-            if (character === "\\") {
-              const command = readLatexCommand(input, index);
-              text += command.text;
-              index = command.next - 1;
-              continue;
-            }
-            if (character === "{") {
-              depth += 1;
-              if (depth > 1) {
-                text += character;
-              }
-              continue;
-            }
-            if (character === "}") {
-              depth -= 1;
-              if (depth === 0) {
-                return {
-                  text,
-                  next: index + 1
-                };
-              }
-              text += character;
-              continue;
-            }
-            text += character;
-          }
-          return null;
-        }
         function labelOffset2(kind) {
           if (kind === "left" || kind === "incoming") {
             return { x: -VISUAL_DEFAULTS.labelHorizontalOffset, y: 0, anchor: "end" };
@@ -101432,7 +102533,7 @@
           });
           return element;
         }
-        function round(value) {
+        function round2(value) {
           return Math.round(value * 100) / 100;
         }
         function injectStyles() {
@@ -101473,6 +102574,18 @@
 
       .feynman-diagram__edge--ghost {
         stroke-dasharray: 1 7;
+      }
+
+      .feynman-diagram__edge--dashed {
+        stroke-dasharray: 10 7;
+      }
+
+      .feynman-diagram__edge--dashdot {
+        stroke-dasharray: 11 6 1 6;
+      }
+
+      .feynman-diagram__edge--double {
+        stroke-width: ${VISUAL_DEFAULTS.gluonStrokeWidth};
       }
 
       .feynman-diagram__junction-cap {
@@ -101569,17 +102682,12 @@
         font-size: ${VISUAL_DEFAULTS.edgeLabelFontSize}px;
       }
 
-      .feynman-diagram__label-math-fo {
-        overflow: visible;
+      .feynman-diagram__label--fallback {
+        opacity: 0.92;
       }
 
-      .feynman-diagram__label-math {
-        margin: 0;
-        padding: 0;
-      }
-
-      .feynman-diagram__label-math mjx-container {
-        margin: 0 !important;
+      .feynman-diagram__label--mathjax {
+        fill: currentColor;
       }
 
       .feynman-diagram__errors {
@@ -101614,7 +102722,6 @@
             pre.replaceWith(placeholder);
             renderFeynmanElement(code.textContent, renderIndex).then((figure) => {
               placeholder.replaceWith(figure);
-              return typesetFeynmanMathLabels(figure);
             }).catch((error2) => {
               placeholder.replaceWith(renderErrorFigure(error2, renderIndex));
             });
@@ -101644,15 +102751,23 @@
           wavePathForEdge,
           gluonPath,
           gluonPathForEdge,
+          trianglePath,
+          trianglePathForEdge,
+          squarePath,
+          squarePathForEdge,
+          doubleLinePath,
+          doubleLinePathForEdge,
           edgeLabelPosition: edgeLabelPosition2,
           momentumArrowGeometry: momentumArrowGeometry2,
           braceGeometry,
           junctionCapNodes,
           parseLabelMarkup,
           labelNeedsMathJax,
+          mathJaxDisplayFontSize,
+          parseMathJaxSvgLength,
           labelMarkupToText,
           labelSegmentText,
-          typesetFeynmanMathLabels,
+          materializePendingMathLabels,
           visualDefaults: VISUAL_DEFAULTS,
           renderAll
         };

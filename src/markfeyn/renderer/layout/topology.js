@@ -1,6 +1,28 @@
 import { compareStable } from "./model.js";
+import {
+  classifyTopology,
+  confidenceFor,
+  topologyLimitations,
+} from "./topology/classification.js";
+import {
+  analyzeFermionFlow,
+  fermionFlowLimitations,
+} from "./topology/fermion-flow.js";
+import {
+  adjacencyMap,
+  components,
+  graphCentersFor,
+} from "./topology/graph.js";
 
-export function analyzeTopology(semantic) {
+export { adjacencyMap } from "./topology/graph.js";
+
+export class TopologyAnalyzer {
+  constructor(semantic) {
+    this.semantic = semantic;
+  }
+
+  analyze() {
+  const semantic = this.semantic;
   const visibleEdges = semantic.propagators.filter((propagator) => !propagator.metadata.hidden);
   const adjacency = adjacencyMap(semantic.vertices.map((vertex) => vertex.id), visibleEdges);
   const internalEdges = visibleEdges.filter((edge) => (
@@ -34,9 +56,13 @@ export function analyzeTopology(semantic) {
     oneLoop,
     multiLoop
   );
+  const fermionFlow = analyzeFermionFlow(semantic, visibleEdges, detectedTopology);
   const graphCenters = graphCentersFor(adjacency, internalVertices);
   const principalSkeleton = buildPrincipalSkeleton(semantic, loopRegions, biconnected);
-  const limitations = topologyLimitations(semantic, connectedComponents, loopOrder, oneLoop, loopRegions);
+  const limitations = [
+    ...topologyLimitations(semantic, connectedComponents, loopOrder, oneLoop, loopRegions),
+    ...fermionFlowLimitations(fermionFlow),
+  ];
 
   return {
     connectedComponents,
@@ -49,6 +75,7 @@ export function analyzeTopology(semantic) {
     loopOrder,
     detectedTopology,
     multiLoop,
+    fermionFlow,
     loopRegions,
     principalSkeleton,
     confidence: confidenceFor(detectedTopology),
@@ -65,88 +92,18 @@ export function analyzeTopology(semantic) {
     inferredSymmetryGroups: inferSimpleSymmetryGroups(semantic),
     limitations,
   };
+  }
 }
 
-export function adjacencyMap(nodes, edges) {
-  const adjacency = new Map(nodes.map((node) => [node, new Set()]));
-
-  edges.forEach((edge) => {
-    if (edge.source === edge.target) {
-      return;
-    }
-
-    if (!adjacency.has(edge.source)) {
-      adjacency.set(edge.source, new Set());
-    }
-
-    if (!adjacency.has(edge.target)) {
-      adjacency.set(edge.target, new Set());
-    }
-
-    adjacency.get(edge.source).add(edge.target);
-    adjacency.get(edge.target).add(edge.source);
-  });
-
-  return adjacency;
+export function analyzeTopology(semantic) {
+  return new TopologyAnalyzer(semantic).analyze();
 }
-
-function classifyTopology(semantic, visibleEdges, connectedComponents, loopOrder, parallelEdgeGroups, oneLoop, multiLoop) {
-  const incomingCount = semantic.incoming.length;
-  const outgoingCount = semantic.outgoing.length;
-  const externalCount = semantic.externalVertices.length;
-  const internalCount = semantic.internalVertices.length;
-
-  if (loopOrder > 1 && multiLoop?.regions?.length) {
-    return "multiLoop";
-  }
-
-  if (parallelEdgeGroups.some((group) => group.selfEnergyLike)) {
-    return "selfEnergy";
-  }
-
-  if (loopOrder === 1 && oneLoop) {
-    if (oneLoop.type === "tadpole") {
-      return "tadpole";
-    }
-
-    if (oneLoop.type === "triangle") {
-      return "triangleLoop";
-    }
-
-    if (oneLoop.type === "box") {
-      return "boxLoop";
-    }
-
-    if (oneLoop.type === "polygon" || oneLoop.type === "simple") {
-      return "polygonLoop";
-    }
-
-    return "oneLoop";
-  }
-
-  if (incomingCount === 1 && outgoingCount >= 2 && loopOrder === 0) {
-    return "decay";
-  }
-
-  if (incomingCount === 2 && outgoingCount >= 2) {
-    return "scattering";
-  }
-
-  if (isContactInteraction(semantic, visibleEdges)) {
-    return "contactInteraction";
-  }
-
-  if (externalCount === 0 && internalCount > 0 && connectedComponents.length > 0) {
-    return "vacuum";
-  }
-
-  if (loopOrder === 0 && semantic.vertices.length > 0) {
-    return "tree";
-  }
-
-  return "unknown";
-}
-
+// Fermion number must be conserved: a fermion line is a continuous, directed path
+// that only terminates on external legs, so at every internal vertex the number of
+// fermion arrows pointing in equals the number pointing out. A definite imbalance
+// (with no unspecified arrows) means fermion number is not conserved, which marks a
+// custom graph. External fermions are reported separately as the endpoints of those
+// lines.
 function detectTadpoleLoops(semantic, visibleEdges) {
   const internal = new Set(semantic.internalVertices);
 
@@ -360,39 +317,6 @@ function loopTypeRank(type) {
     simple: 3,
   }[type] ?? 4;
 }
-
-function topologyLimitations(semantic, connectedComponents, loopOrder, oneLoop, loopRegions) {
-  const limitations = [];
-
-  if (loopOrder > 1 && !loopRegions.length) {
-    limitations.push({
-      code: "general-multiloop-layout-not-implemented",
-      message: "General multiloop optimization is not implemented; layout falls back to local and ELK heuristics.",
-    });
-  } else if (loopOrder > 2) {
-    limitations.push({
-      code: "higher-order-multiloop-heuristic",
-      message: "Higher-order multiloop diagrams use bounded region heuristics rather than a complete multiloop optimizer.",
-    });
-  }
-
-  if (semantic.externalVertices.length === 0 && loopOrder === 1 && oneLoop) {
-    limitations.push({
-      code: "vacuum-one-loop-centered-only",
-      message: "Vacuum one-loop diagrams use deterministic centered polygon placement, not a full vacuum graph optimizer.",
-    });
-  }
-
-  if (semantic.externalVertices.length === 0 && connectedComponents.length > 1 && loopOrder > 1) {
-    limitations.push({
-      code: "disconnected-vacuum-multiloop-not-solved",
-      message: "Disconnected multiloop vacuum diagrams are detected but not treated as solved by the one-loop candidate layout.",
-    });
-  }
-
-  return limitations;
-}
-
 function analyzeBiconnectedComponents(adjacency, edges) {
   const edgeIdsByPair = edgeIdsByPairMap(edges);
   const discovery = new Map();
@@ -636,50 +560,6 @@ function detectParallelEdgeGroups(semantic, visibleEdges) {
     }))
     .sort((left, right) => compareStable(left.id, right.id));
 }
-
-function isContactInteraction(semantic, visibleEdges) {
-  if (semantic.internalVertices.length !== 1 || semantic.externalVertices.length < 3) {
-    return false;
-  }
-
-  const center = semantic.internalVertices[0];
-
-  return visibleEdges.every((edge) => edge.source === center || edge.target === center);
-}
-
-function components(adjacency) {
-  const visited = new Set();
-  const result = [];
-
-  Array.from(adjacency.keys()).sort(compareStable).forEach((node) => {
-    if (visited.has(node)) {
-      return;
-    }
-
-    const component = [];
-    const stack = [node];
-    visited.add(node);
-
-    while (stack.length) {
-      const current = stack.pop();
-      component.push(current);
-
-      Array.from(adjacency.get(current) || [])
-        .sort(compareStable)
-        .forEach((neighbor) => {
-          if (!visited.has(neighbor)) {
-            visited.add(neighbor);
-            stack.push(neighbor);
-          }
-        });
-    }
-
-    result.push(component.sort(compareStable));
-  });
-
-  return result;
-}
-
 function edgeIdsByPairMap(edges) {
   const map = new Map();
 
@@ -800,60 +680,10 @@ function firstInternalNeighbor(semantic, node) {
 
   return edge.source === node ? edge.target : edge.source;
 }
-
-function graphCentersFor(adjacency, preferredNodes) {
-  const candidates = (preferredNodes.length ? preferredNodes : Array.from(adjacency.keys())).sort(compareStable);
-  let best = [];
-  let bestEccentricity = Infinity;
-
-  candidates.forEach((node) => {
-    const distances = breadthFirstDistances(adjacency, node);
-    const eccentricity = Math.max(...Array.from(distances.values()));
-
-    if (eccentricity < bestEccentricity) {
-      best = [node];
-      bestEccentricity = eccentricity;
-    } else if (eccentricity === bestEccentricity) {
-      best.push(node);
-    }
-  });
-
-  return best.length ? best.sort(compareStable) : [];
-}
-
-function breadthFirstDistances(adjacency, start) {
-  const distances = new Map([[start, 0]]);
-  const queue = [start];
-
-  while (queue.length) {
-    const current = queue.shift();
-    const nextDistance = distances.get(current) + 1;
-
-    Array.from(adjacency.get(current) || [])
-      .sort(compareStable)
-      .forEach((neighbor) => {
-        if (!distances.has(neighbor)) {
-          distances.set(neighbor, nextDistance);
-          queue.push(neighbor);
-        }
-      });
-  }
-
-  return distances;
-}
-
 function inferSimpleSymmetryGroups(semantic) {
   if (semantic.unclassified.length >= 2) {
     return [semantic.unclassified.slice().sort(compareStable)];
   }
 
   return [];
-}
-
-function confidenceFor(topology) {
-  if (topology === "unknown") {
-    return 0.2;
-  }
-
-  return 0.85;
 }

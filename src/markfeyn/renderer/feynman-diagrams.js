@@ -1,12 +1,66 @@
-import ELK from "elkjs/lib/elk.bundled.js";
+import { createLayoutEngine } from "./layout-engine.js";
 import { buildSemanticElkGraph } from "./layout/elk-compiler.js";
+import { layoutWithElk } from "./layout/elk-runner.js";
 import { compareExternalOrdering } from "./layout/external-order.js";
-import { applyIncrementalStability } from "./layout/incremental.js";
 import { selectLoopCandidateLayout } from "./layout/loop-candidates.js";
 import { selectMultiloopLayout } from "./layout/multiloop.js";
+import { parseBrace } from "./parser/braces.js";
 import {
-  attachLayoutAnalysis,
-  prepareFeynmanLayout,
+  BLOB_VERTEX_DEFAULT_RADII,
+  DEFAULT_DIAGRAM_OPTIONS,
+  SIZE_PRESETS,
+} from "./parser/constants.js";
+import {
+  matchEdgeCommand,
+  parseEdges,
+} from "./parser/edges.js";
+import {
+  parseAlignmentCommand,
+  parseExplicitTikzOrientationCommand,
+  parseManualPosition,
+  parseTikzOrientationCommand,
+} from "./parser/directives.js";
+import { FeynmanParser } from "./parser/feynman-parser.js";
+import { parseLabels } from "./parser/labels.js";
+import { parseVertices } from "./parser/vertices.js";
+import {
+  isNodeIdentifier,
+  isTikzOrientationCommand,
+  normalizeLayoutName,
+  normalizeOrientation,
+  normalizeQuality,
+  normalizeTikzOrientation,
+  parseDiagramOptions,
+  setDiagramOption,
+} from "./parser/options.js";
+import {
+  doubleLinePath,
+  doubleLinePathForEdge,
+  edgeGeometry,
+  edgePath,
+  geometryToPath,
+  geometryPoint,
+  geometrySample,
+  gluonPath,
+  gluonPathForEdge,
+  lineVector,
+  normalizeVector,
+  pointsToPath,
+  projectPoint,
+  squarePath,
+  squarePathForEdge,
+  trianglePath,
+  trianglePathForEdge,
+  wavePath,
+  wavePathForEdge,
+} from "./render/paths.js";
+import {
+  labelMarkupToText,
+  labelNeedsMathJax,
+  labelSegmentText,
+  parseLabelMarkup,
+} from "./render/label-markup.js";
+import {
   shouldUseSymmetricContactLayout,
   shouldUseSymmetricTreeLayout,
   shouldUseSymmetricUnclassifiedLayout,
@@ -16,41 +70,6 @@ import {
   "use strict";
 
   const SVG_NS = "http://www.w3.org/2000/svg";
-  const EDGE_DEFINITIONS = new Map([
-    ["plain", { type: "plain" }],
-    ["line", { type: "plain" }],
-    ["propagator", { type: "plain" }],
-    ["fermion", { type: "fermion", arrow: "forward" }],
-    ["anti fermion", { type: "fermion", arrow: "reverse" }],
-    ["anti-fermion", { type: "fermion", arrow: "reverse" }],
-    ["antifermion", { type: "fermion", arrow: "reverse" }],
-    ["photon", { type: "photon" }],
-    ["boson", { type: "photon" }],
-    ["charged boson", { type: "photon", arrow: "forward" }],
-    ["charged-boson", { type: "photon", arrow: "forward" }],
-    ["anti charged boson", { type: "photon", arrow: "reverse" }],
-    ["anti-charged-boson", { type: "photon", arrow: "reverse" }],
-    ["gluon", { type: "gluon" }],
-    ["scalar", { type: "scalar" }],
-    ["charged scalar", { type: "scalar", arrow: "forward" }],
-    ["charged-scalar", { type: "scalar", arrow: "forward" }],
-    ["anti charged scalar", { type: "scalar", arrow: "reverse" }],
-    ["anti-charged-scalar", { type: "scalar", arrow: "reverse" }],
-    ["ghost", { type: "ghost" }],
-    ["invisible", { type: "invisible", hidden: true }],
-    ["hidden", { type: "invisible", hidden: true }],
-  ]);
-  const SIZE_PRESETS = {
-    small: { width: 420, minHeight: 280, marginX: 70, marginY: 46, externalGap: 82 },
-    medium: { width: 520, minHeight: 330, marginX: 82, marginY: 52, externalGap: 100 },
-    large: { width: 760, minHeight: 480, marginX: 110, marginY: 70, externalGap: 140 },
-  };
-  const DEFAULT_DIAGRAM_OPTIONS = {
-    layout: "spring",
-    orientation: "horizontal",
-    size: "medium",
-  };
-  const GLUON_ENDPOINT_RAMP_LOOPS = 0.62;
   const GLUON_JUNCTION_CAP_RADIUS = 1.7;
   const VISUAL_DEFAULTS = Object.freeze({
     edgeStrokeWidth: 2.6,
@@ -60,6 +79,7 @@ import {
     vertexMarkStrokeWidth: 2.4,
     labelFontSize: 32,
     edgeLabelFontSize: 26,
+    mathLabelFontScale: 0.72,
     labelFontFamily: "\"Latin Modern Math\", \"Latin Modern Roman\", \"Computer Modern Serif\", \"CMU Serif\", \"STIX Two Text\", \"Times New Roman\", serif",
     labelFontStyle: "italic",
     scriptFontSizePercent: 82,
@@ -104,64 +124,6 @@ import {
     },
     extender: "M5.021171 .169365C5.021171-.089664 5.011208-.099626 4.742217-.099626H4.104608C3.835616-.099626 3.825654-.089664 3.825654 .169365V2.819427C3.825654 3.078456 3.835616 3.088418 4.104608 3.088418H4.742217C5.011208 3.088418 5.021171 3.078456 5.021171 2.819427V.169365Z",
   });
-  const VERTEX_SHAPES = new Map([
-    ["dot", "dot"],
-    ["square dot", "square-dot"],
-    ["square-dot", "square-dot"],
-    ["square", "square-dot"],
-    ["empty dot", "empty-dot"],
-    ["empty-dot", "empty-dot"],
-    ["crossed dot", "crossed-dot"],
-    ["crossed-dot", "crossed-dot"],
-    ["cross dot", "crossed-dot"],
-    ["cross-dot", "crossed-dot"],
-    ["cross", "cross"],
-    ["blob", "blob"],
-    ["disk", "disk"],
-    ["large blob", "disk"],
-    ["large-blob", "disk"],
-  ]);
-  const BLOB_VERTEX_DEFAULT_RADII = Object.freeze({
-    blob: 18,
-    disk: 44,
-  });
-  const BLOB_VERTEX_SIZE_PRESETS = new Map([
-    ["tiny", 8],
-    ["small", 14],
-    ["medium", BLOB_VERTEX_DEFAULT_RADII.blob],
-    ["large", 28],
-    ["huge", BLOB_VERTEX_DEFAULT_RADII.disk],
-    ["disk", BLOB_VERTEX_DEFAULT_RADII.disk],
-  ]);
-  const BLOB_HATCHES = new Map([
-    ["hatched", "diagonal"],
-    ["hatch", "diagonal"],
-    ["diagonal", "diagonal"],
-    ["diagonal right", "diagonal"],
-    ["forward diagonal", "diagonal"],
-    ["slash", "diagonal"],
-    ["north east", "diagonal"],
-    ["north east lines", "diagonal"],
-    ["ne", "diagonal"],
-    ["diagonal reverse", "diagonal-reverse"],
-    ["diagonal left", "diagonal-reverse"],
-    ["reverse diagonal", "diagonal-reverse"],
-    ["backward diagonal", "diagonal-reverse"],
-    ["backslash", "diagonal-reverse"],
-    ["north west", "diagonal-reverse"],
-    ["north west lines", "diagonal-reverse"],
-    ["nw", "diagonal-reverse"],
-    ["cross", "cross"],
-    ["cross hatch", "cross"],
-    ["crosshatch", "cross"],
-    ["cross hatched", "cross"],
-    ["horizontal", "horizontal"],
-    ["horizontal lines", "horizontal"],
-    ["vertical", "vertical"],
-    ["vertical lines", "vertical"],
-    ["grid", "grid"],
-    ["grid lines", "grid"],
-  ]);
   const BLOB_HATCH_PATTERNS = Object.freeze({
     diagonal: {
       size: 8,
@@ -188,102 +150,11 @@ import {
       paths: ["M 0 2 L 8 2", "M 2 0 L 2 8"],
     },
   });
-  const LATEX_SYMBOLS = new Map(Object.entries({
-    alpha: "\u03b1",
-    beta: "\u03b2",
-    gamma: "\u03b3",
-    delta: "\u03b4",
-    epsilon: "\u03b5",
-    varepsilon: "\u03f5",
-    zeta: "\u03b6",
-    eta: "\u03b7",
-    theta: "\u03b8",
-    vartheta: "\u03d1",
-    iota: "\u03b9",
-    kappa: "\u03ba",
-    lambda: "\u03bb",
-    mu: "\u03bc",
-    nu: "\u03bd",
-    xi: "\u03be",
-    pi: "\u03c0",
-    rho: "\u03c1",
-    sigma: "\u03c3",
-    tau: "\u03c4",
-    upsilon: "\u03c5",
-    phi: "\u03c6",
-    varphi: "\u03d5",
-    chi: "\u03c7",
-    psi: "\u03c8",
-    omega: "\u03c9",
-    Gamma: "\u0393",
-    Delta: "\u0394",
-    Theta: "\u0398",
-    Lambda: "\u039b",
-    Xi: "\u039e",
-    Pi: "\u03a0",
-    Sigma: "\u03a3",
-    Upsilon: "\u03a5",
-    Phi: "\u03a6",
-    Psi: "\u03a8",
-    Omega: "\u03a9",
-    ell: "\u2113",
-    hbar: "\u210f",
-    partial: "\u2202",
-    nabla: "\u2207",
-    infty: "\u221e",
-    pm: "\u00b1",
-    mp: "\u2213",
-    times: "\u00d7",
-    cdot: "\u22c5",
-    to: "\u2192",
-    rightarrow: "\u2192",
-    leftarrow: "\u2190",
-    le: "\u2264",
-    ge: "\u2265",
-    neq: "\u2260",
-    prime: "\u2032",
-  }));
-  const LATEX_ESCAPES = new Map([
-    ["\\", "\\"],
-    ["^", "^"],
-    ["_", "_"],
-    ["{", "{"],
-    ["}", "}"],
-  ]);
-  const UNICODE_SUPERSCRIPTS = new Map([
-    ["⁺", "+"],
-    ["⁻", "-"],
-    ["⁰", "0"],
-    ["¹", "1"],
-    ["²", "2"],
-    ["³", "3"],
-    ["⁴", "4"],
-    ["⁵", "5"],
-    ["⁶", "6"],
-    ["⁷", "7"],
-    ["⁸", "8"],
-    ["⁹", "9"],
-  ]);
-  const UNICODE_SUBSCRIPTS = new Map([
-    ["₊", "+"],
-    ["₋", "-"],
-    ["₀", "0"],
-    ["₁", "1"],
-    ["₂", "2"],
-    ["₃", "3"],
-    ["₄", "4"],
-    ["₅", "5"],
-    ["₆", "6"],
-    ["₇", "7"],
-    ["₈", "8"],
-    ["₉", "9"],
-  ]);
-  const MATHJAX_COMPLEX_COMMANDS = /\\(frac|sqrt|sum|prod|int|oint|text|mathbf|mathrm|mathcal|mathbb|hat|tilde|vec|begin)\b/;
-  const XHTML_NS = "http://www.w3.org/1999/xhtml";
   let diagramSerial = 0;
+  let mathLabelSerial = 0;
 
-  function parseFeynman(source) {
-    const diagram = {
+  function createEmptyFeynmanDiagram() {
+    return {
       incoming: [],
       outgoing: [],
       edges: [],
@@ -293,1101 +164,43 @@ import {
       vertices: {},
       options: { ...DEFAULT_DIAGRAM_OPTIONS },
       errors: [],
-    };
-
-    String(source || "")
-      .split(/\r?\n/)
-      .forEach((rawLine, index) => {
-        const lineNumber = index + 1;
-        const line = rawLine.trim();
-
-        if (!line || line.startsWith("#")) {
-          return;
-        }
-
-        const parts = line.split(/\s+/);
-        const command = parts[0];
-        const rest = parts.slice(1);
-
-        if (command === "incoming") {
-          diagram.incoming.push(...rest);
-          return;
-        }
-
-        if (command === "outgoing") {
-          diagram.outgoing.push(...rest);
-          return;
-        }
-
-        if (command === "layout") {
-          setDiagramOption(diagram, "layout", rest.join(" "), lineNumber);
-          return;
-        }
-
-        if (command === "orientation" || command === "orient") {
-          setDiagramOption(diagram, "orientation", rest.join(" "), lineNumber);
-          return;
-        }
-
-        if (isTikzOrientationCommand(command)) {
-          parseTikzOrientationCommand(command, rest, diagram, lineNumber);
-          return;
-        }
-
-        if (command === "size") {
-          setDiagramOption(diagram, "size", rest[0], lineNumber);
-          return;
-        }
-
-        if (command === "options" || command === "option") {
-          parseDiagramOptions(rest, diagram, lineNumber);
-          return;
-        }
-
-        if (command === "position" || command === "at") {
-          parseManualPosition(rest, diagram, lineNumber);
-          return;
-        }
-
-        if (command === "label") {
-          parseLabels(line.slice(command.length).trim(), diagram.labels, diagram.errors, lineNumber);
-          return;
-        }
-
-        if (command === "brace") {
-          parseBrace(line.slice(command.length).trim(), diagram, lineNumber);
-          return;
-        }
-
-        if (command === "vertex" || command === "vertices") {
-          parseVertices(line.slice(command.length).trim(), diagram.vertices, diagram.errors, lineNumber);
-          return;
-        }
-
-        const edgeCommand = matchEdgeCommand(parts);
-
-        if (edgeCommand) {
-          parseEdges(
-            line.slice(edgeCommand.words.join(" ").length).trim(),
-            edgeCommand.name,
-            edgeCommand.definition,
-            diagram,
-            lineNumber
-          );
-          return;
-        }
-
-        diagram.errors.push(`Line ${lineNumber}: unknown command "${command}"`);
-      });
-
-    return diagram;
-  }
-
-  function matchEdgeCommand(parts) {
-    const maxWords = Math.min(3, parts.length);
-
-    for (let wordCount = maxWords; wordCount > 0; wordCount -= 1) {
-      const name = parts.slice(0, wordCount).join(" ");
-      const definition = EDGE_DEFINITIONS.get(name);
-
-      if (definition) {
-        return {
-          name,
-          words: parts.slice(0, wordCount),
-          definition,
-        };
-      }
-    }
-
-    return null;
-  }
-
-  function parseEdges(source, command, definition, diagram, lineNumber) {
-    const specs = splitEdgeSpecs(source);
-
-    if (!specs.length) {
-      diagram.errors.push(`Line ${lineNumber}: ${command} requires at least one edge`);
-      return;
-    }
-
-    specs.forEach((spec) => {
-      const edge = parseEdgeSpec(spec, command, definition, diagram.errors, lineNumber);
-
-      if (edge) {
-        diagram.edges.push(edge);
-      }
-    });
-  }
-
-  function parseEdgeSpec(spec, command, definition, errors, lineNumber) {
-    const match = spec.match(/^([A-Za-z0-9_.-]+)->([A-Za-z0-9_.-]+)(.*)$/);
-
-    if (!match) {
-      errors.push(`Line ${lineNumber}: invalid ${command} edge "${spec}"`);
-      return null;
-    }
-
-    const optionSource = parseEdgeOptionSource(match[3], spec, command, errors, lineNumber);
-
-    if (optionSource === null) {
-      return null;
-    }
-
-    return {
-      ...definition,
-      from: match[1],
-      to: match[2],
-      ...parseEdgeOptions(optionSource),
+      warnings: [],
     };
   }
 
-  function parseEdgeOptionSource(rest, spec, command, errors, lineNumber) {
-    const source = String(rest || "").trim();
-
-    if (!source) {
-      return "";
-    }
-
-    if (!source.startsWith("[") || !source.endsWith("]")) {
-      errors.push(`Line ${lineNumber}: invalid ${command} edge "${spec}"`);
-      return null;
-    }
-
-    return source.slice(1, -1);
+  function parseFeynman(source) {
+    return new FeynmanParser(source, {
+      createEmptyFeynmanDiagram,
+      matchEdgeCommand,
+      parseAlignmentCommand,
+      parseBrace,
+      parseDiagramOptions,
+      parseEdges,
+      parseExplicitTikzOrientationCommand,
+      parseLabels,
+      parseManualPosition,
+      parseTikzOrientationCommand,
+      parseVertices,
+      setDiagramOption,
+      isTikzOrientationCommand,
+    }).parse();
   }
 
-  function splitEdgeSpecs(source) {
-    const specs = [];
-    let buffer = "";
-    let bracketDepth = 0;
-    let quote = null;
-
-    for (const character of String(source || "")) {
-      if (quote) {
-        buffer += character;
-
-        if (character === quote) {
-          quote = null;
-        }
-
-        continue;
-      }
-
-      if (character === "\"" || character === "'") {
-        quote = character;
-        buffer += character;
-        continue;
-      }
-
-      if (character === "[") {
-        bracketDepth += 1;
-        buffer += character;
-        continue;
-      }
-
-      if (character === "]") {
-        bracketDepth = Math.max(0, bracketDepth - 1);
-        buffer += character;
-        continue;
-      }
-
-      if (/\s/.test(character) && bracketDepth === 0) {
-        if (buffer.trim()) {
-          specs.push(buffer.trim());
-          buffer = "";
-        }
-
-        continue;
-      }
-
-      buffer += character;
-    }
-
-    if (buffer.trim()) {
-      specs.push(buffer.trim());
-    }
-
-    return specs;
-  }
-
-  function parseEdgeOptions(source) {
-    const options = {};
-
-    splitOptionList(source)
-      .map((item) => item.trim())
-      .filter(Boolean)
-      .forEach((item) => {
-        const parsed = parseOptionItem(item);
-        const name = normalizeOptionName(parsed.name);
-
-        if (
-          name === "hidden"
-          || name === "invisible"
-          || (name === "draw" && parsed.value === "none")
-        ) {
-          options.hidden = true;
-        }
-
-        if (name === "reverse" || name === "anti") {
-          options.arrow = "reverse";
-        }
-
-        if (name === "forward") {
-          options.arrow = "forward";
-        }
-
-        applyCurveOption(options, name, parsed.value);
-
-        if (name === "out") {
-          const outAngle = Number(parsed.value);
-
-          if (Number.isFinite(outAngle)) {
-            options.outAngle = outAngle;
-          }
-        }
-
-        if (name === "in") {
-          const inAngle = Number(parsed.value);
-
-          if (Number.isFinite(inAngle)) {
-            options.inAngle = inAngle;
-          }
-        }
-
-        if (name === "looseness") {
-          const looseness = Number(parsed.value);
-
-          if (Number.isFinite(looseness) && looseness > 0) {
-            options.looseness = looseness;
-          }
-        }
-
-        if (name === "relative") {
-          options.relativeAngles = parsed.value !== "false";
-        }
-
-        if (name === "edge label" || name === "label") {
-          options.label = cleanLabelValue(parsed.value);
-          options.labelSide = "left";
-        }
-
-        if (name === "edge label'" || name === "label'") {
-          options.label = cleanLabelValue(parsed.value);
-          options.labelSide = "right";
-        }
-
-        if (name === "momentum" || name === "reversed momentum" || name === "rmomentum") {
-          const momentum = parseMomentumValue(parsed.value);
-
-          options.label = momentum.label;
-          options.labelSide = "left";
-          options.labelPlacement = "momentum";
-          options.momentumDirection = name === "momentum" ? "forward" : "reverse";
-          options.momentum = momentum.options;
-        }
-
-        if (name === "momentum'" || name === "reversed momentum'" || name === "rmomentum'") {
-          const momentum = parseMomentumValue(parsed.value);
-
-          options.label = momentum.label;
-          options.labelSide = "right";
-          options.labelPlacement = "momentum-prime";
-          options.momentumDirection = name === "momentum'" ? "forward" : "reverse";
-          options.momentum = momentum.options;
-        }
-      });
-
-    return options;
-  }
-
-  function parseMomentumValue(value) {
-    let text = unwrapLabelValue(value);
-    const options = {};
-    const optionMatch = text.match(/^\[([^\]]*)\]\s*/);
-
-    if (optionMatch) {
-      Object.assign(options, parseMomentumOptions(optionMatch[1]));
-      text = text.slice(optionMatch[0].length).trim();
-    }
-
-    return {
-      label: cleanLabelValue(text),
-      options,
-    };
-  }
-
-  function unwrapLabelValue(value) {
-    let text = String(value || "").trim();
-
-    if (
-      (text.startsWith("{") && text.endsWith("}"))
-      || (text.startsWith("\"") && text.endsWith("\""))
-      || (text.startsWith("'") && text.endsWith("'"))
-    ) {
-      text = text.slice(1, -1).trim();
-    }
-
-    return text;
-  }
-
-  function parseMomentumOptions(source) {
-    const options = {};
-
-    splitOptionList(source)
-      .map((item) => item.trim())
-      .filter(Boolean)
-      .forEach((item) => {
-        const parsed = parseOptionItem(item);
-        const name = normalizeOptionName(parsed.name);
-
-        if (name === "arrow distance") {
-          const distance = parseDistanceValue(parsed.value);
-
-          if (Number.isFinite(distance) && distance >= 0) {
-            options.arrowDistance = distance;
-          }
-        }
-
-        if (name === "label distance") {
-          const distance = parseDistanceValue(parsed.value);
-
-          if (Number.isFinite(distance) && distance >= 0) {
-            options.labelDistance = distance;
-          }
-        }
-
-        if (name === "arrow shorten") {
-          const shorten = parseFractionValue(parsed.value);
-
-          if (Number.isFinite(shorten)) {
-            options.arrowShorten = clamp(shorten, 0, 0.45);
-          }
-        }
-      });
-
-    return options;
-  }
-
-  function parseDistanceValue(value) {
-    const match = String(value || "").trim().match(/^(-?\d+(?:\.\d+)?)(px|pt|mm|cm|em)?$/i);
-
-    if (!match) {
-      return NaN;
-    }
-
-    const number = Number(match[1]);
-    const unit = (match[2] || "px").toLowerCase();
-    const scale = {
-      px: 1,
-      pt: 4 / 3,
-      mm: 96 / 25.4,
-      cm: 96 / 2.54,
-      em: 16,
-    }[unit] ?? 1;
-
-    return number * scale;
-  }
-
-  function parseFractionValue(value) {
-    const text = String(value || "").trim();
-
-    if (text.endsWith("%")) {
-      return Number(text.slice(0, -1)) / 100;
-    }
-
-    return Number(text);
-  }
-
-  function splitOptionList(source) {
-    const items = [];
-    let buffer = "";
-    let braceDepth = 0;
-    let bracketDepth = 0;
-    let quote = null;
-
-    for (const character of String(source || "")) {
-      if (quote) {
-        buffer += character;
-
-        if (character === quote) {
-          quote = null;
-        }
-
-        continue;
-      }
-
-      if (character === "\"") {
-        quote = character;
-        buffer += character;
-        continue;
-      }
-
-      if (character === "{") {
-        braceDepth += 1;
-        buffer += character;
-        continue;
-      }
-
-      if (character === "}") {
-        braceDepth = Math.max(0, braceDepth - 1);
-        buffer += character;
-        continue;
-      }
-
-      if (character === "[") {
-        bracketDepth += 1;
-        buffer += character;
-        continue;
-      }
-
-      if (character === "]") {
-        bracketDepth = Math.max(0, bracketDepth - 1);
-        buffer += character;
-        continue;
-      }
-
-      if (character === "," && braceDepth === 0 && bracketDepth === 0) {
-        items.push(buffer);
-        buffer = "";
-        continue;
-      }
-
-      buffer += character;
-    }
-
-    if (buffer) {
-      items.push(buffer);
-    }
-
-    return items;
-  }
-
-  function parseOptionItem(item) {
-    const separator = item.indexOf("=");
-
-    if (separator === -1) {
-      return {
-        name: item.trim(),
-        value: "",
-      };
-    }
-
-    return {
-      name: item.slice(0, separator).trim(),
-      value: item.slice(separator + 1).trim(),
-    };
-  }
-
-  function normalizeOptionName(value) {
-    return String(value || "")
-      .trim()
-      .toLowerCase()
-      .replace(/[_-]+/g, " ")
-      .replace(/\s+/g, " ");
-  }
-
-  function applyCurveOption(options, name, value) {
-    const normalizedValue = String(value || "").trim();
-
-    if (name === "half left") {
-      options.curve = { side: "left", amount: 2 / 3, shape: "semicircle" };
-      return;
-    }
-
-    if (name === "half right") {
-      options.curve = { side: "right", amount: 2 / 3, shape: "semicircle" };
-      return;
-    }
-
-    if (name === "quarter left") {
-      options.curve = { side: "left", amount: 0.28 };
-      return;
-    }
-
-    if (name === "quarter right") {
-      options.curve = { side: "right", amount: 0.28 };
-      return;
-    }
-
-    if (name === "bend left") {
-      options.curve = {
-        side: "left",
-        amount: bendAmountFromValue(normalizedValue),
-      };
-      return;
-    }
-
-    if (name === "bend right") {
-      options.curve = {
-        side: "right",
-        amount: bendAmountFromValue(normalizedValue),
-      };
-    }
-  }
-
-  function bendAmountFromValue(value) {
-    const angle = Number(value);
-
-    if (!Number.isFinite(angle) || angle <= 0) {
-      return 0.35;
-    }
-
-    return clamp(angle / 90, 0.12, 0.8);
-  }
-
-  function cleanLabelValue(value) {
-    let text = String(value || "").trim();
-
-    if (
-      (text.startsWith("{") && text.endsWith("}"))
-      || (text.startsWith("\"") && text.endsWith("\""))
-      || (text.startsWith("'") && text.endsWith("'"))
-    ) {
-      text = text.slice(1, -1).trim();
-    }
-
-    text = text.replace(/^\[[^\]]*\]\s*/, "");
-
-    if (text.startsWith("\\(") && text.endsWith("\\)")) {
-      text = text.slice(2, -2).trim();
-    }
-
-    return text;
-  }
-
-  function parseDiagramOptions(tokens, diagram, lineNumber) {
-    tokens.forEach((token) => {
-      const [key, ...valueParts] = token.split("=");
-
-      if (!valueParts.length) {
-        diagram.errors.push(`Line ${lineNumber}: option "${token}" must use key=value`);
-        return;
-      }
-
-      setDiagramOption(diagram, key, valueParts.join("="), lineNumber);
-    });
-  }
-
-  function setDiagramOption(diagram, key, value, lineNumber) {
-    const normalizedKey = String(key || "").trim().toLowerCase().replace(/-/g, "_");
-    const normalizedValue = String(value || "").trim();
-
-    if (!normalizedValue) {
-      diagram.errors.push(`Line ${lineNumber}: ${key} requires a value`);
-      return;
-    }
-
-    if (normalizedKey === "layout") {
-      const layout = normalizeLayoutName(normalizedValue);
-
-      if (!layout) {
-        diagram.errors.push(`Line ${lineNumber}: unsupported layout "${normalizedValue}"`);
-        return;
-      }
-
-      diagram.options.layout = layout;
-      return;
-    }
-
-    if (normalizedKey === "orientation" || normalizedKey === "orient") {
-      const orientation = normalizeOrientation(normalizedValue);
-
-      if (!orientation) {
-        diagram.errors.push(`Line ${lineNumber}: unsupported orientation "${normalizedValue}"`);
-        return;
-      }
-
-      diagram.options.orientation = orientation;
-      return;
-    }
-
-    if (normalizedKey === "size") {
-      const size = normalizedValue.toLowerCase();
-
-      if (!SIZE_PRESETS[size]) {
-        diagram.errors.push(`Line ${lineNumber}: unsupported size "${normalizedValue}"`);
-        return;
-      }
-
-      diagram.options.size = size;
-      return;
-    }
-
-    if (normalizedKey === "width" || normalizedKey === "height" || normalizedKey === "margin_x" || normalizedKey === "margin_y") {
-      const number = Number(normalizedValue);
-
-      if (!Number.isFinite(number) || number <= 0) {
-        diagram.errors.push(`Line ${lineNumber}: ${key} must be a positive number`);
-        return;
-      }
-
-      diagram.options[normalizedKey] = number;
-      return;
-    }
-
-    diagram.errors.push(`Line ${lineNumber}: unknown option "${key}"`);
-  }
-
-  function normalizeLayoutName(value) {
-    const normalized = value.toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
-
-    if (normalized === "layered" || normalized === "layered layout") {
-      return "layered";
-    }
-
-    if (normalized === "spring" || normalized === "spring layout") {
-      return "spring";
-    }
-
-    if (
-      normalized === "spring electrical"
-      || normalized === "spring electrical layout"
-      || normalized === "electrical"
-      || normalized === "electrical layout"
-    ) {
-      return "spring-electrical";
-    }
-
-    if (normalized === "tree" || normalized === "tree layout") {
-      return "tree";
-    }
-
-    return null;
-  }
-
-  function normalizeQuality(value) {
-    const normalized = String(value || "balanced").toLowerCase();
-
-    if (normalized === "fast" || normalized === "high") {
-      return normalized;
-    }
-
-    return "balanced";
-  }
-
-  function normalizeOrientation(value) {
-    const normalized = value.toLowerCase().replace(/_/g, "-").replace(/\s+/g, "-").trim();
-
-    if (normalized === "horizontal") {
-      return "horizontal";
-    }
-
-    if (normalized === "horizontal'" || normalized === "horizontal-reverse" || normalized === "horizontal-flipped") {
-      return "horizontal-reverse";
-    }
-
-    if (normalized === "vertical") {
-      return "vertical";
-    }
-
-    if (normalized === "vertical'" || normalized === "vertical-reverse" || normalized === "vertical-flipped") {
-      return "vertical-reverse";
-    }
-
-    return null;
-  }
-
-  function isTikzOrientationCommand(command) {
-    return command === "horizontal"
-      || command === "horizontal'"
-      || command === "vertical"
-      || command === "vertical'";
-  }
-
-  function parseTikzOrientationCommand(command, parts, diagram, lineNumber) {
-    const axis = command.startsWith("vertical") ? "vertical" : "horizontal";
-    const flip = command.endsWith("'");
-
-    if (
-      parts.length !== 3
-      || parts[1] !== "to"
-      || !isNodeIdentifier(parts[0])
-      || !isNodeIdentifier(parts[2])
-    ) {
-      diagram.errors.push(`Line ${lineNumber}: ${command} must use "${command} a to b"`);
-      return;
-    }
-
-    diagram.options.tikzOrientation = {
-      axis,
-      from: parts[0],
-      to: parts[2],
-      flip,
-      angle: axis === "vertical" ? 90 : 0,
-    };
-  }
-
-  function isNodeIdentifier(value) {
-    return /^[A-Za-z0-9_.-]+$/.test(String(value || ""));
-  }
-
-  function normalizeTikzOrientation(value) {
-    if (!value || typeof value !== "object") {
-      return null;
-    }
-
-    const axis = value.axis === "vertical" ? "vertical" : "horizontal";
-    const from = String(value.from || "").trim();
-    const to = String(value.to || "").trim();
-
-    if (!isNodeIdentifier(from) || !isNodeIdentifier(to)) {
-      return null;
-    }
-
-    return {
-      axis,
-      from,
-      to,
-      flip: Boolean(value.flip),
-      angle: axis === "vertical" ? 90 : 0,
-    };
-  }
-
-  function parseManualPosition(parts, diagram, lineNumber) {
-    if (parts.length !== 3) {
-      diagram.errors.push(`Line ${lineNumber}: position must use "position node x y"`);
-      return;
-    }
-
-    const [node, rawX, rawY] = parts;
-    const x = Number(rawX);
-    const y = Number(rawY);
-
-    if (!node || !Number.isFinite(x) || !Number.isFinite(y)) {
-      diagram.errors.push(`Line ${lineNumber}: position coordinates must be numbers`);
-      return;
-    }
-
-    diagram.manualPositions[node] = { x, y };
-  }
-
-  function parseLabels(source, labels, errors, lineNumber) {
-    const pattern = /([^\s:]+):(?:"([^"]*)"|'([^']*)'|(\S+))/g;
-    let match;
-    let matched = false;
-
-    while ((match = pattern.exec(source)) !== null) {
-      matched = true;
-      labels[match[1]] = match[2] ?? match[3] ?? match[4] ?? "";
-    }
-
-    if (!matched && source) {
-      errors.push(`Line ${lineNumber}: labels must use node:text pairs`);
-    }
-  }
-
-  function parseVertices(source, vertices, errors, lineNumber) {
-    const specs = splitEdgeSpecs(source);
-
-    if (!specs.length && source) {
-      errors.push(`Line ${lineNumber}: vertices must use node:shape pairs`);
-      return;
-    }
-
-    specs.forEach((spec) => {
-      const parsed = parseVertexSpec(spec, errors, lineNumber);
-
-      if (parsed) {
-        vertices[parsed.node] = parsed.definition;
-      }
-    });
-  }
-
-  function parseVertexSpec(spec, errors, lineNumber) {
-    const separator = spec.indexOf(":");
-
-    if (separator <= 0 || separator === spec.length - 1) {
-      errors.push(`Line ${lineNumber}: vertices must use node:shape pairs`);
-      return null;
-    }
-
-    const node = spec.slice(0, separator).trim();
-    const rawDefinition = spec.slice(separator + 1).trim();
-
-    if (!node || /\s/.test(node)) {
-      errors.push(`Line ${lineNumber}: invalid vertex node "${node}"`);
-      return null;
-    }
-
-    const definition = parseVertexDefinition(rawDefinition, errors, lineNumber);
-
-    if (!definition) {
-      return null;
-    }
-
-    return { node, definition };
-  }
-
-  function parseVertexDefinition(rawDefinition, errors, lineNumber) {
-    const parsed = splitVertexShapeAndOptions(rawDefinition);
-    const rawShape = unwrapLabelValue(parsed.shape);
-    const shape = normalizeVertexShape(rawShape);
-
-    if (!shape) {
-      errors.push(`Line ${lineNumber}: unsupported vertex shape "${rawShape}"`);
-      return null;
-    }
-
-    const options = parseVertexOptions(parsed.options, errors, lineNumber);
-
-    if (!options) {
-      return null;
-    }
-
-    if ((options.hatch || options.size) && shape !== "blob" && shape !== "disk") {
-      errors.push(`Line ${lineNumber}: vertex options are only supported for blob and disk vertices`);
-      return null;
-    }
-
-    if (!Object.keys(options).length) {
-      return shape;
-    }
-
-    return { shape, ...options };
-  }
-
-  function splitVertexShapeAndOptions(rawDefinition) {
-    const source = String(rawDefinition || "").trim();
-
-    if (!source.endsWith("]")) {
-      return { shape: source, options: "" };
-    }
-
-    let quote = null;
-    let bracketDepth = 0;
-    let optionStart = -1;
-
-    for (let index = 0; index < source.length; index += 1) {
-      const character = source[index];
-
-      if (quote) {
-        if (character === quote) {
-          quote = null;
-        }
-
-        continue;
-      }
-
-      if (character === "\"" || character === "'") {
-        quote = character;
-        continue;
-      }
-
-      if (character === "[") {
-        if (bracketDepth === 0) {
-          optionStart = index;
-        }
-
-        bracketDepth += 1;
-        continue;
-      }
-
-      if (character === "]") {
-        bracketDepth = Math.max(0, bracketDepth - 1);
-
-        if (bracketDepth === 0 && index !== source.length - 1) {
-          optionStart = -1;
-        }
-      }
-    }
-
-    if (optionStart === -1 || bracketDepth !== 0) {
-      return { shape: source, options: "" };
-    }
-
-    return {
-      shape: source.slice(0, optionStart).trim(),
-      options: source.slice(optionStart + 1, -1),
-    };
-  }
-
-  function parseVertexOptions(source, errors, lineNumber) {
-    const options = {};
-    let valid = true;
-
-    splitOptionList(source)
-      .map((item) => item.trim())
-      .filter(Boolean)
-      .forEach((item) => {
-        const parsed = parseOptionItem(item);
-        const name = normalizeOptionName(parsed.name);
-
-        if (name === "hatch" || name === "hatched" || name === "pattern") {
-          const hatch = normalizeBlobHatch(parsed.value || "diagonal");
-
-          if (!hatch) {
-            errors.push(`Line ${lineNumber}: unsupported blob hatch "${parsed.value}"`);
-            valid = false;
-            return;
-          }
-
-          options.hatch = hatch;
-          return;
-        }
-
-        if (name === "fill") {
-          const normalizedValue = normalizeOptionName(unwrapLabelValue(parsed.value || "hatched"));
-
-          if (normalizedValue === "shaded" || normalizedValue === "solid" || normalizedValue === "none") {
-            return;
-          }
-
-          const hatch = normalizeBlobHatch(parsed.value || "diagonal");
-
-          if (!hatch) {
-            errors.push(`Line ${lineNumber}: unsupported blob fill "${parsed.value}"`);
-            valid = false;
-            return;
-          }
-
-          options.hatch = hatch;
-          return;
-        }
-
-        if (name === "size" || name === "radius") {
-          const size = parseBlobVertexSize(parsed.value);
-
-          if (!Number.isFinite(size) || size <= 0) {
-            errors.push(`Line ${lineNumber}: blob vertex size must be a positive number or preset`);
-            valid = false;
-            return;
-          }
-
-          options.size = size;
-          return;
-        }
-
-        if (name === "diameter") {
-          const diameter = parseBlobVertexSize(parsed.value);
-
-          if (!Number.isFinite(diameter) || diameter <= 0) {
-            errors.push(`Line ${lineNumber}: blob vertex diameter must be a positive number or preset`);
-            valid = false;
-            return;
-          }
-
-          options.size = diameter / 2;
-          return;
-        }
-
-        errors.push(`Line ${lineNumber}: unknown vertex option "${parsed.name}"`);
-        valid = false;
-      });
-
-    return valid ? options : null;
-  }
-
-  function normalizeBlobHatch(value) {
-    const normalized = normalizeOptionName(unwrapLabelValue(value));
-
-    return BLOB_HATCHES.get(normalized) ?? null;
-  }
-
-  function parseBlobVertexSize(value) {
-    const normalized = normalizeOptionName(unwrapLabelValue(value));
-    const preset = BLOB_VERTEX_SIZE_PRESETS.get(normalized);
-
-    if (preset) {
-      return preset;
-    }
-
-    return parseDistanceValue(unwrapLabelValue(value));
-  }
-
-  function normalizeVertexShape(value) {
-    const normalized = String(value || "")
-      .trim()
-      .toLowerCase()
-      .replace(/_/g, "-")
-      .replace(/\s+/g, " ");
-
-    return VERTEX_SHAPES.get(normalized) ?? VERTEX_SHAPES.get(normalized.replace(/\s+/g, "-")) ?? null;
-  }
-
-  function parseBrace(source, diagram, lineNumber) {
-    const match = String(source || "").trim().match(/^([A-Za-z0-9_.-]+)->([A-Za-z0-9_.-]+)(?:\[([^\]]*)\])?:(?:"([^"]*)"|'([^']*)'|(.+))$/);
-
-    if (!match) {
-      diagram.errors.push(`Line ${lineNumber}: braces must use "brace from->to[side]:label"`);
-      return;
-    }
-
-    const side = normalizeBraceSide(match[3] || "left");
-
-    if (!side) {
-      diagram.errors.push(`Line ${lineNumber}: unsupported brace side "${match[3]}"`);
-      return;
-    }
-
-    diagram.braces.push({
-      from: match[1],
-      to: match[2],
-      side,
-      label: cleanLabelValue(match[4] ?? match[5] ?? match[6] ?? ""),
-    });
-  }
-
-  function normalizeBraceSide(value) {
-    const normalized = String(value || "").trim().toLowerCase();
-
-    if (normalized === "left" || normalized === "right" || normalized === "top" || normalized === "bottom") {
-      return normalized;
-    }
-
-    return null;
-  }
-
-  let elkInstance = null;
+  const layoutEngine = createLayoutEngine({
+    applyParallelPropagatorCurves,
+    finalizeLayout,
+    layoutFeynmanPreparedFallbackRaw,
+    layoutFeynmanPreparedRaw,
+    profileNow,
+    resolveLayoutOptions,
+  });
 
   async function layoutFeynman(diagram, options) {
-    const prepared = prepareFeynmanLayout(diagram, options);
-    const layoutDiagram = prepared.compatibleDiagram;
-    const layoutOptions = resolveLayoutOptions(layoutDiagram, options);
-    let rawLayout;
-
-    applyParallelPropagatorCurves(layoutDiagram, prepared);
-
-    try {
-      const layoutStartedAt = profileNow();
-      rawLayout = await layoutFeynmanPreparedRaw(layoutDiagram, layoutOptions, prepared);
-      prepared.profile?.push("layout", profileNow() - layoutStartedAt);
-    } catch (error) {
-      const fallbackStartedAt = profileNow();
-      rawLayout = layoutFeynmanPreparedFallbackRaw(layoutDiagram, layoutOptions, prepared);
-      prepared.profile?.push("layout-fallback", profileNow() - fallbackStartedAt);
-    }
-
-    const finalLayout = applyIncrementalStability(
-      finalizeLayout(layoutDiagram, rawLayout, layoutOptions),
-      prepared.incremental
-    );
-
-    return attachLayoutAnalysis(
-      finalLayout,
-      prepared,
-      { enabled: layoutOptions.debug || layoutOptions.profile, elkGraph: prepared.compiledElkGraph }
-    );
+    return layoutEngine.layoutFeynman(diagram, options);
   }
 
   function layoutFeynmanFallbackSync(diagram, options) {
-    const prepared = prepareFeynmanLayout(diagram, options);
-    const layoutDiagram = prepared.compatibleDiagram;
-    const layoutOptions = resolveLayoutOptions(layoutDiagram, options);
-
-    applyParallelPropagatorCurves(layoutDiagram, prepared);
-
-    const fallbackStartedAt = profileNow();
-    const rawLayout = layoutFeynmanPreparedFallbackRaw(layoutDiagram, layoutOptions, prepared);
-    prepared.profile?.push("layout-fallback", profileNow() - fallbackStartedAt);
-
-    return attachLayoutAnalysis(
-      applyIncrementalStability(
-        finalizeLayout(layoutDiagram, rawLayout, layoutOptions),
-        prepared.incremental
-      ),
-      prepared,
-      { enabled: layoutOptions.debug || layoutOptions.profile, elkGraph: prepared.compiledElkGraph }
-    );
+    return layoutEngine.layoutFeynmanFallbackSync(diagram, options);
   }
 
   async function layoutFeynmanPreparedRaw(diagram, layoutOptions, prepared) {
@@ -1490,18 +303,11 @@ import {
   }
 
   async function layoutFeynmanWithElk(diagram, layoutOptions, prepared) {
-    const elk = getElk();
-    const graph = buildSemanticElkGraph(
-      prepared.semantic,
-      layoutOptions,
-      (node) => elkNodeDimensions(node, diagram),
-      prepared.externalOrdering
-    );
-    prepared.compiledElkGraph = graph;
-
-    const result = await elk.layout(graph);
-
-    return normalizeElkLayout(diagram, layoutOptions, result);
+    return layoutWithElk(diagram, layoutOptions, prepared, {
+      buildSemanticElkGraph,
+      elkNodeDimensions,
+      normalizeElkLayout,
+    });
   }
 
   function applyParallelPropagatorCurves(diagram, prepared) {
@@ -1549,16 +355,6 @@ import {
     });
   }
 
-  function getElk() {
-    if (!elkInstance) {
-      elkInstance = new ELK({
-        algorithms: ["layered", "mrtree", "force"],
-      });
-    }
-
-    return elkInstance;
-  }
-
   function profileNow() {
     return typeof performance !== "undefined" && typeof performance.now === "function"
       ? performance.now()
@@ -1576,6 +372,7 @@ import {
     const outgoingCount = Math.max(diagram.outgoing.length, 1);
     const orientation = normalizeOrientation(merged.orientation) || DEFAULT_DIAGRAM_OPTIONS.orientation;
     const tikzOrientation = normalizeTikzOrientation(merged.tikzOrientation || merged.tikz_orientation);
+    const alignments = normalizeAlignmentConstraints(merged.alignments || merged.alignmentConstraints);
     const portrait = orientation.startsWith("vertical") || tikzOrientation?.axis === "vertical";
     const width = merged.width ?? (portrait ? size.minHeight : size.width);
     const defaultHeight = Math.max(size.minHeight, 70 + Math.max(incomingCount, outgoingCount) * size.externalGap);
@@ -1590,6 +387,7 @@ import {
       marginX: merged.margin_x ?? merged.marginX ?? defaultMarginX,
       marginY: merged.margin_y ?? merged.marginY ?? size.marginY,
       tikzOrientation,
+      alignments,
       orientationMode: merged.orientationMode,
       direction: merged.direction,
       deterministicSeed: merged.deterministicSeed,
@@ -1609,6 +407,27 @@ import {
     };
 
     return normalizeLayoutName(merged.layout) || DEFAULT_DIAGRAM_OPTIONS.layout;
+  }
+
+  function normalizeAlignmentConstraints(value) {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .map((constraint) => {
+        const axis = constraint?.axis === "vertical" ? "vertical" : constraint?.axis === "horizontal" ? "horizontal" : null;
+        const nodes = Array.isArray(constraint?.nodes)
+          ? constraint.nodes.map((node) => String(node || "").trim()).filter(isNodeIdentifier)
+          : [];
+
+        if (!axis || nodes.length < 2) {
+          return null;
+        }
+
+        return { axis, nodes };
+      })
+      .filter(Boolean);
   }
 
   function diagramWithInferredTerminals(diagram, layout) {
@@ -1775,10 +594,12 @@ import {
     const shape = vertexDefinitionShape(definition);
 
     if (shape === "blob" || shape === "disk") {
-      const radius = vertexDefinitionOptions(definition).size ?? BLOB_VERTEX_DEFAULT_RADII[shape];
-      const size = Math.max(12, radius * 2);
+      const radii = blobVertexRadii(shape, definition);
 
-      return { width: size, height: size };
+      return {
+        width: Math.max(12, radii.rx * 2),
+        height: Math.max(12, radii.ry * 2),
+      };
     }
 
     return { width: 8, height: 8 };
@@ -1878,6 +699,11 @@ import {
     }
     straightenSingleTerminalLegs(diagram, positions, axes);
     alignInternalsAcrossInvisibleTerminalPairs(diagram, positions, axes);
+    enforceDeclaredExternalOrder(diagram, positions, axes);
+    if (!layoutOptions.tikzOrientation) {
+      alignInternalsToDeclaredTerminalRows(diagram, positions, axes, layoutOptions);
+    }
+    applyAlignmentConstraints(diagram, positions, layoutOptions);
     fitLayoutTranslationToEdgeBounds(diagram, positions, layoutOptions);
   }
 
@@ -2434,11 +1260,6 @@ import {
 
         if (canMoveTerminalCross(terminal, axes.crossOf(positions[internal]), positions, axes, kind)) {
           axes.setCross(positions[terminal], axes.crossOf(positions[internal]));
-          return;
-        }
-
-        if (!manual.has(internal)) {
-          axes.setCross(positions[internal], axes.crossOf(positions[terminal]));
         }
       });
     });
@@ -2680,6 +1501,7 @@ import {
 
     fanTikzOrientationMixedTerminalPairs(diagram, layout, orientation);
     fanTikzOrientationProcessTerminalGroups(diagram, layout, orientation);
+    enforceDeclaredExternalOrder(diagram, layout.positions, diagramAxes(layoutOptions));
     fitLayoutPositions(layout, layoutOptions);
   }
 
@@ -2885,7 +1707,7 @@ import {
   function layoutSymmetricContact(diagram, layoutOptions, prepared) {
     const { width, height, marginX, marginY } = layoutOptions;
     const positions = initialFixedPositions(diagram, diagramAxes(layoutOptions));
-    const center = {
+    const structuralCenter = {
       x: width / 2,
       y: height / 2,
     };
@@ -2898,18 +1720,30 @@ import {
 
     if (centerNode && !positions[centerNode]) {
       positions[centerNode] = {
-        ...center,
+        ...structuralCenter,
         kind: nodeKind(centerNode, diagram),
         labelSide: labelSideForKind(nodeKind(centerNode, diagram), layoutOptions.orientation),
       };
     }
 
-    placeNodesOnRing(externalNodes, center, radius, positions, diagram, layoutOptions, -3 * Math.PI / 4);
+    const contactCenter = centerNode && positions[centerNode]
+      ? positions[centerNode]
+      : structuralCenter;
+
+    placeNodesOnRing(
+      externalNodes,
+      contactCenter,
+      radius,
+      positions,
+      diagram,
+      layoutOptions,
+      contactStarStartAngle(externalNodes.length)
+    );
 
     Array.from(collectNodes(diagram)).sort().forEach((node) => {
       if (!positions[node]) {
         positions[node] = {
-          ...center,
+          ...contactCenter,
           kind: nodeKind(node, diagram),
           labelSide: labelSideForKind(nodeKind(node, diagram), layoutOptions.orientation),
         };
@@ -2917,6 +1751,16 @@ import {
     });
 
     return { width, height, positions, options: layoutOptions };
+  }
+
+  function contactStarStartAngle(count) {
+    if (count % 2 === 1) {
+      const medianIndex = Math.floor(count / 2);
+
+      return -Math.PI / 2 - (2 * Math.PI * medianIndex) / count;
+    }
+
+    return -Math.PI / 2 - Math.PI / Math.max(count, 1);
   }
 
   function layoutSymmetricUnclassifiedRefinement(diagram, layoutOptions, prepared) {
@@ -3729,6 +2573,268 @@ import {
     return locks;
   }
 
+  function alignInternalsToDeclaredTerminalRows(diagram, positions, axes, layoutOptions) {
+    if (!diagram.incoming.length && !diagram.outgoing.length) {
+      return;
+    }
+
+    const pinned = new Set([
+      ...diagram.incoming,
+      ...diagram.outgoing,
+      ...Object.keys(diagram.manualPositions || {}),
+    ]);
+
+    terminalCrossLocks(diagram, positions, axes, pinned).forEach((cross, node) => {
+      if (positions[node]?.kind === "internal") {
+        axes.setCross(positions[node], cross);
+      }
+    });
+
+    if (layoutOptions.layout === "spring") {
+      alignJunctionsToTerminalRowCorridors(diagram, positions, axes, pinned);
+    }
+
+    alignTerminalLaneInternals(diagram, positions, axes, pinned);
+  }
+
+  function alignJunctionsToTerminalRowCorridors(diagram, positions, axes, pinned) {
+    if (axes.stackInternals) {
+      return;
+    }
+
+    const externalKinds = new Set(["incoming", "outgoing"]);
+    const directLocks = terminalCrossLocks(diagram, positions, axes, pinned);
+    const adjacency = visibleAdjacencyForLayout(diagram, Object.keys(positions));
+    const tolerance = 1;
+
+    adjacency.forEach((neighbors, node) => {
+      const position = positions[node];
+
+      if (
+        !position
+        || position.kind !== "internal"
+        || pinned.has(node)
+        || directLocks.has(node)
+      ) {
+        return;
+      }
+
+      const crosses = [];
+
+      neighbors.forEach((neighbor) => {
+        const neighborPosition = positions[neighbor];
+
+        if (!neighborPosition) {
+          return;
+        }
+
+        if (externalKinds.has(neighborPosition.kind)) {
+          crosses.push(axes.crossOf(neighborPosition));
+          return;
+        }
+
+        if (directLocks.has(neighbor)) {
+          crosses.push(directLocks.get(neighbor));
+        }
+      });
+
+      if (crosses.length < 2) {
+        return;
+      }
+
+      const groups = groupNearbyCrosses(crosses, tolerance);
+
+      if (groups.length < 2) {
+        return;
+      }
+
+      const largest = Math.max(...groups.map((group) => group.count));
+      const dominantGroups = groups.filter((group) => group.count === largest);
+      const target = dominantGroups.length === 1 && largest > 1
+        ? dominantGroups[0].sum / dominantGroups[0].count
+        : crosses.reduce((sum, cross) => sum + cross, 0) / crosses.length;
+
+      axes.setCross(position, target);
+    });
+  }
+
+  function groupNearbyCrosses(crosses, tolerance) {
+    const groups = [];
+
+    crosses
+      .filter(Number.isFinite)
+      .sort((left, right) => left - right)
+      .forEach((cross) => {
+        const last = groups[groups.length - 1];
+
+        if (!last || Math.abs(cross - last.center) > tolerance) {
+          groups.push({ center: cross, sum: cross, count: 1 });
+          return;
+        }
+
+        last.sum += cross;
+        last.count += 1;
+        last.center = last.sum / last.count;
+      });
+
+    return groups;
+  }
+
+  function alignTerminalLaneInternals(diagram, positions, axes, pinned) {
+    if (diagram.incoming.length <= 1 && diagram.outgoing.length <= 1) {
+      return;
+    }
+
+    const tolerance = 1;
+    const moved = new Set();
+
+    diagram.incoming.forEach((incoming) => {
+      const incomingPosition = positions[incoming];
+
+      if (!incomingPosition) {
+        return;
+      }
+
+      diagram.outgoing.forEach((outgoing) => {
+        const outgoingPosition = positions[outgoing];
+
+        if (
+          !outgoingPosition
+          || Math.abs(axes.crossOf(incomingPosition) - axes.crossOf(outgoingPosition)) > tolerance
+        ) {
+          return;
+        }
+
+        const path = terminalLanePath(diagram, positions, axes, incoming, outgoing, axes.crossOf(incomingPosition), tolerance);
+
+        if (!path) {
+          return;
+        }
+
+        const internals = path.filter((node) => (
+          positions[node]?.kind === "internal" && !pinned.has(node) && !moved.has(node)
+        ));
+
+        if (!internals.length) {
+          return;
+        }
+
+        internals.forEach((node, index) => {
+          positions[node].x = axes.layerStart
+            + ((axes.layerEnd - axes.layerStart) * (index + 1)) / (internals.length + 1);
+          moved.add(node);
+        });
+      });
+    });
+  }
+
+  function terminalLanePath(diagram, positions, axes, incoming, outgoing, cross, tolerance) {
+    const allowed = new Set([incoming, outgoing]);
+
+    Object.entries(positions).forEach(([node, position]) => {
+      if (
+        position.kind === "internal"
+        && Math.abs(axes.crossOf(position) - cross) <= tolerance
+      ) {
+        allowed.add(node);
+      }
+    });
+
+    const adjacency = new Map(Array.from(allowed).map((node) => [node, []]));
+
+    diagram.edges.forEach((edge) => {
+      if (edge.hidden || !allowed.has(edge.from) || !allowed.has(edge.to)) {
+        return;
+      }
+
+      adjacency.get(edge.from).push(edge.to);
+      adjacency.get(edge.to).push(edge.from);
+    });
+
+    adjacency.forEach((neighbors) => {
+      neighbors.sort((left, right) => left.localeCompare(right));
+    });
+
+    const queue = [[incoming]];
+    const visited = new Set([incoming]);
+
+    while (queue.length) {
+      const path = queue.shift();
+      const node = path[path.length - 1];
+
+      if (node === outgoing) {
+        return path;
+      }
+
+      (adjacency.get(node) || []).forEach((neighbor) => {
+        if (visited.has(neighbor)) {
+          return;
+        }
+
+        visited.add(neighbor);
+        queue.push([...path, neighbor]);
+      });
+    }
+
+    return null;
+  }
+
+  function applyAlignmentConstraints(diagram, positions, layoutOptions) {
+    const alignments = layoutOptions.alignments || [];
+
+    if (!alignments.length) {
+      return;
+    }
+
+    const manual = new Set(Object.keys(diagram.manualPositions || {}));
+
+    alignments.forEach((alignment) => {
+      const coordinate = alignment.axis === "vertical" ? "x" : "y";
+      const crossCoordinate = alignment.axis === "vertical" ? "y" : "x";
+      const positioned = alignment.nodes
+        .map((node) => ({ node, position: positions[node] }))
+        .filter((entry) => entry.position && Number.isFinite(entry.position[coordinate]));
+
+      if (positioned.length < 2) {
+        return;
+      }
+
+      const anchors = positioned.filter((entry) => manual.has(entry.node));
+      const source = anchors.length ? anchors : positioned;
+      const target = source.reduce((sum, entry) => sum + entry.position[coordinate], 0) / source.length;
+
+      positioned.forEach(({ node, position }) => {
+        if (!manual.has(node)) {
+          position[coordinate] = target;
+        }
+      });
+
+      orderAlignedNodesAlongCrossAxis(positioned, crossCoordinate, manual);
+    });
+  }
+
+  function orderAlignedNodesAlongCrossAxis(positioned, crossCoordinate, manual) {
+    if (
+      positioned.length < 2
+      || positioned.some((entry) => manual.has(entry.node))
+    ) {
+      return;
+    }
+
+    const slots = positioned
+      .map((entry) => entry.position[crossCoordinate])
+      .filter((value) => Number.isFinite(value))
+      .sort((left, right) => left - right);
+
+    if (slots.length !== positioned.length) {
+      return;
+    }
+
+    positioned.forEach((entry, index) => {
+      entry.position[crossCoordinate] = slots[index];
+    });
+  }
+
   function applyCrossLocks(positions, crossLocks, axes) {
     crossLocks.forEach((cross, node) => {
       if (positions[node]) {
@@ -3745,11 +2851,12 @@ import {
     axes.setCross(position, cross);
   }
 
-  function diagramAxes({ width, height, marginX, marginY, orientation }) {
+  function diagramAxes({ width, height, marginX, marginY, orientation, tikzOrientation }) {
     const reverse = orientation.endsWith("reverse");
 
     return {
       orientation,
+      clockwiseBoundaryOrder: !tikzOrientation,
       stackInternals: orientation.startsWith("vertical"),
       layerStart: reverse ? width - marginX : marginX,
       layerEnd: reverse ? marginX : width - marginX,
@@ -3915,11 +3022,59 @@ import {
       if (!positions[node]) {
         positions[node] = axes.point(
           layer,
-          crossCoordinateAt(index, count, crossStart, crossEnd),
+          externalCrossCoordinateAt(index, count, crossStart, crossEnd, layer, axes, kind),
           kind
         );
       }
     });
+  }
+
+  function enforceDeclaredExternalOrder(diagram, positions, axes) {
+    const manual = new Set(Object.keys(diagram.manualPositions || {}));
+
+    [
+      { nodes: diagram.incoming, kind: "incoming" },
+      { nodes: diagram.outgoing, kind: "outgoing" },
+    ].forEach(({ nodes, kind }) => {
+      if (nodes.length <= 1) {
+        return;
+      }
+
+      const count = Math.max(nodes.length, 1);
+
+      nodes.forEach((node, index) => {
+        if (!positions[node] || manual.has(node)) {
+          return;
+        }
+
+        axes.setCross(
+          positions[node],
+          externalCrossCoordinateAt(
+            index,
+            count,
+            axes.crossStart,
+            axes.crossEnd,
+            kind === "incoming" ? axes.layerStart : axes.layerEnd,
+            axes,
+            kind
+          )
+        );
+        positions[node].kind = kind;
+      });
+    });
+  }
+
+  function externalCrossCoordinateAt(index, count, crossStart, crossEnd, layer, axes, kind) {
+    if (!axes.clockwiseBoundaryOrder || (kind !== "incoming" && kind !== "outgoing")) {
+      return crossCoordinateAt(index, count, crossStart, crossEnd);
+    }
+
+    const midpoint = (axes.layerStart + axes.layerEnd) / 2;
+    const isLeftBoundary = layer <= midpoint;
+
+    return isLeftBoundary
+      ? crossCoordinateAt(index, count, crossEnd, crossStart)
+      : crossCoordinateAt(index, count, crossStart, crossEnd);
   }
 
   function crossCoordinateAt(index, count, crossStart, crossEnd) {
@@ -4108,6 +3263,8 @@ import {
       svg.appendChild(label);
     });
 
+    await materializePendingMathLabels(svg);
+
     figure.appendChild(svg);
 
     if (diagram.errors.length) {
@@ -4164,7 +3321,7 @@ import {
   }
 
   function isOverlayEdge(edge) {
-    return edge.type === "ghost";
+    return edge.type === "ghost" || edge.overlay;
   }
 
   function renderJunctionCaps(diagram, layout) {
@@ -4295,6 +3452,38 @@ import {
         class: "feynman-diagram__edge feynman-diagram__edge--ghost",
         d: edgePath(edge, from, to),
       });
+    }
+
+    if (edge.type === "dashed") {
+      return createSvg("path", {
+        class: "feynman-diagram__edge feynman-diagram__edge--dashed",
+        d: edgePath(edge, from, to),
+      });
+    }
+
+    if (edge.type === "dashdot") {
+      return createSvg("path", {
+        class: "feynman-diagram__edge feynman-diagram__edge--dashdot",
+        d: edgePath(edge, from, to),
+      });
+    }
+
+    if (edge.type === "triangle") {
+      return createSvg("path", {
+        class: "feynman-diagram__edge feynman-diagram__edge--triangle",
+        d: trianglePathForEdge(edge, from, to, 7, 16),
+      });
+    }
+
+    if (edge.type === "square") {
+      return createSvg("path", {
+        class: "feynman-diagram__edge feynman-diagram__edge--square",
+        d: squarePathForEdge(edge, from, to, 6, 18),
+      });
+    }
+
+    if (edge.type === "double") {
+      return renderDoubleEdge(edge, from, to);
     }
 
     if (edge.arrow) {
@@ -4445,9 +3634,10 @@ import {
       const group = createSvg("g", {
         class: `feynman-diagram__vertex-group feynman-diagram__vertex-group--${shape}`,
       });
-      const radius = options.size ?? BLOB_VERTEX_DEFAULT_RADII[shape];
+      const radii = blobVertexRadii(shape, definition);
+      const circular = Math.abs(radii.rx - radii.ry) < 0.001;
       const hatch = options.hatch;
-      const circleAttributes = {
+      const shapeAttributes = {
         class: [
           "feynman-diagram__vertex",
           "feynman-diagram__vertex--blob",
@@ -4456,20 +3646,29 @@ import {
         ].join(" "),
         cx: position.x,
         cy: position.y,
-        r: radius,
       };
-
-      if (hatch) {
-        circleAttributes.fill = `url(#${blobHatchPatternId(index, hatch)})`;
-      }
-
-      group.appendChild(createSvg("circle", {
+      const backdropAttributes = {
         class: "feynman-diagram__vertex-backdrop",
         cx: position.x,
         cy: position.y,
-        r: radius + 1,
-      }));
-      group.appendChild(createSvg("circle", circleAttributes));
+      };
+
+      if (circular) {
+        shapeAttributes.r = radii.rx;
+        backdropAttributes.r = radii.rx + 1;
+      } else {
+        shapeAttributes.rx = radii.rx;
+        shapeAttributes.ry = radii.ry;
+        backdropAttributes.rx = radii.rx + 1;
+        backdropAttributes.ry = radii.ry + 1;
+      }
+
+      if (hatch) {
+        shapeAttributes.fill = `url(#${blobHatchPatternId(index, hatch)})`;
+      }
+
+      group.appendChild(createSvg(circular ? "circle" : "ellipse", backdropAttributes));
+      group.appendChild(createSvg(circular ? "circle" : "ellipse", shapeAttributes));
 
       return group;
     }
@@ -4497,369 +3696,39 @@ import {
     return definition;
   }
 
+  function blobVertexRadii(shape, definition) {
+    const options = vertexDefinitionOptions(definition);
+    const radius = options.size ?? BLOB_VERTEX_DEFAULT_RADII[shape];
+
+    return {
+      rx: options.rx ?? radius,
+      ry: options.ry ?? radius,
+    };
+  }
+
   function blobHatchPatternId(index, hatch) {
     return `feynman-hatch-${hatch}-${index}`;
   }
+  function renderDoubleEdge(edge, from, to) {
+    const path = createSvg("path", {
+      class: "feynman-diagram__edge feynman-diagram__edge--double",
+      d: doubleLinePathForEdge(edge, from, to, 4.6),
+    });
 
-  function wavePath(from, to, amplitude, wavelength) {
-    return wavePathForEdge({}, from, to, amplitude, wavelength);
-  }
+    if (!edge.arrow) {
+      return path;
+    }
 
-  function wavePathForEdge(edge, from, to, amplitude, wavelength) {
+    const group = createSvg("g", {
+      class: "feynman-diagram__edge-group",
+    });
     const geometry = edgeGeometry(edge, from, to);
-    const length = geometryLength(geometry);
-    const cycles = Math.max(2, Math.round(length / wavelength));
-    const steps = cycles * 12;
-    const points = [];
 
-    for (let step = 0; step <= steps; step += 1) {
-      const t = step / steps;
-      const phase = t * cycles * Math.PI * 2;
-      const offset = Math.sin(phase) * amplitude;
-      const sample = geometrySample(geometry, t);
-      const normal = perpendicularVector(sample.tangent);
+    group.appendChild(path);
+    group.appendChild(renderArrowGlyphOnGeometry(geometry, edge.arrow === "reverse"));
 
-      points.push({
-        x: sample.point.x + normal.x * offset,
-        y: sample.point.y + normal.y * offset,
-      });
-    }
-
-    return pointsToPath(points);
+    return group;
   }
-
-  function gluonPath(from, to, radius, loopLength) {
-    return gluonPathForEdge({}, from, to, radius, loopLength);
-  }
-
-  function gluonPathForEdge(edge, from, to, radius, loopLength) {
-    const geometry = edgeGeometry(edge, from, to);
-    const length = geometryLength(geometry);
-    const loops = Math.max(3, Math.round(length / loopLength));
-    const steps = loops * 18;
-    const points = [];
-
-    for (let step = 0; step <= steps; step += 1) {
-      const t = step / steps;
-      const phase = t * loops * Math.PI * 2;
-      const sample = geometrySample(geometry, t);
-      const tangent = normalizeVector(sample.tangent.x, sample.tangent.y);
-      const normal = perpendicularVector(tangent);
-      const taper = gluonEndpointTaper(t, loops);
-      const along = Math.sin(phase) * radius * taper;
-      const offset = Math.cos(phase) * radius * taper;
-
-      points.push({
-        x: sample.point.x + tangent.ux * along + normal.x * offset,
-        y: sample.point.y + tangent.uy * along + normal.y * offset,
-      });
-    }
-
-    return pointsToPath(points);
-  }
-
-  function gluonEndpointTaper(t, loops) {
-    const loopsFromEndpoint = Math.min(t, 1 - t) * loops;
-    const edgeProgress = Math.min(1, Math.max(0, loopsFromEndpoint / GLUON_ENDPOINT_RAMP_LOOPS));
-
-    return edgeProgress * edgeProgress * (3 - 2 * edgeProgress);
-  }
-
-  function edgePath(edge, from, to) {
-    return geometryToPath(edgeGeometry(edge, from, to));
-  }
-
-  function edgeGeometry(edge, from, to) {
-    const outAngle = Number(edge?.outAngle);
-    const inAngle = Number(edge?.inAngle);
-
-    if (samePoint(from, to)) {
-      return selfLoopGeometry(edge, from, outAngle, inAngle);
-    }
-
-    if (Number.isFinite(outAngle) || Number.isFinite(inAngle)) {
-      return angleCurveGeometry(edge, from, to, outAngle, inAngle);
-    }
-
-    if (edge?.curve) {
-      return offsetCurveGeometry(edge, from, to);
-    }
-
-    return {
-      kind: "line",
-      from,
-      to,
-    };
-  }
-
-  function selfLoopGeometry(edge, point, outAngle, inAngle) {
-    const amount = clamp(edge?.curve?.amount ?? 0.72, 0.28, 1.1);
-    const radius = 68 * amount;
-
-    if (Number.isFinite(outAngle) || Number.isFinite(inAngle)) {
-      const outVector = angleUnitVector(Number.isFinite(outAngle) ? outAngle : 135);
-      const inVector = angleUnitVector(Number.isFinite(inAngle) ? inAngle : 45);
-
-      return {
-        kind: "cubic",
-        from: point,
-        c1: {
-          x: point.x + outVector.x * radius * 1.65,
-          y: point.y + outVector.y * radius * 1.65,
-        },
-        c2: {
-          x: point.x + inVector.x * radius * 1.65,
-          y: point.y + inVector.y * radius * 1.65,
-        },
-        to: point,
-      };
-    }
-
-    const side = selfLoopSideVector(edge?.curve?.side);
-    const tangent = { x: -side.y, y: side.x };
-
-    return {
-      kind: "cubic",
-      from: point,
-      c1: {
-        x: point.x - tangent.x * radius + side.x * radius * 1.7,
-        y: point.y - tangent.y * radius + side.y * radius * 1.7,
-      },
-      c2: {
-        x: point.x + tangent.x * radius + side.x * radius * 1.7,
-        y: point.y + tangent.y * radius + side.y * radius * 1.7,
-      },
-      to: point,
-    };
-  }
-
-  function samePoint(from, to) {
-    return Math.abs(from.x - to.x) < 0.001 && Math.abs(from.y - to.y) < 0.001;
-  }
-
-  function selfLoopSideVector(side) {
-    if (side === "right") {
-      return { x: 1, y: 0 };
-    }
-
-    if (side === "bottom") {
-      return { x: 0, y: 1 };
-    }
-
-    if (side === "left") {
-      return { x: -1, y: 0 };
-    }
-
-    return { x: 0, y: -1 };
-  }
-
-  function offsetCurveGeometry(edge, from, to) {
-    const vector = lineVector(from, to);
-    const normal = leftNormalVector(vector);
-    const side = edge.curve.side === "right" ? -1 : 1;
-    const looseness = edge.looseness ?? 1;
-    const offset = vector.length * edge.curve.amount * looseness * side;
-
-    if (edge.curve.shape === "semicircle") {
-      return {
-        kind: "cubic",
-        from,
-        c1: {
-          x: from.x + normal.x * offset,
-          y: from.y + normal.y * offset,
-        },
-        c2: {
-          x: to.x + normal.x * offset,
-          y: to.y + normal.y * offset,
-        },
-        to,
-      };
-    }
-
-    return {
-      kind: "cubic",
-      from,
-      c1: {
-        x: from.x + vector.dx * 0.33 + normal.x * offset,
-        y: from.y + vector.dy * 0.33 + normal.y * offset,
-      },
-      c2: {
-        x: from.x + vector.dx * 0.67 + normal.x * offset,
-        y: from.y + vector.dy * 0.67 + normal.y * offset,
-      },
-      to,
-    };
-  }
-
-  function angleCurveGeometry(edge, from, to, outAngle, inAngle) {
-    const vector = lineVector(from, to);
-    const looseness = edge?.looseness ?? 1;
-    const handle = vector.length * 0.46 * looseness;
-    const relativeBase = edge?.relativeAngles ? vectorAngle(vector) : 0;
-    const resolvedOut = Number.isFinite(outAngle) ? relativeBase + outAngle : vectorAngle(vector);
-    const resolvedIn = Number.isFinite(inAngle) ? relativeBase + inAngle : vectorAngle(vector) + 180;
-    const outVector = angleUnitVector(resolvedOut);
-    const inVector = angleUnitVector(resolvedIn);
-
-    return {
-      kind: "cubic",
-      from,
-      c1: {
-        x: from.x + outVector.x * handle,
-        y: from.y + outVector.y * handle,
-      },
-      c2: {
-        x: to.x + inVector.x * handle,
-        y: to.y + inVector.y * handle,
-      },
-      to,
-    };
-  }
-
-  function geometryToPath(geometry) {
-    if (geometry.kind === "cubic") {
-      return [
-        `M ${round(geometry.from.x)} ${round(geometry.from.y)}`,
-        `C ${round(geometry.c1.x)} ${round(geometry.c1.y)}`,
-        `${round(geometry.c2.x)} ${round(geometry.c2.y)}`,
-        `${round(geometry.to.x)} ${round(geometry.to.y)}`,
-      ].join(" ");
-    }
-
-    return `M ${round(geometry.from.x)} ${round(geometry.from.y)} L ${round(geometry.to.x)} ${round(geometry.to.y)}`;
-  }
-
-  function geometryPoint(geometry, t) {
-    if (geometry.kind === "cubic") {
-      return cubicPoint(geometry.from, geometry.c1, geometry.c2, geometry.to, t);
-    }
-
-    return {
-      x: geometry.from.x + (geometry.to.x - geometry.from.x) * t,
-      y: geometry.from.y + (geometry.to.y - geometry.from.y) * t,
-    };
-  }
-
-  function geometryTangent(geometry, t) {
-    if (geometry.kind === "cubic") {
-      return cubicTangent(geometry.from, geometry.c1, geometry.c2, geometry.to, t);
-    }
-
-    return {
-      x: geometry.to.x - geometry.from.x,
-      y: geometry.to.y - geometry.from.y,
-    };
-  }
-
-  function geometrySample(geometry, t) {
-    return {
-      point: geometryPoint(geometry, t),
-      tangent: geometryTangent(geometry, t),
-    };
-  }
-
-  function geometryLength(geometry) {
-    const steps = geometry.kind === "cubic" ? 48 : 1;
-    let length = 0;
-    let previous = geometryPoint(geometry, 0);
-
-    for (let step = 1; step <= steps; step += 1) {
-      const next = geometryPoint(geometry, step / steps);
-
-      length += Math.hypot(next.x - previous.x, next.y - previous.y);
-      previous = next;
-    }
-
-    return length;
-  }
-
-  function cubicPoint(p0, p1, p2, p3, t) {
-    const mt = 1 - t;
-
-    return {
-      x: (mt ** 3) * p0.x + 3 * (mt ** 2) * t * p1.x + 3 * mt * (t ** 2) * p2.x + (t ** 3) * p3.x,
-      y: (mt ** 3) * p0.y + 3 * (mt ** 2) * t * p1.y + 3 * mt * (t ** 2) * p2.y + (t ** 3) * p3.y,
-    };
-  }
-
-  function cubicTangent(p0, p1, p2, p3, t) {
-    const mt = 1 - t;
-
-    return {
-      x: 3 * (mt ** 2) * (p1.x - p0.x) + 6 * mt * t * (p2.x - p1.x) + 3 * (t ** 2) * (p3.x - p2.x),
-      y: 3 * (mt ** 2) * (p1.y - p0.y) + 6 * mt * t * (p2.y - p1.y) + 3 * (t ** 2) * (p3.y - p2.y),
-    };
-  }
-
-  function lineVector(from, to) {
-    const dx = to.x - from.x;
-    const dy = to.y - from.y;
-    const length = Math.hypot(dx, dy) || 1;
-
-    return {
-      dx,
-      dy,
-      length,
-      ux: dx / length,
-      uy: dy / length,
-      px: -dy / length,
-      py: dx / length,
-    };
-  }
-
-  function normalizeVector(dx, dy) {
-    const length = Math.hypot(dx, dy) || 1;
-
-    return {
-      ux: dx / length,
-      uy: dy / length,
-      px: -dy / length,
-      py: dx / length,
-    };
-  }
-
-  function perpendicularVector(vector) {
-    const normalized = normalizeVector(vector.x ?? vector.dx ?? vector.ux, vector.y ?? vector.dy ?? vector.uy);
-
-    return {
-      x: normalized.px,
-      y: normalized.py,
-    };
-  }
-
-  function leftNormalVector(vector) {
-    return {
-      x: vector.dy / vector.length,
-      y: -vector.dx / vector.length,
-    };
-  }
-
-  function vectorAngle(vector) {
-    return (Math.atan2(-vector.dy, vector.dx) * 180) / Math.PI;
-  }
-
-  function angleUnitVector(degrees) {
-    const radians = (degrees * Math.PI) / 180;
-
-    return {
-      x: Math.cos(radians),
-      y: -Math.sin(radians),
-    };
-  }
-
-  function projectPoint(origin, vector, along, offset) {
-    return {
-      x: origin.x + vector.ux * along + vector.px * offset,
-      y: origin.y + vector.uy * along + vector.py * offset,
-    };
-  }
-
-  function pointsToPath(points) {
-    return points
-      .map((point, index) => `${index === 0 ? "M" : "L"} ${round(point.x)} ${round(point.y)}`)
-      .join(" ");
-  }
-
   function renderLabels(diagram, layout) {
     const declaredLabels = Object.entries(diagram.labels)
       .map(([target, text]) => {
@@ -5285,69 +4154,58 @@ import {
     };
   }
 
-  function mathJaxAvailable() {
+  function mathJaxTexToSvgAvailable() {
     return typeof window !== "undefined"
       && window.MathJax
-      && typeof window.MathJax.typesetPromise === "function";
+      && typeof window.MathJax.tex2svgPromise === "function";
   }
 
-  function labelNeedsMathJax(source) {
-    const input = String(source ?? "");
-
-    if (!input.includes("\\")) {
-      return false;
+  function whenMathJaxReady() {
+    if (typeof window === "undefined") {
+      return Promise.resolve();
     }
 
-    if (MATHJAX_COMPLEX_COMMANDS.test(input)) {
-      return true;
+    if (window.MathJax?.startup?.promise) {
+      return window.MathJax.startup.promise;
     }
 
-    let index = 0;
+    if (mathJaxTexToSvgAvailable()) {
+      return Promise.resolve();
+    }
 
-    while (index < input.length) {
-      if (input[index] === "_" || input[index] === "^") {
-        const script = rawScriptArgument(input, index + 1);
-
-        if (script && script.text.includes("\\")) {
-          const commands = script.text.match(/\\[A-Za-z]+/g) || [];
-          const plain = script.text.replace(/\\[A-Za-z]+/g, "").trim();
-
-          if (commands.length > 1 || (commands.length === 1 && plain.length > 0)) {
-            return true;
-          }
-
-          if (commands.length === 1 && !LATEX_SYMBOLS.has(commands[0].slice(1))) {
-            return true;
-          }
+    return new Promise((resolve) => {
+      let attempts = 0;
+      const timer = window.setInterval(() => {
+        if (mathJaxTexToSvgAvailable() || attempts++ > 200) {
+          window.clearInterval(timer);
+          resolve();
         }
-
-        index = script ? script.next : index + 1;
-        continue;
-      }
-
-      if (input[index] === "\\") {
-        const command = readLatexCommand(input, index);
-        const nameMatch = input.slice(index + 1, command.next).match(/^[A-Za-z]+/);
-
-        if (nameMatch && !LATEX_SYMBOLS.has(nameMatch[0]) && nameMatch[0] !== "overline" && nameMatch[0] !== "bar") {
-          return true;
-        }
-
-        index = command.next;
-        continue;
-      }
-
-      index += 1;
-    }
-
-    return false;
+      }, 50);
+    });
   }
-
   function createDiagramLabel({ text, x, y, anchor, className }) {
     const source = String(text ?? "");
 
-    if (mathJaxAvailable() && labelNeedsMathJax(source)) {
-      return createMathJaxLabelElement({ text: source, x, y, anchor, className });
+    if (labelNeedsMathJax(source)) {
+      const group = createSvg("g", {
+        class: `${className} feynman-diagram__label--math-pending`.trim(),
+        "data-math-tex": source,
+        "data-label-x": x,
+        "data-label-y": y,
+        "data-label-anchor": anchor,
+      });
+      const fallback = createSvg("text", {
+        class: "feynman-diagram__label feynman-diagram__label--fallback",
+        x,
+        y,
+        "text-anchor": anchor,
+        "dominant-baseline": "middle",
+      });
+
+      appendLabelMarkup(fallback, source);
+      group.appendChild(fallback);
+
+      return group;
     }
 
     const label = createSvg("text", {
@@ -5363,45 +4221,155 @@ import {
     return label;
   }
 
-  function createMathJaxLabelElement({ text, x, y, anchor, className }) {
-    const estWidth = Math.max(56, String(text).length * VISUAL_DEFAULTS.labelFontSize * 0.38);
-    const estHeight = Math.ceil(VISUAL_DEFAULTS.labelFontSize * 1.6);
-    const group = createSvg("g", {
-      class: `${className} feynman-diagram__label--mathjax`.trim(),
-      "data-mathjax-label": "true",
-      "data-label-x": x,
-      "data-label-y": y,
-      "data-label-anchor": anchor,
-      "data-label-est-width": estWidth,
-      "data-label-est-height": estHeight,
-    });
-    const foreignObject = createSvg("foreignObject", {
-      class: "feynman-diagram__label-math-fo",
-      x: foreignObjectX(x, estWidth, anchor),
-      y: y - estHeight / 2,
-      width: estWidth,
-      height: estHeight,
-      overflow: "visible",
-    });
-    const div = document.createElementNS(XHTML_NS, "div");
+  function mathJaxDisplayFontSize(className) {
+    const base = String(className || "").includes("edge")
+      ? VISUAL_DEFAULTS.edgeLabelFontSize
+      : VISUAL_DEFAULTS.labelFontSize;
 
-    div.setAttribute("xmlns", XHTML_NS);
-    div.className = "arithmatex feynman-diagram__label-math";
-    div.style.display = "flex";
-    div.style.alignItems = "center";
-    div.style.justifyContent = anchor === "end" ? "flex-end" : anchor === "start" ? "flex-start" : "center";
-    div.style.width = "100%";
-    div.style.height = "100%";
-    div.style.fontSize = `${Math.round(VISUAL_DEFAULTS.labelFontSize * 0.72)}px`;
-    div.style.fontFamily = VISUAL_DEFAULTS.labelFontFamily;
-    div.style.fontStyle = VISUAL_DEFAULTS.labelFontStyle;
-    div.style.lineHeight = "1";
-    div.style.color = "currentColor";
-    div.textContent = `\\(${text}\\)`;
-    foreignObject.appendChild(div);
-    group.appendChild(foreignObject);
+    return base * VISUAL_DEFAULTS.mathLabelFontScale;
+  }
+
+  function parseMathJaxSvgLength(value, emPixels) {
+    if (value == null || value === "") {
+      return 0;
+    }
+
+    const raw = String(value).trim();
+    const match = raw.match(/^([+-]?\d*\.?\d+(?:e[-+]?\d+)?)\s*(ex|em|px)?$/i);
+
+    if (!match) {
+      return Number.parseFloat(raw) || 0;
+    }
+
+    const amount = Number.parseFloat(match[1]);
+    const unit = (match[2] || "px").toLowerCase();
+
+    if (unit === "ex") {
+      return amount * emPixels * 0.431;
+    }
+
+    if (unit === "em") {
+      return amount * emPixels;
+    }
+
+    return amount;
+  }
+
+  function prefixSvgIds(root, prefix) {
+    const idMap = new Map();
+
+    root.querySelectorAll("[id]").forEach((element) => {
+      const oldId = element.id;
+      const newId = `${prefix}__${oldId}`;
+
+      idMap.set(oldId, newId);
+      element.id = newId;
+    });
+
+    root.querySelectorAll("[href]").forEach((element) => {
+      const href = element.getAttribute("href");
+
+      if (href?.startsWith("#")) {
+        const mapped = idMap.get(href.slice(1));
+
+        if (mapped) {
+          element.setAttribute("href", `#${mapped}`);
+        }
+      }
+    });
+
+    root.querySelectorAll("*").forEach((element) => {
+      const xlinkHref = element.getAttributeNS("http://www.w3.org/1999/xlink", "href");
+
+      if (xlinkHref?.startsWith("#")) {
+        const mapped = idMap.get(xlinkHref.slice(1));
+
+        if (mapped) {
+          element.setAttributeNS("http://www.w3.org/1999/xlink", "href", `#${mapped}`);
+        }
+      }
+    });
+  }
+
+  function embedMathJaxSvgGroup(container, { x, y, anchor, className, idPrefix }) {
+    const sourceSvg = container?.querySelector?.("svg");
+
+    if (!sourceSvg) {
+      return createSvg("g");
+    }
+
+    const emPixels = mathJaxDisplayFontSize(className);
+    let width = parseMathJaxSvgLength(sourceSvg.getAttribute("width"), emPixels);
+    let height = parseMathJaxSvgLength(sourceSvg.getAttribute("height"), emPixels);
+
+    if (!(width > 0 && height > 0)) {
+      width = emPixels * 2.4;
+      height = emPixels * 1.05;
+    }
+
+    const group = createSvg("g", {
+      class: `${className || ""} feynman-diagram__label--mathjax`.trim(),
+      transform: `translate(${round(foreignObjectX(x, width, anchor))} ${round(y - height / 2)})`,
+    });
+    const nested = document.importNode(sourceSvg, true);
+
+    nested.setAttribute("width", width);
+    nested.setAttribute("height", height);
+    nested.setAttribute("overflow", "visible");
+    nested.setAttribute("class", "feynman-diagram__label-math-svg");
+    prefixSvgIds(nested, idPrefix);
+    group.appendChild(nested);
 
     return group;
+  }
+
+  async function materializePendingMathLabels(root) {
+    if (!root?.querySelectorAll) {
+      return;
+    }
+
+    const pending = [...root.querySelectorAll("[data-math-tex]")];
+
+    if (!pending.length) {
+      return;
+    }
+
+    await whenMathJaxReady();
+
+    if (!mathJaxTexToSvgAvailable()) {
+      return;
+    }
+
+    await Promise.all(pending.map(async (group) => {
+      const tex = group.dataset.mathTex;
+
+      if (!tex) {
+        return;
+      }
+
+      try {
+        const fontSize = mathJaxDisplayFontSize(
+          group.getAttribute("class")?.replace("feynman-diagram__label--math-pending", "").trim(),
+        );
+        const mathNode = await window.MathJax.tex2svgPromise(tex, {
+          display: false,
+          em: fontSize,
+          ex: fontSize * 0.431,
+        });
+        const replacement = embedMathJaxSvgGroup(mathNode, {
+          x: Number(group.dataset.labelX),
+          y: Number(group.dataset.labelY),
+          anchor: group.dataset.labelAnchor || "middle",
+          className: group.getAttribute("class")?.replace("feynman-diagram__label--math-pending", "").trim(),
+          idPrefix: `feynman-math-${mathLabelSerial += 1}`,
+        });
+
+        group.replaceWith(replacement);
+      } catch {
+        group.removeAttribute("data-math-tex");
+        group.classList.remove("feynman-diagram__label--math-pending");
+      }
+    }));
   }
 
   function foreignObjectX(x, width, anchor) {
@@ -5414,55 +4382,6 @@ import {
     }
 
     return x - width / 2;
-  }
-
-  function fitMathJaxLabelForeignObjects(root) {
-    if (!root?.querySelectorAll) {
-      return;
-    }
-
-    root.querySelectorAll("[data-mathjax-label]").forEach((group) => {
-      const div = group.querySelector(".feynman-diagram__label-math");
-      const foreignObject = group.querySelector("foreignObject");
-
-      if (!div || !foreignObject) {
-        return;
-      }
-
-      const rendered = div.querySelector("mjx-container") || div;
-      const width = Math.ceil(
-        (rendered.offsetWidth || Number(group.dataset.labelEstWidth) || 56) + 6,
-      );
-      const height = Math.ceil(
-        (rendered.offsetHeight || Number(group.dataset.labelEstHeight) || 40) + 4,
-      );
-      const x = Number(group.dataset.labelX);
-      const y = Number(group.dataset.labelY);
-      const anchor = group.dataset.labelAnchor || "middle";
-
-      foreignObject.setAttribute("width", width);
-      foreignObject.setAttribute("height", height);
-      foreignObject.setAttribute("x", foreignObjectX(x, width, anchor));
-      foreignObject.setAttribute("y", y - height / 2);
-    });
-  }
-
-  function typesetFeynmanMathLabels(root) {
-    if (!mathJaxAvailable()) {
-      return Promise.resolve();
-    }
-
-    const labels = root?.querySelectorAll
-      ? [...root.querySelectorAll(".feynman-diagram__label-math")]
-      : [];
-
-    if (!labels.length) {
-      return Promise.resolve();
-    }
-
-    return window.MathJax.typesetPromise(labels).then(() => {
-      fitMathJaxLabelForeignObjects(root);
-    });
   }
 
   function appendLabelMarkup(label, source) {
@@ -5488,279 +4407,6 @@ import {
 
       label.appendChild(tspan);
     });
-  }
-
-  function labelSegmentText(segment) {
-    if (segment.kind === "normal") {
-      return segment.text;
-    }
-
-    return segment.text.replace(/-/g, "−");
-  }
-
-  function parseLabelMarkup(source) {
-    const input = String(source ?? "");
-    const segments = [];
-    let buffer = "";
-    let index = 0;
-
-    const flush = () => {
-      if (!buffer) {
-        return;
-      }
-
-      pushLabelSegment(segments, "normal", buffer);
-      buffer = "";
-    };
-
-    while (index < input.length) {
-      const character = input[index];
-
-      if (character === "\\") {
-        const overline = readOverlineCommand(input, index);
-
-        if (overline) {
-          flush();
-          pushLabelSegment(segments, "normal", labelMarkupToText(overline.text), { overline: true });
-          index = overline.next;
-          continue;
-        }
-
-        const command = readLatexCommand(input, index);
-        buffer += command.text;
-        index = command.next;
-        continue;
-      }
-
-      if (UNICODE_SUPERSCRIPTS.has(character)) {
-        flush();
-        pushLabelSegment(segments, "sup", UNICODE_SUPERSCRIPTS.get(character));
-        index += 1;
-        continue;
-      }
-
-      if (UNICODE_SUBSCRIPTS.has(character)) {
-        flush();
-        pushLabelSegment(segments, "sub", UNICODE_SUBSCRIPTS.get(character));
-        index += 1;
-        continue;
-      }
-
-      if (character === "^" || character === "_") {
-        const script = readScriptArgument(input, index + 1);
-
-        if (!script) {
-          buffer += character;
-          index += 1;
-          continue;
-        }
-
-        flush();
-        pushLabelSegment(
-          segments,
-          character === "^" ? "sup" : "sub",
-          labelMarkupToText(script.text)
-        );
-        index = script.next;
-        continue;
-      }
-
-      buffer += character;
-      index += 1;
-    }
-
-    flush();
-    return segments;
-  }
-
-  function labelMarkupToText(source) {
-    return parseLabelMarkup(source).map((segment) => segment.text).join("");
-  }
-
-  function pushLabelSegment(segments, kind, text, options = {}) {
-    if (!text) {
-      return;
-    }
-
-    const previous = segments[segments.length - 1];
-    if (
-      previous
-      && previous.kind === kind
-      && Boolean(previous.overline) === Boolean(options.overline)
-    ) {
-      previous.text += text;
-      return;
-    }
-
-    segments.push({ kind, text, ...options });
-  }
-
-  function readOverlineCommand(input, start) {
-    if (!input.startsWith("\\overline", start) && !input.startsWith("\\bar", start)) {
-      return null;
-    }
-
-    const commandLength = input.startsWith("\\overline", start) ? "\\overline".length : "\\bar".length;
-    const argument = readScriptArgument(input, start + commandLength);
-
-    if (!argument) {
-      return null;
-    }
-
-    return argument;
-  }
-
-  function readLatexCommand(input, start) {
-    let index = start + 1;
-
-    if (index >= input.length) {
-      return { text: "\\", next: index };
-    }
-
-    if (/[A-Za-z]/.test(input[index])) {
-      while (index < input.length && /[A-Za-z]/.test(input[index])) {
-        index += 1;
-      }
-
-      const command = input.slice(start + 1, index);
-      return {
-        text: LATEX_SYMBOLS.get(command) ?? `\\${command}`,
-        next: index,
-      };
-    }
-
-    const escaped = LATEX_ESCAPES.get(input[index]);
-    return {
-      text: escaped ?? input[index],
-      next: index + 1,
-    };
-  }
-
-  function readScriptArgument(input, start) {
-    if (start >= input.length) {
-      return null;
-    }
-
-    if (input[start] === "{") {
-      return readBracedScriptArgument(input, start);
-    }
-
-    if (input[start] === "\\") {
-      const command = readLatexCommand(input, start);
-      return {
-        text: command.text,
-        next: command.next,
-      };
-    }
-
-    return {
-      text: input[start],
-      next: start + 1,
-    };
-  }
-
-  function rawScriptArgument(input, start) {
-    if (start >= input.length) {
-      return null;
-    }
-
-    if (input[start] === "{") {
-      return readRawBracedScriptArgument(input, start);
-    }
-
-    if (input[start] === "\\") {
-      const command = readLatexCommand(input, start);
-      return {
-        text: input.slice(start, command.next),
-        next: command.next,
-      };
-    }
-
-    return {
-      text: input[start],
-      next: start + 1,
-    };
-  }
-
-  function readRawBracedScriptArgument(input, start) {
-    let depth = 0;
-    let text = "";
-
-    for (let index = start; index < input.length; index += 1) {
-      const character = input[index];
-
-      if (character === "{") {
-        depth += 1;
-
-        if (depth > 1) {
-          text += character;
-        }
-
-        continue;
-      }
-
-      if (character === "}") {
-        depth -= 1;
-
-        if (depth === 0) {
-          return {
-            text,
-            next: index + 1,
-          };
-        }
-
-        text += character;
-        continue;
-      }
-
-      text += character;
-    }
-
-    return null;
-  }
-
-  function readBracedScriptArgument(input, start) {
-    let depth = 0;
-    let text = "";
-
-    for (let index = start; index < input.length; index += 1) {
-      const character = input[index];
-
-      if (character === "\\") {
-        const command = readLatexCommand(input, index);
-        text += command.text;
-        index = command.next - 1;
-        continue;
-      }
-
-      if (character === "{") {
-        depth += 1;
-
-        if (depth > 1) {
-          text += character;
-        }
-
-        continue;
-      }
-
-      if (character === "}") {
-        depth -= 1;
-
-        if (depth === 0) {
-          return {
-            text,
-            next: index + 1,
-          };
-        }
-
-        text += character;
-        continue;
-      }
-
-      text += character;
-    }
-
-    return null;
   }
 
   function labelOffset(kind) {
@@ -5832,6 +4478,18 @@ import {
 
       .feynman-diagram__edge--ghost {
         stroke-dasharray: 1 7;
+      }
+
+      .feynman-diagram__edge--dashed {
+        stroke-dasharray: 10 7;
+      }
+
+      .feynman-diagram__edge--dashdot {
+        stroke-dasharray: 11 6 1 6;
+      }
+
+      .feynman-diagram__edge--double {
+        stroke-width: ${VISUAL_DEFAULTS.gluonStrokeWidth};
       }
 
       .feynman-diagram__junction-cap {
@@ -5928,17 +4586,12 @@ import {
         font-size: ${VISUAL_DEFAULTS.edgeLabelFontSize}px;
       }
 
-      .feynman-diagram__label-math-fo {
-        overflow: visible;
+      .feynman-diagram__label--fallback {
+        opacity: 0.92;
       }
 
-      .feynman-diagram__label-math {
-        margin: 0;
-        padding: 0;
-      }
-
-      .feynman-diagram__label-math mjx-container {
-        margin: 0 !important;
+      .feynman-diagram__label--mathjax {
+        fill: currentColor;
       }
 
       .feynman-diagram__errors {
@@ -5982,7 +4635,6 @@ import {
       renderFeynmanElement(code.textContent, renderIndex)
         .then((figure) => {
           placeholder.replaceWith(figure);
-          return typesetFeynmanMathLabels(figure);
         })
         .catch((error) => {
           placeholder.replaceWith(renderErrorFigure(error, renderIndex));
@@ -6019,15 +4671,23 @@ import {
     wavePathForEdge,
     gluonPath,
     gluonPathForEdge,
+    trianglePath,
+    trianglePathForEdge,
+    squarePath,
+    squarePathForEdge,
+    doubleLinePath,
+    doubleLinePathForEdge,
     edgeLabelPosition,
     momentumArrowGeometry,
     braceGeometry,
     junctionCapNodes,
     parseLabelMarkup,
     labelNeedsMathJax,
+    mathJaxDisplayFontSize,
+    parseMathJaxSvgLength,
     labelMarkupToText,
     labelSegmentText,
-    typesetFeynmanMathLabels,
+    materializePendingMathLabels,
     visualDefaults: VISUAL_DEFAULTS,
     renderAll,
   };
