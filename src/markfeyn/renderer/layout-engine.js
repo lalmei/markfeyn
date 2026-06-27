@@ -3,29 +3,36 @@ import {
   attachLayoutAnalysis,
   prepareFeynmanLayout,
 } from "./layout/layout.js";
+import { finalizeLayout } from "./layout/normalization.js";
+import { resolveLayoutOptions } from "./layout/options.js";
+import {
+  applyParallelPropagatorCurves,
+  layoutFeynmanPreparedFallbackRaw,
+  layoutFeynmanPreparedRaw,
+} from "./layout/strategies.js";
 
-export function createLayoutEngine(helpers) {
+export function createLayoutEngine() {
   return {
     async layoutFeynman(diagram, options) {
       const prepared = prepareFeynmanLayout(diagram, options);
       const layoutDiagram = prepared.compatibleDiagram;
-      const layoutOptions = helpers.resolveLayoutOptions(layoutDiagram, options);
+      const layoutOptions = resolveLayoutOptions(layoutDiagram, options);
       let rawLayout;
 
-      helpers.applyParallelPropagatorCurves(layoutDiagram, prepared);
+      applyParallelPropagatorCurves(layoutDiagram, prepared);
 
       try {
-        const layoutStartedAt = helpers.profileNow();
-        rawLayout = await helpers.layoutFeynmanPreparedRaw(layoutDiagram, layoutOptions, prepared);
-        prepared.profile?.push("layout", helpers.profileNow() - layoutStartedAt);
+        const layoutStartedAt = profileNow();
+        rawLayout = await layoutFeynmanPreparedRaw(layoutDiagram, layoutOptions, prepared);
+        prepared.profile?.push("layout", profileNow() - layoutStartedAt);
       } catch (error) {
-        const fallbackStartedAt = helpers.profileNow();
-        rawLayout = helpers.layoutFeynmanPreparedFallbackRaw(layoutDiagram, layoutOptions, prepared);
-        prepared.profile?.push("layout-fallback", helpers.profileNow() - fallbackStartedAt);
+        const fallbackStartedAt = profileNow();
+        rawLayout = layoutFeynmanPreparedFallbackRaw(layoutDiagram, layoutOptions, prepared);
+        prepared.profile?.push("layout-fallback", profileNow() - fallbackStartedAt);
       }
 
       const finalLayout = applyIncrementalStability(
-        helpers.finalizeLayout(layoutDiagram, rawLayout, layoutOptions),
+        finalizeLayout(layoutDiagram, rawLayout, layoutOptions),
         prepared.incremental
       );
 
@@ -39,17 +46,17 @@ export function createLayoutEngine(helpers) {
     layoutFeynmanFallbackSync(diagram, options) {
       const prepared = prepareFeynmanLayout(diagram, options);
       const layoutDiagram = prepared.compatibleDiagram;
-      const layoutOptions = helpers.resolveLayoutOptions(layoutDiagram, options);
+      const layoutOptions = resolveLayoutOptions(layoutDiagram, options);
 
-      helpers.applyParallelPropagatorCurves(layoutDiagram, prepared);
+      applyParallelPropagatorCurves(layoutDiagram, prepared);
 
-      const fallbackStartedAt = helpers.profileNow();
-      const rawLayout = helpers.layoutFeynmanPreparedFallbackRaw(layoutDiagram, layoutOptions, prepared);
-      prepared.profile?.push("layout-fallback", helpers.profileNow() - fallbackStartedAt);
+      const fallbackStartedAt = profileNow();
+      const rawLayout = layoutFeynmanPreparedFallbackRaw(layoutDiagram, layoutOptions, prepared);
+      prepared.profile?.push("layout-fallback", profileNow() - fallbackStartedAt);
 
       return attachLayoutAnalysis(
         applyIncrementalStability(
-          helpers.finalizeLayout(layoutDiagram, rawLayout, layoutOptions),
+          finalizeLayout(layoutDiagram, rawLayout, layoutOptions),
           prepared.incremental
         ),
         prepared,
@@ -57,4 +64,10 @@ export function createLayoutEngine(helpers) {
       );
     },
   };
+}
+
+function profileNow() {
+  return typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
 }
