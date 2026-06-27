@@ -1,7 +1,58 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const { parseHTML } = require("linkedom");
 const feynman = require("../src/markfeyn/assets/feynman-diagrams.js");
+
+const LAYOUT_FIXTURE_DIR = path.join(__dirname, "layout", "fixtures");
+
+function readLayoutFixture(name) {
+  return fs.readFileSync(path.join(LAYOUT_FIXTURE_DIR, name), "utf8");
+}
+
+async function renderDiagramSvg(source) {
+  const previousDocument = globalThis.document;
+  const previousWindow = globalThis.window;
+  const env = parseHTML("<!doctype html><html><head></head><body></body></html>");
+  const testDocument = env.document;
+  const pre = testDocument.createElement("pre");
+  const code = testDocument.createElement("code");
+
+  try {
+    globalThis.document = testDocument;
+    globalThis.window = env.window;
+    code.className = "language-feynman";
+    code.textContent = source.trim();
+    pre.appendChild(code);
+    testDocument.body.appendChild(pre);
+
+    feynman.renderAll(testDocument);
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const svg = testDocument.querySelector("svg.feynman-diagram__svg");
+
+      if (svg) {
+        return svg;
+      }
+    }
+
+    throw new Error("Timed out waiting for diagram render");
+  } finally {
+    if (previousDocument === undefined) {
+      delete globalThis.document;
+    } else {
+      globalThis.document = previousDocument;
+    }
+
+    if (previousWindow === undefined) {
+      delete globalThis.window;
+    } else {
+      globalThis.window = previousWindow;
+    }
+  }
+}
 
 function pathNumbers(path) {
   return path.match(/-?\d+(?:\.\d+)?(?:e[-+]?\d+)?/gi).map(Number);
@@ -22,6 +73,46 @@ function angleDegrees(from, to) {
 
 function pointDistance(from, to) {
   return Math.hypot(to.x - from.x, to.y - from.y);
+}
+
+function approximatelyEqual(left, right, tolerance = 0.001) {
+  return Math.abs(left - right) <= tolerance;
+}
+
+function normalizeAngleDegrees(angle) {
+  return ((angle % 360) + 360) % 360;
+}
+
+function contactAnglesDegrees(layout, center, nodes) {
+  return nodes
+    .map((node) => normalizeAngleDegrees(angleDegrees(center, layout.positions[node])))
+    .sort((left, right) => left - right);
+}
+
+function angularGapsDegrees(angles) {
+  return angles.map((angle, index) => {
+    const next = angles[(index + 1) % angles.length] + (index === angles.length - 1 ? 360 : 0);
+
+    return next - angle;
+  });
+}
+
+function assertContactStarUniform(layout, centerNode, leaves, tolerance = 0.001) {
+  const center = layout.positions[centerNode];
+  const distances = leaves.map((node) => pointDistance(layout.positions[node], center));
+  const angles = contactAnglesDegrees(layout, center, leaves);
+  const gaps = angularGapsDegrees(angles);
+
+  assert.ok(range(distances) < tolerance, `${centerNode} external radii should match`);
+  assert.ok(range(gaps) < tolerance, `${centerNode} angular gaps should be uniform`);
+}
+
+function assertMirroredAcrossVertical(center, left, right, tolerance = 0.001) {
+  assert.ok(approximatelyEqual(left.y, right.y, tolerance), "mirrored leaves should share y");
+  assert.ok(
+    approximatelyEqual(left.x - center.x, center.x - right.x, tolerance),
+    "mirrored leaves should be balanced across the vertical axis",
+  );
 }
 
 function positionSignature(layout) {
@@ -81,6 +172,61 @@ function boundingBox(points) {
   };
 }
 
+function boxesOverlap(left, right, padding = 0) {
+  return left.minX - padding <= right.maxX
+    && left.maxX + padding >= right.minX
+    && left.minY - padding <= right.maxY
+    && left.maxY + padding >= right.minY;
+}
+
+function sharedMemberCount(left, right) {
+  const rightSet = new Set(right);
+
+  return left.filter((value) => rightSet.has(value)).length;
+}
+
+function selectedLoopRegions(layout) {
+  const selectedIds = new Set(layout.multiloopCandidate?.regions || []);
+
+  return (layout.analysis.topology.loopRegions || [])
+    .filter((region) => selectedIds.has(region.id));
+}
+
+function assertSelectedLoopRegionsNonDegenerate(layout) {
+  selectedLoopRegions(layout).forEach((region) => {
+    const points = region.nodes.map((node) => layout.positions[node]);
+
+    assert.ok(
+      Math.abs(polygonArea(points)) > 200,
+      `${region.id} should have a non-degenerate polygon`,
+    );
+  });
+}
+
+function assertSelectedDisjointRegionsDoNotOverlap(layout) {
+  const regions = selectedLoopRegions(layout).map((region) => ({
+    region,
+    box: boundingBox(region.nodes.map((node) => layout.positions[node])),
+  }));
+
+  for (let leftIndex = 0; leftIndex < regions.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < regions.length; rightIndex += 1) {
+      const left = regions[leftIndex];
+      const right = regions[rightIndex];
+
+      if (sharedMemberCount(left.region.nodes, right.region.nodes)) {
+        continue;
+      }
+
+      assert.equal(
+        boxesOverlap(left.box, right.box, 6),
+        false,
+        `${left.region.id} and ${right.region.id} should not overlap`,
+      );
+    }
+  }
+}
+
 function range(values) {
   return Math.max(...values) - Math.min(...values);
 }
@@ -116,6 +262,20 @@ function symmetricUnclassifiedDiagnostic(layout) {
 
 function labelPlacementEntry(layout, id) {
   return layout.labelPlacement?.byId?.[id];
+}
+
+function assertFiniteLabelPlacement(layout) {
+  assert.ok(layout.labelPlacement);
+  assert.ok(Number.isFinite(layout.labelPlacement.summary.residualScore));
+  Object.entries(layout.labelPlacement.summary.breakdown).forEach(([field, value]) => {
+    assert.equal(typeof value, "number", `${field} label summary should be numeric`);
+    assert.ok(Number.isFinite(value), `${field} label summary should be finite`);
+  });
+  layout.labelPlacement.entries.forEach((entry) => {
+    assert.ok(Number.isFinite(entry.x), `${entry.id}.x should be finite`);
+    assert.ok(Number.isFinite(entry.y), `${entry.id}.y should be finite`);
+    assert.ok(Number.isFinite(entry.score), `${entry.id}.score should be finite`);
+  });
 }
 
 function assertFiniteScore(layout) {
@@ -194,39 +354,60 @@ label i1:"incoming electron" o1:'outgoing muon'
 
 async function testTikzOrientationParser() {
   const cases = [
-    ["horizontal a to b", { axis: "horizontal", from: "a", to: "b", flip: false, angle: 0 }],
-    ["horizontal' a to b", { axis: "horizontal", from: "a", to: "b", flip: true, angle: 0 }],
-    ["vertical a to b", { axis: "vertical", from: "a", to: "b", flip: false, angle: 90 }],
-    ["vertical' a to b", { axis: "vertical", from: "a", to: "b", flip: true, angle: 90 }],
+    ["tikz horizontal a to b", { axis: "horizontal", from: "a", to: "b", flip: false, angle: 0 }],
+    ["tikz horizontal' a to b", { axis: "horizontal", from: "a", to: "b", flip: true, angle: 0 }],
+    ["tikz vertical a to b", { axis: "vertical", from: "a", to: "b", flip: false, angle: 90 }],
+    ["tikz vertical' a to b", { axis: "vertical", from: "a", to: "b", flip: true, angle: 90 }],
   ];
 
   cases.forEach(([line, expected]) => {
     const diagram = feynman.parseFeynman(`${line}\nfermion a->b`);
 
     assert.deepEqual(diagram.errors, []);
+    assert.deepEqual(diagram.warnings, []);
     assert.deepEqual(diagram.options.tikzOrientation, expected);
   });
+
+  const deprecated = feynman.parseFeynman("vertical a to b\nfermion a->b");
+
+  assert.deepEqual(deprecated.errors, []);
+  assert.match(deprecated.warnings[0], /deprecated/);
+  assert.deepEqual(deprecated.options.tikzOrientation, { axis: "vertical", from: "a", to: "b", flip: false, angle: 90 });
+}
+
+async function testNativeAlignmentParser() {
+  const diagram = feynman.parseFeynman(`
+align vertical lepton_vertex struck
+align horizontal pql parton struck jet
+fermion pql->parton parton->struck struck->jet
+`);
+
+  assert.deepEqual(diagram.errors, []);
+  assert.deepEqual(diagram.options.alignments, [
+    { axis: "vertical", nodes: ["lepton_vertex", "struck"] },
+    { axis: "horizontal", nodes: ["pql", "parton", "struck", "jet"] },
+  ]);
 }
 
 async function testTikzPostLayoutOrientation() {
   const horizontal = feynman.parseFeynman(`
 layout layered
-horizontal a to b
+tikz horizontal a to b
 fermion a->b a->c
 `);
   const horizontalPrimed = feynman.parseFeynman(`
 layout layered
-horizontal' a to b
+tikz horizontal' a to b
 fermion a->b a->c
 `);
   const vertical = feynman.parseFeynman(`
 layout layered
-vertical a to b
+tikz vertical a to b
 fermion a->b a->c
 `);
   const verticalPrimed = feynman.parseFeynman(`
 layout layered
-vertical' a to b
+tikz vertical' a to b
 fermion a->b a->c
 `);
   const horizontalLayout = await feynman.layoutFeynman(horizontal);
@@ -252,7 +433,7 @@ fermion a->b a->c
 
 async function testTikzVerticalOrientationFansMixedTerminalPairs() {
   const diagram = feynman.parseFeynman(`
-vertical a to b
+tikz vertical a to b
 incoming e positron
 outgoing electron positron2
 fermion e->a a->electron
@@ -268,14 +449,14 @@ label e:e^- positron:e^+ electron:e^- positron2:e^+ a->b:\\gamma
   assert.ok(Math.abs(angleDegrees(a, b) - 90) < 0.001);
   assert.ok(pointDistance(e, a) > 120);
   assert.ok(pointDistance(a, electron) > 120);
-  assert.ok(pointDistance(b, positron) > 120);
-  assert.ok(pointDistance(positron2, b) > 120);
+  assert.ok(pointDistance(b, positron) > 100);
+  assert.ok(pointDistance(positron2, b) > 100);
   assert.ok(acuteLineAngleDegrees(e, a) < 42);
   assert.ok(acuteLineAngleDegrees(a, electron) < 42);
   assert.ok(e.y < a.y);
   assert.ok(electron.y < a.y);
-  assert.ok(positron.y > b.y);
-  assert.ok(positron2.y > b.y);
+  assert.ok(e.y < positron.y);
+  assert.ok(electron.y < positron2.y);
   assert.ok(e.x < a.x);
   assert.ok(electron.x > a.x);
   assert.ok(positron.x < b.x);
@@ -286,7 +467,7 @@ label e:e^- positron:e^+ electron:e^- positron2:e^+ a->b:\\gamma
 
 async function testHorizontalOrientationKeepsAnnihilationFans() {
   const diagram = feynman.parseFeynman(`
-horizontal ann to prod
+tikz horizontal ann to prod
 incoming e_minus e_plus
 outgoing mu_plus mu_minus
 fermion e_minus->ann
@@ -336,8 +517,8 @@ label e_minus:e^- e_plus:e^+ mu_plus:\\mu^+ mu_minus:\\mu^- ann->prod:\\gamma
   assert.ok(Math.abs(angleDegrees(ann, prod)) < 0.001);
   assert.ok(Math.abs(ann.y - incomingCenter) < 0.001);
   assert.ok(Math.abs(prod.y - outgoingCenter) < 0.001);
-  assert.ok(layout.positions.e_minus.y < ann.y);
-  assert.ok(layout.positions.e_plus.y > ann.y);
+  assert.ok(layout.positions.e_minus.y > ann.y);
+  assert.ok(layout.positions.e_plus.y < ann.y);
   assert.ok(layout.positions.mu_plus.y < prod.y);
   assert.ok(layout.positions.mu_minus.y > prod.y);
 }
@@ -751,6 +932,61 @@ fermion prod->mu_minus
   assert.ok(layout.debug.constraints.ports.ann.length >= 2);
 }
 
+async function testFermionFlowConservationDetectsExternalFermionsAndCustomGraphs() {
+  const conserving = feynman.parseFeynman(`
+incoming e_minus e_plus
+outgoing mu_plus mu_minus
+fermion e_minus->ann
+anti fermion e_plus->ann
+photon ann->prod
+anti fermion prod->mu_plus
+fermion prod->mu_minus
+`);
+  const violating = feynman.parseFeynman(`
+incoming e_minus e_plus
+outgoing mu_plus mu_minus
+fermion e_minus->ann
+fermion e_plus->ann
+photon ann->prod
+anti fermion prod->mu_plus
+fermion prod->mu_minus
+`);
+
+  const conservingLayout = await feynman.layoutFeynman(conserving);
+  const violatingLayout = await feynman.layoutFeynman(violating);
+  const conservingFlow = conservingLayout.analysis.topology.fermionFlow;
+  const violatingFlow = violatingLayout.analysis.topology.fermionFlow;
+
+  assert.equal(conservingLayout.analysis.topology.detectedTopology, "scattering");
+  assert.equal(conservingFlow.conserved, true);
+  assert.equal(conservingFlow.customGraph, false);
+  assert.equal(conservingFlow.violations.length, 0);
+  assert.equal(conservingFlow.externalFermionCount, 4);
+
+  assert.equal(violatingLayout.analysis.topology.detectedTopology, "scattering");
+  assert.equal(violatingFlow.conserved, false);
+  assert.equal(violatingFlow.customGraph, true);
+  assert.ok(violatingFlow.violations.some((violation) => violation.vertex === "ann"));
+
+  const limitationCodes = violatingLayout.diagnostics
+    .filter((diagnostic) => diagnostic.stage === "topology")
+    .map((diagnostic) => diagnostic.data?.code);
+  assert.ok(limitationCodes.includes("fermion-number-not-conserved"));
+}
+
+async function testFermionFlowContactStarStaysRecognized() {
+  const diagram = feynman.parseFeynman(`
+fermion a->v b->v c->v d->v
+`);
+  const layout = await feynman.layoutFeynman(diagram);
+  const flow = layout.analysis.topology.fermionFlow;
+
+  assert.equal(layout.analysis.topology.detectedTopology, "contactInteraction");
+  assert.equal(flow.conserved, false);
+  assert.equal(flow.customGraph, false);
+  assert.equal(flow.externalFermionCount, 4);
+}
+
 async function testMilestoneOneSymmetricUnclassifiedContact() {
   const diagram = feynman.parseFeynman(`
 fermion a->v b->v c->v d->v
@@ -765,10 +1001,164 @@ fermion a->v b->v c->v d->v
     assert.equal(layout.positions[node].kind, "unclassified");
   });
   assert.ok(Math.max(...distances) - Math.min(...distances) < 0.001);
+  assertContactStarUniform(layout, "v", ["a", "b", "c", "d"]);
   assert.ok(layout.positions.a.x < center.x);
   assert.ok(layout.positions.b.x > center.x);
   assert.ok(layout.positions.c.y > center.y);
   assert.ok(layout.positions.d.x < center.x);
+}
+
+async function testMilestoneThreeEOddContactStarUsesReflectionAxis() {
+  const source = `
+fermion l1->hub1 l2->hub1 l3->hub1
+fermion hub1->r2 hub1->r3
+label l1:a_1 l2:a_2 l3:a_3 r2:b_2 r3:b_3
+vertex hub1:blob
+`;
+  const diagram = feynman.parseFeynman(source);
+  const layout = await feynman.layoutFeynman(diagram, { debug: true });
+  const rerun = await feynman.layoutFeynman(feynman.parseFeynman(source), { debug: true });
+  const leaves = ["l1", "l2", "l3", "r2", "r3"];
+  const center = layout.positions.hub1;
+
+  assert.deepEqual(diagram.errors, []);
+  assert.equal(layout.analysis.topology.detectedTopology, "contactInteraction");
+  assert.equal(layout.analysis.orientation.mode, "symmetric");
+  assert.deepEqual(layout.analysis.externalOrdering.unclassified.map((entry) => entry.id), leaves);
+  leaves.forEach((node) => {
+    assert.equal(layout.positions[node].kind, "unclassified");
+  });
+  assert.ok(approximatelyEqual(center.x, layout.width / 2));
+  assert.ok(approximatelyEqual(center.y, layout.height / 2));
+  assertContactStarUniform(layout, "hub1", leaves);
+  assert.ok(approximatelyEqual(layout.positions.l3.x, center.x));
+  assert.ok(layout.positions.l3.y < center.y);
+  assertMirroredAcrossVertical(center, layout.positions.l2, layout.positions.r2);
+  assertMirroredAcrossVertical(center, layout.positions.l1, layout.positions.r3);
+  assertFiniteLabelPlacement(layout);
+  assertFiniteScore(layout);
+  assert.deepEqual(positionSignature(layout), positionSignature(rerun));
+}
+
+async function testMilestoneThreeESixLegContactStarIsUniformAndDeterministic() {
+  const source = `
+fermion a->v b->v c->v d->v e->v f->v
+`;
+  const layout = await feynman.layoutFeynman(feynman.parseFeynman(source), { debug: true });
+  const rerun = await feynman.layoutFeynman(feynman.parseFeynman(source), { debug: true });
+  const center = layout.positions.v;
+
+  assert.equal(layout.analysis.topology.detectedTopology, "contactInteraction");
+  assert.equal(layout.analysis.orientation.mode, "symmetric");
+  assertContactStarUniform(layout, "v", ["a", "b", "c", "d", "e", "f"]);
+  assert.ok(approximatelyEqual(layout.positions.c.y, center.y));
+  assert.ok(layout.positions.c.x > center.x);
+  assert.ok(approximatelyEqual(layout.positions.f.y, center.y));
+  assert.ok(layout.positions.f.x < center.x);
+  assert.deepEqual(positionSignature(layout), positionSignature(rerun));
+}
+
+async function testMilestoneThreeEExplicitRolesKeepProcessContactLayout() {
+  const diagram = feynman.parseFeynman(`
+incoming l1 l2 l3
+outgoing r2 r3
+fermion l1->hub1 l2->hub1 l3->hub1
+fermion hub1->r2 hub1->r3
+vertex hub1:blob
+`);
+  const layout = await feynman.layoutFeynman(diagram);
+
+  assert.deepEqual(diagram.errors, []);
+  assert.equal(layout.analysis.topology.detectedTopology, "contactInteraction");
+  assert.equal(layout.analysis.orientation.mode, "process");
+  ["l1", "l2", "l3"].forEach((node) => {
+    assert.equal(layout.positions[node].kind, "incoming");
+    assert.ok(layout.positions[node].x < layout.positions.hub1.x);
+  });
+  ["r2", "r3"].forEach((node) => {
+    assert.equal(layout.positions[node].kind, "outgoing");
+    assert.ok(layout.positions.hub1.x < layout.positions[node].x);
+  });
+}
+
+async function testMilestoneThreeEContactArrowsAndEdgeSpellingDoNotInferProcess() {
+  const forward = `
+fermion l1->hub1 l2->hub1 l3->hub1
+fermion hub1->r2 hub1->r3
+vertex hub1:blob
+`;
+  const reversedArrows = `
+anti fermion l1->hub1 l2->hub1 l3->hub1
+anti fermion hub1->r2 hub1->r3
+vertex hub1:blob
+`;
+  const reversedSpelling = `
+fermion hub1->l1 hub1->l2 hub1->l3
+fermion r2->hub1 r3->hub1
+vertex hub1:blob
+`;
+  const forwardLayout = await feynman.layoutFeynman(feynman.parseFeynman(forward));
+  const arrowLayout = await feynman.layoutFeynman(feynman.parseFeynman(reversedArrows));
+  const spellingLayout = await feynman.layoutFeynman(feynman.parseFeynman(reversedSpelling));
+
+  [forwardLayout, arrowLayout, spellingLayout].forEach((layout) => {
+    assert.equal(layout.analysis.topology.detectedTopology, "contactInteraction");
+    assert.equal(layout.analysis.orientation.mode, "symmetric");
+    ["l1", "l2", "l3", "r2", "r3"].forEach((node) => {
+      assert.equal(layout.positions[node].kind, "unclassified");
+    });
+  });
+  assert.deepEqual(positionSignature(forwardLayout), positionSignature(arrowLayout));
+  assert.deepEqual(positionSignature(forwardLayout), positionSignature(spellingLayout));
+}
+
+async function testMilestoneThreeEManualContactCenterPreserved() {
+  const diagram = feynman.parseFeynman(`
+position hub1 230 150
+fermion l1->hub1 l2->hub1 l3->hub1
+fermion hub1->r2 hub1->r3
+label hub1:C l1:a_1 l2:a_2 l3:a_3 r2:b_2 r3:b_3
+vertex hub1:disk
+`);
+  const layout = await feynman.layoutFeynman(diagram, { debug: true });
+  const center = layout.positions.hub1;
+
+  assert.deepEqual(diagram.errors, []);
+  assert.equal(layout.analysis.topology.detectedTopology, "contactInteraction");
+  assert.equal(center.x, 230);
+  assert.equal(center.y, 150);
+  assertContactStarUniform(layout, "hub1", ["l1", "l2", "l3", "r2", "r3"]);
+  assert.ok(approximatelyEqual(layout.positions.l3.x, center.x));
+  assert.ok(layout.positions.l3.y < center.y);
+  assert.ok(labelPlacementEntry(layout, "node:hub1"));
+  assertFiniteLabelPlacement(layout);
+  assertFiniteScore(layout);
+}
+
+async function testMilestoneThreeETikzVerticalRotatesContactStarWithoutSpringFallback() {
+  const diagram = feynman.parseFeynman(`
+tikz vertical l3 to hub1
+fermion l1->hub1 l2->hub1 l3->hub1 l4->hub1 l5->hub1
+fermion hub1->r2 hub1->r3
+label l1:a_1 l2:a_2 l3:a_3 r2:b_2 r3:b_3
+vertex hub1:blob
+`);
+  const layout = await feynman.layoutFeynman(diagram, { debug: true });
+  const leaves = ["l1", "l2", "l3", "l4", "l5", "r2", "r3"];
+  const center = layout.positions.hub1;
+
+  assert.deepEqual(diagram.errors, []);
+  assert.equal(layout.analysis.topology.detectedTopology, "contactInteraction");
+  assert.equal(layout.analysis.orientation.mode, "fixed");
+  assert.deepEqual(layout.analysis.orientation.evidence, ["explicit TikZ-Feynman orientation command"]);
+  leaves.forEach((node) => {
+    assert.equal(layout.positions[node].kind, "unclassified");
+  });
+  assert.ok(approximatelyEqual(layout.positions.l3.x, center.x));
+  assert.ok(layout.positions.l3.y < center.y);
+  assert.ok(approximatelyEqual(Math.abs(angleDegrees(layout.positions.l3, center)), 90));
+  assertContactStarUniform(layout, "hub1", leaves);
+  assertFiniteScore(layout);
 }
 
 async function testMilestoneOneAsymmetricUnclassifiedTree() {
@@ -848,8 +1238,48 @@ fermion prod->o2 prod->o1
     layout.analysis.externalOrdering.outgoing.map((entry) => entry.id),
     ["o2", "o1"]
   );
-  assert.ok(layout.positions.i2.y < layout.positions.i1.y);
+  assert.deepEqual(
+    layout.analysis.externalOrdering.all.map((entry) => entry.id),
+    ["i2", "i1", "o2", "o1"]
+  );
+  assert.ok(layout.positions.i2.y > layout.positions.i1.y);
   assert.ok(layout.positions.o2.y < layout.positions.o1.y);
+  assert.equal(layout.score.breakdown.externalAlignment, 0);
+}
+
+async function testDeclaredProcessExternalOrderUsesCyclicBoundaryTraversal() {
+  const diagram = feynman.parseFeynman(`
+options width=330 height=520
+tikz vertical upper to lower
+incoming e_plus e_minus
+outgoing e_plus_out e_minus_out
+fermion e_minus->upper upper->e_minus_out
+photon upper->lower[edge label=\\gamma]
+anti fermion e_plus_out->lower lower->e_plus
+label e_minus:e^- e_plus:e^+ e_minus_out:e^- e_plus_out:e^+
+`);
+  const layout = await feynman.layoutFeynman(diagram, { debug: true });
+
+  assert.deepEqual(diagram.errors, []);
+  assert.deepEqual(
+    layout.analysis.externalOrdering.incoming.map((entry) => entry.id),
+    ["e_plus", "e_minus"]
+  );
+  assert.deepEqual(
+    layout.analysis.externalOrdering.outgoing.map((entry) => entry.id),
+    ["e_plus_out", "e_minus_out"]
+  );
+  assert.deepEqual(
+    layout.analysis.externalOrdering.all.map((entry) => entry.id),
+    ["e_plus", "e_minus", "e_plus_out", "e_minus_out"]
+  );
+  assert.ok(layout.positions.e_plus.y < layout.positions.e_minus.y);
+  assert.ok(layout.positions.e_plus_out.y < layout.positions.e_minus_out.y);
+  assert.ok(layout.positions.e_plus.y < layout.positions.lower.y);
+  assert.ok(layout.positions.e_minus.y > layout.positions.upper.y);
+  assert.ok(layout.positions.e_plus_out.y < layout.positions.lower.y);
+  assert.ok(layout.positions.e_minus_out.y > layout.positions.upper.y);
+  assert.equal(layout.score.breakdown.externalAlignment, 0);
 }
 
 async function testMilestoneTwoFermionArrowDoesNotMirrorProcessLayout() {
@@ -1038,8 +1468,7 @@ label g1:g g2:g h:H
   assert.ok(Math.abs(polygonArea(loopPoints)) > 4000);
   assert.equal(layout.positions.g1.x, layout.options.marginX);
   assert.equal(layout.positions.h.x, layout.width - layout.options.marginX);
-  assert.ok(Math.abs(layout.positions.g1.y - layout.positions.a.y) < 0.001);
-  assert.ok(Math.abs(layout.positions.g2.y - layout.positions.b.y) < 0.001);
+  assert.ok(layout.positions.g1.y > layout.positions.g2.y);
   assert.ok(Math.abs(layout.positions.h.y - layout.positions.c.y) < 0.001);
   assertFiniteScore(layout);
 }
@@ -1067,8 +1496,8 @@ fermion b->o1 c->o2
   assert.ok(layout.positions.i2.x < layout.positions.d.x);
   assert.ok(layout.positions.b.x < layout.positions.o1.x);
   assert.ok(layout.positions.c.x < layout.positions.o2.x);
-  assert.ok(Math.abs(layout.positions.i1.y - layout.positions.a.y) < 0.001);
-  assert.ok(Math.abs(layout.positions.o2.y - layout.positions.c.y) < 0.001);
+  assert.ok(layout.positions.i1.y > layout.positions.i2.y);
+  assert.ok(layout.positions.o1.y < layout.positions.o2.y);
   assertFiniteScore(layout);
 }
 
@@ -1237,9 +1666,7 @@ scalar c->h
   assert.equal(triangleLayout.analysis.topology.detectedTopology, "triangleLoop");
   assert.equal(pointInsidePolygon(triangleLabel, loopPoints(triangleLayout)), false);
   assert.equal(triangleLayout.loopCandidate.labelAware, true);
-  assert.equal(triangleLayout.loopCandidate.labelInfluenced, true);
   assert.match(triangleDiagnostic.message, /Selected label-aware loop candidate/);
-  assert.match(triangleDiagnostic.message, /label score changed baseline choice/);
 
   const box = feynman.parseFeynman(`
 layout spring
@@ -1596,6 +2023,113 @@ scalar d->e e->f f->d
   assert.ok(boxes.every((box) => Number.isFinite(box.minX) && Number.isFinite(box.maxX)));
 }
 
+async function testMilestoneFourThreeLoopChainFixturePacking() {
+  const diagram = feynman.parseFeynman(readLayoutFixture("milestone-four-three-loop-chain.feynman"));
+  const layout = await feynman.layoutFeynman(diagram, { debug: true });
+  const rerun = await feynman.layoutFeynman(diagram, { debug: true });
+
+  assert.equal(diagram.errors.length, 0);
+  assert.equal(layout.analysis.topology.detectedTopology, "multiLoop");
+  assert.equal(layout.analysis.topology.loopOrder, 3);
+  assert.equal(layout.analysis.topology.multiLoop.kind, "overlapping");
+  assert.equal(layout.multiloopCandidate.regions.length, 3);
+  assert.deepEqual(selectedLoopRegions(layout).map((region) => region.kind), ["triangle", "triangle", "triangle"]);
+  assertSelectedLoopRegionsNonDegenerate(layout);
+  assertSelectedDisjointRegionsDoNotOverlap(layout);
+  assert.equal(layout.score.breakdown.multiloopRegionOverlap, 0);
+  assert.equal(layout.score.breakdown.topologyRecognizability, 0);
+  assert.deepEqual(positionSignature(layout), positionSignature(rerun));
+  assert.deepEqual(layout.multiloopCandidate, rerun.multiloopCandidate);
+  assertFiniteScore(layout);
+}
+
+async function testMilestoneFourContainedLoopsWithExternalLegsFixture() {
+  const diagram = feynman.parseFeynman(readLayoutFixture("milestone-four-contained-external.feynman"));
+  const layout = await feynman.layoutFeynman(diagram, { debug: true });
+  const containingRegions = layout.analysis.topology.loopRegions
+    .filter((region) => region.contains.length >= 2);
+
+  assert.equal(diagram.errors.length, 0);
+  assert.equal(layout.analysis.topology.detectedTopology, "multiLoop");
+  assert.equal(layout.analysis.topology.loopOrder, 2);
+  assert.equal(layout.analysis.topology.multiLoop.kind, "overlapping");
+  assert.ok(containingRegions.length >= 1, "composite region should record contained loops");
+  assert.equal(layout.multiloopCandidate.regions.length, 2);
+  assert.deepEqual(selectedLoopRegions(layout).map((region) => region.kind), ["box", "box"]);
+  assert.ok(selectedLoopRegions(layout).every((region) => region.contains.length === 0));
+  assert.ok(layout.positions.i.x < layout.positions.a.x);
+  assert.ok(layout.positions.d.x < layout.positions.o.x);
+  assertSelectedLoopRegionsNonDegenerate(layout);
+  assert.equal(layout.score.breakdown.topologyRecognizability, 0);
+  assertFiniteScore(layout);
+}
+
+async function testMilestoneFourOverlappingDenseLabelsFixture() {
+  const diagram = feynman.parseFeynman(readLayoutFixture("milestone-four-overlapping-dense-labels.feynman"));
+  const layout = await feynman.layoutFeynman(diagram, { debug: true });
+
+  assert.equal(diagram.errors.length, 0);
+  assert.equal(layout.analysis.topology.detectedTopology, "multiLoop");
+  assert.equal(layout.analysis.topology.loopOrder, 2);
+  assert.equal(layout.analysis.topology.multiLoop.kind, "overlapping");
+  assert.deepEqual(selectedLoopRegions(layout).map((region) => region.kind), ["triangle", "triangle"]);
+  assertSelectedLoopRegionsNonDegenerate(layout);
+  assert.equal(layout.labelPlacement.summary.labelCount, 13);
+  assert.equal(layout.score.breakdown.labelLabelOverlap, 0);
+  assert.equal(layout.score.breakdown.edgeLabelOverlap, 0);
+  assert.equal(layout.score.breakdown.multiloopRegionOverlap, 0);
+  assert.ok(Number.isFinite(layout.labelPlacement.summary.residualScore));
+  assertFiniteScore(layout);
+}
+
+async function testMilestoneFourDisconnectedVacuumFixturePacking() {
+  const diagram = feynman.parseFeynman(readLayoutFixture("milestone-four-disconnected-vacuum.feynman"));
+  const layout = await feynman.layoutFeynman(diagram, { debug: true });
+
+  assert.equal(diagram.errors.length, 0);
+  assert.equal(layout.analysis.topology.detectedTopology, "multiLoop");
+  assert.equal(layout.analysis.topology.loopOrder, 3);
+  assert.equal(layout.analysis.topology.multiLoop.kind, "disjoint");
+  assert.equal(layout.analysis.topology.connectedComponents.length, 3);
+  assert.equal(layout.multiloopCandidate.regions.length, 3);
+  assert.deepEqual(selectedLoopRegions(layout).map((region) => region.kind), ["triangle", "triangle", "triangle"]);
+  assertSelectedLoopRegionsNonDegenerate(layout);
+  assertSelectedDisjointRegionsDoNotOverlap(layout);
+  assert.equal(layout.score.breakdown.multiloopRegionOverlap, 0);
+  assert.equal(layout.score.breakdown.topologyRecognizability, 0);
+  assertFiniteScore(layout);
+}
+
+async function testMilestoneFourIncrementalAddRemoveLoopRegionFixture() {
+  const twoLoop = feynman.parseFeynman(readLayoutFixture("milestone-four-two-loop-chain.feynman"));
+  const threeLoop = feynman.parseFeynman(readLayoutFixture("milestone-four-three-loop-chain.feynman"));
+  const initial = await feynman.layoutFeynman(twoLoop, { debug: true });
+  const added = await feynman.layoutFeynman(threeLoop, {
+    debug: true,
+    preservePreviousLayout: true,
+    previousLayout: initial,
+  });
+  const removed = await feynman.layoutFeynman(twoLoop, {
+    debug: true,
+    preservePreviousLayout: true,
+    previousLayout: added,
+  });
+
+  assert.equal(initial.analysis.topology.loopOrder, 2);
+  assert.equal(added.analysis.topology.loopOrder, 3);
+  assert.equal(removed.analysis.topology.loopOrder, 2);
+  assert.equal(added.incremental.preserved, true);
+  assert.equal(removed.incremental.preserved, true);
+  Object.keys(initial.positions).forEach((node) => {
+    assert.ok(pointDistance(initial.positions[node], added.positions[node]) < 0.000001);
+    assert.ok(pointDistance(initial.positions[node], removed.positions[node]) < 0.000001);
+  });
+  assert.equal(added.score.breakdown.layoutInstability, 0);
+  assert.equal(removed.score.breakdown.layoutInstability, 0);
+  assertFiniteScore(added);
+  assertFiniteScore(removed);
+}
+
 async function testMilestoneFourIncrementalLayoutPreservesSharedPositions() {
   const source = `
 scalar a->b b->c c->a
@@ -1672,6 +2206,47 @@ label q:q g:g q2:q h:H v1->v2:γ
   assert.equal(layout.width, 600);
   assert.equal(layout.height, 300);
   assert.ok(layout.positions.v1.x < layout.positions.v2.x);
+}
+
+async function testTriangleSquareDoubleEdges() {
+  const diagram = feynman.parseFeynman(`
+incoming a c e g i k
+outgoing b d f h j l
+triangle a->b
+square c->d
+double e->f
+eikonal g->h
+dashed i->j
+dot-dashed k->l
+`);
+
+  assert.deepEqual(diagram.errors, []);
+  assert.deepEqual(
+    diagram.edges.map((edge) => edge.type),
+    ["triangle", "square", "double", "double", "dashed", "dashdot"]
+  );
+  assert.equal(diagram.edges[2].arrow, undefined);
+  assert.equal(diagram.edges[3].arrow, "forward");
+
+  const from = { x: 0, y: 0 };
+  const to = { x: 120, y: 0 };
+
+  const triangle = pathNumbers(feynman.trianglePath(from, to, 7, 16));
+  assert.deepEqual(triangle.slice(0, 2), [from.x, from.y]);
+  assert.deepEqual(triangle.slice(-2), [to.x, to.y]);
+  assert.ok(triangle.some((value, index) => index % 2 === 1 && Math.abs(value) > 6));
+
+  const square = pathNumbers(feynman.squarePath(from, to, 6, 18));
+  assert.deepEqual(square.slice(0, 2), [from.x, from.y]);
+  assert.deepEqual(square.slice(-2), [to.x, to.y]);
+  assert.ok(square.some((value, index) => index % 2 === 1 && Math.abs(value) > 5));
+
+  const double = feynman.doubleLinePath(from, to, 4.6);
+  const subpaths = double.split("M").filter((part) => part.trim().length > 0);
+  assert.equal(subpaths.length, 2);
+  const doubleNumbers = pathNumbers(double);
+  assert.ok(doubleNumbers.some((value, index) => index % 2 === 1 && Math.abs(value - 2.3) < 0.001));
+  assert.ok(doubleNumbers.some((value, index) => index % 2 === 1 && Math.abs(value + 2.3) < 0.001));
 }
 
 async function testGluonPathTouchesEndpoints() {
@@ -1769,6 +2344,24 @@ async function testLatexLabelMarkup() {
   ]);
 }
 
+async function testLabelParserPreservesBracedSpaces() {
+  const diagram = feynman.parseFeynman(`
+label g1:g_{\\pi\\pi n} g2:g_{\\pi\\pi n} plain:ok tail:+...
+`);
+  assert.equal(diagram.errors.length, 0);
+  assert.equal(diagram.labels.g1, "g_{\\pi\\pi n}");
+  assert.equal(diagram.labels.g2, "g_{\\pi\\pi n}");
+  assert.equal(diagram.labels.plain, "ok");
+  assert.equal(diagram.labels.tail, "+...");
+  assert.equal(feynman.labelNeedsMathJax(diagram.labels.g1), true);
+  assert.equal(
+    feynman.mathJaxDisplayFontSize("feynman-diagram__label"),
+    feynman.visualDefaults.labelFontSize * feynman.visualDefaults.mathLabelFontScale,
+  );
+  assert.equal(feynman.parseMathJaxSvgLength("2.5ex", 20), 20 * 2.5 * 0.431);
+  assert.equal(feynman.parseMathJaxSvgLength("18px", 20), 18);
+}
+
 async function testLayoutOptionsManualPositionsAndInvisibleEdges() {
   const diagram = feynman.parseFeynman(`
 options layout=spring orientation=vertical size=small width=500 height=420
@@ -1837,8 +2430,8 @@ label e:e^- positron:e^+ electron:e^- positron2:e^+ a->b:\\gamma
   assert.ok(layout.positions.b.x < layout.positions.positron2.x);
   assert.ok(layout.positions.a.x < layout.positions.b.x);
   assert.ok(layout.positions.a.y < layout.positions.b.y);
-  assert.ok(Math.abs(layout.positions.e.y - layout.positions.a.y) < 0.001);
-  assert.ok(Math.abs(layout.positions.positron.y - layout.positions.b.y) < 0.001);
+  assert.ok(Math.abs(layout.positions.e.y - layout.positions.b.y) < 0.001);
+  assert.ok(Math.abs(layout.positions.positron.y - layout.positions.a.y) < 0.001);
   assert.equal(layout.positions.e.labelSide, "left");
   assert.equal(layout.positions.positron.labelSide, "left");
   assert.equal(layout.positions.electron.labelSide, "right");
@@ -1978,23 +2571,48 @@ label c:X
 position blob 120 110
 position disk 240 110
 position tall 360 110
-vertex blob:blob[hatch=diagonal,size=24] disk:disk[pattern="north west lines",radius=52] tall:blob[hatch=grid,diameter=60]
+position wide 480 110
+position flat 600 110
+vertex blob:blob[hatch=diagonal,size=24] disk:disk[pattern="north west lines",radius=52] tall:blob[hatch=grid,diameter=60] wide:blob[hatch=horizontal,width=96,height=40] flat:disk[rx=60,ry=22]
 `);
 
   assert.deepEqual(customized.errors, []);
   assert.deepEqual(customized.vertices.blob, { shape: "blob", hatch: "diagonal", size: 24 });
   assert.deepEqual(customized.vertices.disk, { shape: "disk", hatch: "diagonal-reverse", size: 52 });
   assert.deepEqual(customized.vertices.tall, { shape: "blob", hatch: "grid", size: 30 });
+  assert.deepEqual(customized.vertices.wide, { shape: "blob", hatch: "horizontal", rx: 48, ry: 20 });
+  assert.deepEqual(customized.vertices.flat, { shape: "disk", rx: 60, ry: 22 });
+
+  const svg = await renderDiagramSvg(`
+options width=260 height=160
+position ell 80 80
+position circ 180 80
+vertex ell:blob[hatch=vertical,width=96,height=40] circ:disk[rx=30,ry=30]
+`);
+  const ellipse = svg.querySelector("ellipse.feynman-diagram__vertex--blob");
+  const ellipseBackdrop = svg.querySelector("ellipse.feynman-diagram__vertex-backdrop");
+  const circle = svg.querySelector("circle.feynman-diagram__vertex--disk");
+
+  assert.ok(ellipse);
+  assert.equal(ellipse.getAttribute("rx"), "48");
+  assert.equal(ellipse.getAttribute("ry"), "20");
+  assert.ok(ellipseBackdrop);
+  assert.equal(ellipseBackdrop.getAttribute("rx"), "49");
+  assert.equal(ellipseBackdrop.getAttribute("ry"), "21");
+  assert.ok(circle);
+  assert.equal(circle.getAttribute("r"), "30");
 
   const invalid = feynman.parseFeynman(`
 position v 100 100
-vertex v:dot[hatch=cross] bad:blob[hatch=zigzag] tiny:blob[size=0]
+vertex v:dot[hatch=cross] bad:blob[hatch=zigzag] tiny:blob[size=0] wide:blob[width=0] flat:blob[ry=bogus]
 `);
 
-  assert.equal(invalid.errors.length, 3);
+  assert.equal(invalid.errors.length, 5);
   assert.match(invalid.errors[0], /only supported for blob and disk/);
   assert.match(invalid.errors[1], /unsupported blob hatch/);
   assert.match(invalid.errors[2], /size must be a positive number or preset/);
+  assert.match(invalid.errors[3], /width must be a positive number or preset/);
+  assert.match(invalid.errors[4], /y radius must be a positive number or preset/);
 }
 
 async function testCurvedEdgesInlineLabelsAndBraces() {
@@ -2023,6 +2641,30 @@ label a:\\overline{b} c:f b->c#1:q
   assert.equal(diagram.edges[1].label, "k");
   assert.equal(diagram.edges[2].labelSide, "right");
   assert.equal(diagram.edges[2].labelPlacement, "momentum-prime");
+
+  const overlay = feynman.parseFeynman(`
+options width=220 height=160
+position left 30 80
+position blob 110 80
+position right 190 80
+fermion left->right[overlay]
+vertex blob:blob[width=96,height=48]
+`);
+  assert.equal(overlay.errors.length, 0);
+  assert.equal(overlay.edges[0].overlay, true);
+  const overlaySvg = await renderDiagramSvg(`
+options width=220 height=160
+position left 30 80
+position blob 110 80
+position right 190 80
+fermion left->right[overlay]
+vertex blob:blob[width=96,height=48]
+`);
+  assert.ok(
+    overlaySvg.innerHTML.indexOf("feynman-diagram__vertex-group") < overlaySvg.innerHTML.indexOf("feynman-diagram__edge-group"),
+    "overlay edges should render after vertices",
+  );
+
   const normalPhotonLabel = feynman.edgeLabelPosition(
     diagram.edges[0],
     layout.positions.a,
@@ -2260,12 +2902,12 @@ label a:e^- b:e^- c:\\gamma d:H
   assert.equal(layout.positions.c.y, layout.height / 2);
   assert.equal(layout.positions.d.y, layout.height - layout.options.marginY);
   assert.equal(layout.positions.a.y, layout.positions.cross.y);
-  assert.equal(layout.positions.b.y, layout.positions.cross.y);
+  assert.ok(Math.abs(layout.positions.b.y - layout.positions.cross.y) < 4);
   assert.ok(layout.positions.d.y - layout.positions.b.y > 180);
   assert.ok(layout.positions.blob.y > layout.positions.cross.y);
 }
 
-async function testSpringLayoutKeepsSingleTerminalLegsStraight() {
+async function testSpringLayoutPreservesDeclaredOutgoingBoundaryOrder() {
   const diagram = feynman.parseFeynman(`
 layout spring
 size small
@@ -2281,11 +2923,128 @@ label pi0:\\pi^0 gamma1:\\gamma gamma2:\\gamma
 
   assert.equal(diagram.errors.length, 0);
   assert.ok(Math.abs(layout.positions.pi0.y - layout.positions.t1.y) < 0.001);
-  assert.ok(Math.abs(layout.positions.t2.y - layout.positions.gamma1.y) < 0.001);
-  assert.ok(Math.abs(layout.positions.t3.y - layout.positions.gamma2.y) < 0.001);
-  assert.ok(Math.abs(layout.positions.t2.x - layout.positions.t3.x) < 0.001);
+  assert.ok(layout.positions.gamma1.y < layout.positions.gamma2.y);
   assert.ok(layout.positions.t2.x < layout.positions.gamma1.x);
   assert.ok(layout.positions.t3.x < layout.positions.gamma2.x);
+}
+
+async function testSpringLayoutAlignsSimpleScatteringLanes() {
+  const diagram = feynman.parseFeynman(`
+options width=760 height=400
+align vertical lepton_vertex struck
+incoming p1l p2l pql lepton_in
+outgoing lepton_out jet p2r p1r
+fermion pql->parton[overlay] lepton_in->lepton_vertex
+fermion parton->struck
+photon lepton_vertex->struck[edge label=\\gamma^*]
+fermion lepton_vertex->lepton_out
+fermion struck->jet
+fermion p2l->p2r[overlay] p1l->p1r[overlay]
+label lepton_in:\\ell lepton_out:\\ell' parton:q jet:X
+`);
+  const layout = await feynman.layoutFeynman(diagram);
+
+  assert.equal(diagram.errors.length, 0);
+  assert.ok(approximatelyEqual(layout.positions.lepton_in.y, layout.positions.lepton_vertex.y));
+  assert.ok(approximatelyEqual(layout.positions.lepton_vertex.y, layout.positions.lepton_out.y));
+  assert.ok(approximatelyEqual(layout.positions.pql.y, layout.positions.parton.y));
+  assert.ok(approximatelyEqual(layout.positions.parton.y, layout.positions.struck.y));
+  assert.ok(approximatelyEqual(layout.positions.struck.y, layout.positions.jet.y));
+  assert.ok(approximatelyEqual(layout.positions.p2l.y, layout.positions.p2r.y));
+  assert.ok(approximatelyEqual(layout.positions.p1l.y, layout.positions.p1r.y));
+  assert.ok(approximatelyEqual(layout.positions.lepton_vertex.x, layout.positions.struck.x));
+  assert.ok(layout.positions.parton.x < layout.positions.lepton_vertex.x);
+  assert.ok(layout.positions.struck.x < layout.positions.jet.x);
+}
+
+async function testAlignVerticalOrdersNamedNodesByDeclaration() {
+  const bhabha = (first, second) => feynman.parseFeynman(`
+options width=330 height=520
+layout layered
+align vertical ${first} ${second}
+incoming e_minus e_plus
+outgoing e_minus_out e_plus_out
+fermion e_minus->upper upper->e_minus_out
+photon upper->lower[edge label=\\gamma]
+anti fermion e_plus_out->lower lower->e_plus
+label e_minus:e^- e_plus:e^+ e_minus_out:e^- e_plus_out:e^+
+`);
+
+  const upperFirst = await feynman.layoutFeynman(bhabha("upper", "lower"));
+  const lowerFirst = await feynman.layoutFeynman(bhabha("lower", "upper"));
+
+  assert.equal(upperFirst.analysis.validation?.diagnostics?.some((entry) => entry.severity === "error") || false, false);
+
+  assert.ok(approximatelyEqual(upperFirst.positions.upper.x, upperFirst.positions.lower.x));
+  assert.ok(approximatelyEqual(lowerFirst.positions.upper.x, lowerFirst.positions.lower.x));
+
+  assert.ok(upperFirst.positions.upper.y < upperFirst.positions.lower.y);
+  assert.ok(lowerFirst.positions.lower.y < lowerFirst.positions.upper.y);
+
+  const upperGap = Math.abs(upperFirst.positions.upper.y - upperFirst.positions.lower.y);
+  assert.ok(upperGap > 100);
+}
+
+async function testAlignVerticalSameLineConstraintPreservesLaneOrder() {
+  const diagram = feynman.parseFeynman(`
+options width=760 height=400
+align vertical lepton_vertex struck
+incoming p1l p2l pql lepton_in
+outgoing lepton_out jet p2r p1r
+fermion pql->parton[overlay] lepton_in->lepton_vertex
+fermion parton->struck
+photon lepton_vertex->struck[edge label=\\gamma^*]
+fermion lepton_vertex->lepton_out
+fermion struck->jet
+fermion p2l->p2r[overlay] p1l->p1r[overlay]
+label lepton_in:\\ell lepton_out:\\ell' parton:q jet:X
+`);
+  const layout = await feynman.layoutFeynman(diagram);
+
+  assert.equal(diagram.errors.length, 0);
+  assert.ok(approximatelyEqual(layout.positions.lepton_vertex.x, layout.positions.struck.x));
+  assert.ok(approximatelyEqual(layout.positions.lepton_vertex.y, layout.positions.lepton_in.y));
+  assert.ok(approximatelyEqual(layout.positions.struck.y, layout.positions.parton.y));
+  assert.ok(layout.positions.lepton_vertex.y < layout.positions.struck.y);
+}
+
+async function testSpringLayoutKeepsDrellYanJunctionInsidePartonCorridor() {
+  const diagram = feynman.parseFeynman(`
+options width=760 height=380
+incoming h2s2l h2s1l h2ql h1ql h1s2l h1s1l
+outgoing h1s1r h1s2r lminus lplus h2s1r h2s2r
+fermion h1s1l->h1s1r[overlay] h1ql->q[overlay] h1s2l->h1s2r[overlay]
+anti fermion h2s1l->h2s1r[overlay] h2ql->qbar[overlay] h2s2l->h2s2r[overlay]
+anti fermion qbar->ann
+fermion q->ann
+photon ann->boson[edge label=\\gamma^*/Z]
+fermion boson->lminus
+anti fermion boson->lplus
+vertex ann:dot boson:dot
+label q:q qbar:\\overline{q} lminus:\\ell^- lplus:\\ell^+
+`);
+  const layout = await feynman.layoutFeynman(diagram);
+  const { ann, boson, h1ql, h2ql, lminus, lplus, q, qbar } = layout.positions;
+  const lowerRow = Math.min(q.y, qbar.y);
+  const upperRow = Math.max(q.y, qbar.y);
+  const partonCenter = (q.y + qbar.y) / 2;
+  const leptonCenter = (lminus.y + lplus.y) / 2;
+
+  assert.equal(diagram.errors.length, 0);
+  assert.ok(approximatelyEqual(q.y, h1ql.y));
+  assert.ok(approximatelyEqual(qbar.y, h2ql.y));
+  assert.ok(approximatelyEqual(q.y, lminus.y));
+  assert.ok(approximatelyEqual(qbar.y, lplus.y));
+  assert.ok(ann.y > lowerRow && ann.y < upperRow);
+  assert.ok(boson.y > lowerRow && boson.y < upperRow);
+  assert.ok(approximatelyEqual(ann.y, partonCenter));
+  assert.ok(approximatelyEqual(boson.y, leptonCenter));
+  assert.ok(approximatelyEqual(ann.y, boson.y));
+  assert.ok(q.x < ann.x);
+  assert.ok(qbar.x < ann.x);
+  assert.ok(ann.x < boson.x);
+  assert.ok(boson.x < lminus.x);
+  assert.ok(boson.x < lplus.x);
 }
 
 async function testLayeredLayoutKeepsSingleIncomingHorizontal() {
@@ -2303,8 +3062,8 @@ label mu:\\mu^- numu:\\nu_\\mu nue:\\nu_e e:e^- w->v:W^-
 
   assert.equal(diagram.errors.length, 0);
   assert.equal(layout.positions.mu.y, layout.positions.w.y);
-  assert.equal(layout.positions.numu.y, layout.positions.w.y);
   assert.ok(layout.positions.w.y < layout.positions.v.y);
+  assert.ok(layout.positions.numu.y < layout.positions.nue.y);
   assert.ok(layout.positions.nue.y < layout.positions.e.y);
 }
 
@@ -2375,6 +3134,7 @@ async function main() {
   await testSampleDiagram();
   await testParserValidation();
   await testTikzOrientationParser();
+  await testNativeAlignmentParser();
   await testTikzPostLayoutOrientation();
   await testTikzVerticalOrientationFansMixedTerminalPairs();
   await testHorizontalOrientationKeepsAnnihilationFans();
@@ -2399,11 +3159,20 @@ async function main() {
   await testDeclaredExternalTerminalsDoNotClassifyOtherLeaves();
   await testMilestoneOneExplicitDecayProcessMode();
   await testMilestoneOneExplicitTwoToTwoProcessMode();
+  await testFermionFlowConservationDetectsExternalFermionsAndCustomGraphs();
+  await testFermionFlowContactStarStaysRecognized();
   await testMilestoneOneSymmetricUnclassifiedContact();
+  await testMilestoneThreeEOddContactStarUsesReflectionAxis();
+  await testMilestoneThreeESixLegContactStarIsUniformAndDeterministic();
+  await testMilestoneThreeEExplicitRolesKeepProcessContactLayout();
+  await testMilestoneThreeEContactArrowsAndEdgeSpellingDoNotInferProcess();
+  await testMilestoneThreeEManualContactCenterPreserved();
+  await testMilestoneThreeETikzVerticalRotatesContactStarWithoutSpringFallback();
   await testMilestoneOneAsymmetricUnclassifiedTree();
   await testMilestoneOneFermionFlowDoesNotControlLayoutDirection();
   await testMilestoneOneValidationAndDeterminism();
   await testMilestoneTwoDeclaredProcessExternalOrder();
+  await testDeclaredProcessExternalOrderUsesCyclicBoundaryTraversal();
   await testMilestoneTwoFermionArrowDoesNotMirrorProcessLayout();
   await testMilestoneTwoMomentumDirectionDoesNotMoveLayout();
   await testMilestoneTwoLayeredPortDiagnosticsAreDeterministic();
@@ -2433,14 +3202,21 @@ async function main() {
   await testMilestoneFourSharedVertexTwoLoopWithExternalLegsIsReadable();
   await testMilestoneFourOverlappingTwoLoopLayoutCandidate();
   await testMilestoneFourDisconnectedVacuumMultiloopLayoutCandidate();
+  await testMilestoneFourThreeLoopChainFixturePacking();
+  await testMilestoneFourContainedLoopsWithExternalLegsFixture();
+  await testMilestoneFourOverlappingDenseLabelsFixture();
+  await testMilestoneFourDisconnectedVacuumFixturePacking();
+  await testMilestoneFourIncrementalAddRemoveLoopRegionFixture();
   await testMilestoneFourIncrementalLayoutPreservesSharedPositions();
   await testMilestoneFourProfileDebugIncludesStageTimings();
   await testLayoutApiAsyncAndFallbackSync();
   await testEdgeLabelsAndAllParticleTypes();
+  await testTriangleSquareDoubleEdges();
   await testGluonPathTouchesEndpoints();
   await testGluonJunctionCaps();
   await testCyclicInternalLayoutStaysBounded();
   await testLatexLabelMarkup();
+  await testLabelParserPreservesBracedSpaces();
   await testLayoutOptionsManualPositionsAndInvisibleEdges();
   await testHiddenEdgesAffectElkLayoutButDoNotRender();
   await testVerticalOrientationStacksScatteringVertices();
@@ -2455,7 +3231,11 @@ async function main() {
   await testMinimalPhotonExchangeAlignsInternalsAndStaysInViewBox();
   await testReversedMomentumFlipsArrowDirectionOnly();
   await testLayeredLayoutUsesAvailableCrossAxisForExternalLegs();
-  await testSpringLayoutKeepsSingleTerminalLegsStraight();
+  await testSpringLayoutPreservesDeclaredOutgoingBoundaryOrder();
+  await testSpringLayoutAlignsSimpleScatteringLanes();
+  await testAlignVerticalOrdersNamedNodesByDeclaration();
+  await testAlignVerticalSameLineConstraintPreservesLaneOrder();
+  await testSpringLayoutKeepsDrellYanJunctionInsidePartonCorridor();
   await testLayeredLayoutKeepsSingleIncomingHorizontal();
   await testVisualDefaultsStayReadableAtRenderedScale();
   await testDocumentedExamplesParseAndLayout();

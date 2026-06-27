@@ -1,0 +1,2 @@
+scalar a->b b->c c->a
+scalar c->d d->e e->c
