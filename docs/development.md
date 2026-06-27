@@ -86,9 +86,13 @@ src/markfeyn/
   mkdocs_plugin.py
   properdocs_plugin.py
   renderer/
-    feynman-diagrams.js
+    feynman-diagrams.js        # bundle entrypoint + public API assembly
+    parser/                    # block parsing facade and syntax helpers
+    layout/                    # semantic analysis, placement strategies, ELK, fallback layouts
+    layout/topology/           # graph/topology helper modules
+    render/                    # SVG paths, elements, labels, MathJax, styles, DOM boot
   assets/
-    feynman-diagrams.js
+    feynman-diagrams.js        # generated browser bundle
 ```
 
 The plugin entry points are declared in `pyproject.toml`:
@@ -131,7 +135,7 @@ flowchart TD
         incremental --> external --> ports --> parallel --> symmetric --> multiloop --> compat
     end
 
-    prepare --> strategy{"layoutFeynmanPreparedRaw:<br/>select placement strategy"}
+    prepare --> strategy{"layout/strategies.js:<br/>select placement strategy"}
 
     strategy -->|loop candidate| custom["Custom analytic placement<br/>(loop / multiloop /<br/>symmetric contact / tree)"]
     strategy -->|multiloop candidate| custom
@@ -147,7 +151,7 @@ flowchart TD
         build["buildSemanticElkGraph<br/>(sorted nodes, ports, edges)"]
         opts["buildElkLayoutOptions<br/>algorithm = layered / mrtree / force<br/>direction, spacing, padding,<br/>layer + port constraints"]
         run["elk.layout(graph)<br/>solve node coordinates"]
-        normalize["normalizeElkLayout<br/>scale raw coords into viewBox,<br/>place externals, manual overrides"]
+        normalize["normalizeElkLayout<br/>(layout/normalization.js)<br/>scale raw coords into viewBox,<br/>place externals, manual overrides"]
 
         getElk --> build --> opts --> run --> normalize
     end
@@ -172,9 +176,11 @@ flowchart TD
 
 The `analyzeTopology` box above is the heart of the analysis phase: it inspects the
 graph, **computes the loop number**, and **classifies the topology** into a named
-type that later drives placement-strategy selection. It runs in
-`src/markfeyn/renderer/layout/topology.js` on the semantic diagram, before any
-coordinates exist.
+type that later drives placement-strategy selection. `TopologyAnalyzer` runs in
+`src/markfeyn/renderer/layout/topology.js` as the facade, with cycle detection,
+biconnected components, loop regions, and parallel-edge grouping split under
+`src/markfeyn/renderer/layout/topology/`. This happens on the semantic diagram,
+before any coordinates exist.
 
 The loop number is the graph's [cyclomatic
 number](https://en.wikipedia.org/wiki/Circuit_rank) computed over the *visible*
@@ -251,7 +257,7 @@ flowchart TD
 ```
 
 The resulting `detectedTopology`, `loopOrder`, `loopRegions`, `loopCandidate`, and
-`fermionFlow` are consumed downstream when `layoutFeynmanPreparedRaw` selects a
+`fermionFlow` are consumed downstream when `layout/strategies.js` selects a
 placement strategy (loop-candidate, multiloop, symmetric, tree, or the default ELK
 path) and by `scoreLayout` when ranking the final geometry.
 
@@ -262,9 +268,9 @@ External and internal fermions carry a directed **fermion flow** (the arrow set 
 `propagator.fermionFlow` on the semantic model). A fermion line is a continuous,
 directed path that only terminates on external legs, so fermion number is conserved
 exactly when **the number of fermion arrows entering each internal vertex equals the
-number leaving it**. `analyzeFermionFlow` (`topology.js`) tallies that balance, lists
-the external fermion legs (with their `incoming` / `outgoing` direction relative to
-the diagram), and returns:
+number leaving it**. `analyzeFermionFlow` (`layout/topology/fermion-flow.js`)
+tallies that balance, lists the external fermion legs (with their `incoming` /
+`outgoing` direction relative to the diagram), and returns:
 
 | Field | Meaning |
 | ----- | ------- |
