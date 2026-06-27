@@ -713,10 +713,165 @@
     }
   });
 
-  // src/markfeyn/renderer/layout/topology.js
-  function analyzeTopology(semantic) {
-    return new TopologyAnalyzer(semantic).analyze();
+  // src/markfeyn/renderer/layout/topology/regions.js
+  function buildLoopRegions(semantic, cycles, biconnectedComponents) {
+    const cycleRegions = cycles.map((cycle, index) => ({
+      id: `loop-region:${index + 1}`,
+      nodes: cycle.nodes.slice(),
+      edges: cycle.edges.slice(),
+      loopOrder: 1,
+      kind: loopKind(cycle.type),
+      cycles: [cycle.id],
+      contains: [],
+      attachments: externalLegsForNodes(semantic, cycle.nodes)
+    }));
+    const componentRegions = biconnectedComponents.filter((component) => component.loopOrder > 1).map((component, index) => ({
+      id: `loop-region:bcc-${index + 1}`,
+      nodes: component.nodes.slice().sort(compareStable),
+      edges: component.edges.slice().sort(compareStable),
+      loopOrder: component.loopOrder,
+      kind: "generic",
+      cycles: cycles.filter((cycle) => cycle.nodes.every((node) => component.nodes.includes(node))).map((cycle) => cycle.id).sort(compareStable),
+      contains: [],
+      attachments: externalLegsForNodes(semantic, component.nodes)
+    }));
+    const regions = [...cycleRegions, ...componentRegions].filter((region, index, list) => list.findIndex((other) => sameMembers(region.nodes, other.nodes) && sameMembers(region.edges, other.edges)) === index).sort(compareLoopRegions);
+    regions.forEach((region) => {
+      region.contains = regions.filter((other) => other.id !== region.id && isStrictSubset(other.nodes, region.nodes)).map((other) => other.id).sort(compareStable);
+    });
+    return regions;
   }
+  function classifyMultiLoop(loopOrder, loopRegions, cycles) {
+    if (loopOrder <= 1 || !loopRegions.length) {
+      return null;
+    }
+    const sharedEdges = hasSharedMembers(cycles, "edges");
+    const sharedNodes = hasSharedMembers(cycles, "nodes");
+    const nested = loopRegions.some((region) => region.kind !== "generic" && region.contains.length);
+    const kind = sharedEdges ? "overlapping" : sharedNodes ? "overlapping" : nested ? "nested" : "disjoint";
+    return {
+      kind,
+      loopOrder,
+      regions: loopRegions.map((region) => region.id)
+    };
+  }
+  function buildPrincipalSkeleton(semantic, loopRegions, biconnected) {
+    const regionByNode = /* @__PURE__ */ new Map();
+    loopRegions.forEach((region) => {
+      region.nodes.forEach((node) => {
+        if (!regionByNode.has(node)) {
+          regionByNode.set(node, []);
+        }
+        regionByNode.get(node).push(region.id);
+      });
+    });
+    const edges = biconnected.bridges.map((bridge) => ({
+      ...bridge,
+      regions: [
+        ...regionByNode.get(bridge.source) || [],
+        ...regionByNode.get(bridge.target) || []
+      ].filter((value, index, list) => list.indexOf(value) === index).sort(compareStable)
+    })).sort((left, right) => compareStable(left.id, right.id));
+    return {
+      articulationVertices: biconnected.articulationVertices.slice(),
+      bridges: edges,
+      externalAttachments: semantic.externalVertices.map((external) => ({
+        external,
+        internal: firstInternalNeighbor(semantic, external)
+      })).filter((entry) => entry.internal).sort((left, right) => compareStable(left.external, right.external))
+    };
+  }
+  function externalLegsForNodes(semantic, nodes) {
+    const nodeSet = new Set(nodes);
+    const external = new Set(semantic.externalVertices);
+    return semantic.propagators.filter((edge) => !edge.metadata.hidden).flatMap((edge) => {
+      if (nodeSet.has(edge.source) && external.has(edge.target)) {
+        return [externalLeg(edge.target, edge.source, edge)];
+      }
+      if (nodeSet.has(edge.target) && external.has(edge.source)) {
+        return [externalLeg(edge.source, edge.target, edge)];
+      }
+      return [];
+    }).sort((left, right) => left.edgeIndex - right.edgeIndex || compareStable(left.external, right.external) || compareStable(left.internal, right.internal));
+  }
+  function compareCycleSummaries(left, right) {
+    return loopTypeRank(left.type) - loopTypeRank(right.type) || left.length - right.length || compareCycleNodeList(left.nodes, right.nodes) || compareCycleNodeList(left.edges, right.edges);
+  }
+  function compareCycleNodeList(left, right) {
+    const count = Math.min(left.length, right.length);
+    for (let index = 0; index < count; index += 1) {
+      const compared = compareStable(left[index], right[index]);
+      if (compared) {
+        return compared;
+      }
+    }
+    return left.length - right.length;
+  }
+  function edgePairKey(first, second) {
+    return [first, second].sort(compareStable).join("|");
+  }
+  function loopTypeRank(type) {
+    return {
+      tadpole: 0,
+      triangle: 1,
+      box: 2,
+      polygon: 3,
+      simple: 3
+    }[type] ?? 4;
+  }
+  function externalLeg(external, internal, edge) {
+    return {
+      external,
+      internal,
+      edge: edge.id,
+      edgeIndex: edge.metadata.edgeIndex
+    };
+  }
+  function loopKind(type) {
+    if (type === "triangle" || type === "box" || type === "tadpole") {
+      return type;
+    }
+    if (type === "polygon" || type === "simple") {
+      return "polygon";
+    }
+    return "generic";
+  }
+  function compareLoopRegions(left, right) {
+    return left.loopOrder - right.loopOrder || left.nodes.length - right.nodes.length || compareCycleNodeList(left.nodes, right.nodes) || compareCycleNodeList(left.edges, right.edges);
+  }
+  function sameMembers(left, right) {
+    return left.length === right.length && left.every((value, index) => value === right[index]);
+  }
+  function isStrictSubset(left, right) {
+    const rightSet = new Set(right);
+    return left.length < right.length && left.every((value) => rightSet.has(value));
+  }
+  function hasSharedMembers(cycles, key) {
+    for (let leftIndex = 0; leftIndex < cycles.length; leftIndex += 1) {
+      const left = new Set(cycles[leftIndex][key]);
+      for (let rightIndex = leftIndex + 1; rightIndex < cycles.length; rightIndex += 1) {
+        if (cycles[rightIndex][key].some((value) => left.has(value))) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+  function firstInternalNeighbor(semantic, node) {
+    const internal = new Set(semantic.internalVertices);
+    const edge = semantic.propagators.filter((propagator) => !propagator.metadata.hidden).find((propagator) => propagator.source === node && internal.has(propagator.target) || propagator.target === node && internal.has(propagator.source));
+    if (!edge) {
+      return null;
+    }
+    return edge.source === node ? edge.target : edge.source;
+  }
+  var init_regions = __esm({
+    "src/markfeyn/renderer/layout/topology/regions.js"() {
+      init_model();
+    }
+  });
+
+  // src/markfeyn/renderer/layout/topology/cycles.js
   function detectTadpoleLoops(semantic, visibleEdges) {
     const internal = new Set(semantic.internalVertices);
     return visibleEdges.filter((edge) => edge.source === edge.target).map((edge) => ({
@@ -745,6 +900,16 @@
       findCyclesFrom(start, start, adjacency, [start], /* @__PURE__ */ new Set([start]), cyclesByKey);
     });
     return Array.from(cyclesByKey.values()).map((nodesInCycle) => cycleSummary(nodesInCycle, pairEdges, semantic)).filter(Boolean).sort(compareCycleSummaries);
+  }
+  function selectOneLoopTopology(simpleCycles, tadpoleLoops) {
+    const tadpole = tadpoleLoops.find((loop) => loop.internal) || tadpoleLoops[0];
+    if (tadpole) {
+      return tadpole;
+    }
+    if (!simpleCycles.length) {
+      return null;
+    }
+    return simpleCycles.slice().sort((left, right) => loopTypeRank(left.type) - loopTypeRank(right.type) || left.length - right.length || compareCycleSummaries(left, right))[0];
   }
   function internalPairEdges(visibleEdges, internal) {
     const pairEdges = /* @__PURE__ */ new Map();
@@ -818,37 +983,6 @@
       externalLegs: externalLegsForNodes(semantic, nodes)
     };
   }
-  function selectOneLoopTopology(simpleCycles, tadpoleLoops) {
-    const tadpole = tadpoleLoops.find((loop) => loop.internal) || tadpoleLoops[0];
-    if (tadpole) {
-      return tadpole;
-    }
-    if (!simpleCycles.length) {
-      return null;
-    }
-    return simpleCycles.slice().sort((left, right) => loopTypeRank(left.type) - loopTypeRank(right.type) || left.length - right.length || compareCycleSummaries(left, right))[0];
-  }
-  function externalLegsForNodes(semantic, nodes) {
-    const nodeSet = new Set(nodes);
-    const external = new Set(semantic.externalVertices);
-    return semantic.propagators.filter((edge) => !edge.metadata.hidden).flatMap((edge) => {
-      if (nodeSet.has(edge.source) && external.has(edge.target)) {
-        return [externalLeg(edge.target, edge.source, edge)];
-      }
-      if (nodeSet.has(edge.target) && external.has(edge.source)) {
-        return [externalLeg(edge.source, edge.target, edge)];
-      }
-      return [];
-    }).sort((left, right) => left.edgeIndex - right.edgeIndex || compareStable(left.external, right.external) || compareStable(left.internal, right.internal));
-  }
-  function externalLeg(external, internal, edge) {
-    return {
-      external,
-      internal,
-      edge: edge.id,
-      edgeIndex: edge.metadata.edgeIndex
-    };
-  }
   function cycleType(length) {
     if (length === 3) {
       return "triangle";
@@ -858,15 +992,20 @@
     }
     return "polygon";
   }
-  function loopTypeRank(type) {
-    return {
-      tadpole: 0,
-      triangle: 1,
-      box: 2,
-      polygon: 3,
-      simple: 3
-    }[type] ?? 4;
+  function addInternalNeighbor(adjacency, node, neighbor) {
+    if (!adjacency.has(node)) {
+      adjacency.set(node, /* @__PURE__ */ new Set());
+    }
+    adjacency.get(node).add(neighbor);
   }
+  var init_cycles = __esm({
+    "src/markfeyn/renderer/layout/topology/cycles.js"() {
+      init_model();
+      init_regions();
+    }
+  });
+
+  // src/markfeyn/renderer/layout/topology/biconnected.js
   function analyzeBiconnectedComponents(adjacency, edges) {
     const edgeIdsByPair = edgeIdsByPairMap(edges);
     const discovery = /* @__PURE__ */ new Map();
@@ -922,125 +1061,6 @@
       bridges: bridges.sort((left, right) => compareStable(left.id, right.id))
     };
   }
-  function buildLoopRegions(semantic, cycles, biconnectedComponents) {
-    const cycleRegions = cycles.map((cycle, index) => ({
-      id: `loop-region:${index + 1}`,
-      nodes: cycle.nodes.slice(),
-      edges: cycle.edges.slice(),
-      loopOrder: 1,
-      kind: loopKind(cycle.type),
-      cycles: [cycle.id],
-      contains: [],
-      attachments: externalLegsForNodes(semantic, cycle.nodes)
-    }));
-    const componentRegions = biconnectedComponents.filter((component) => component.loopOrder > 1).map((component, index) => ({
-      id: `loop-region:bcc-${index + 1}`,
-      nodes: component.nodes.slice().sort(compareStable),
-      edges: component.edges.slice().sort(compareStable),
-      loopOrder: component.loopOrder,
-      kind: "generic",
-      cycles: cycles.filter((cycle) => cycle.nodes.every((node) => component.nodes.includes(node))).map((cycle) => cycle.id).sort(compareStable),
-      contains: [],
-      attachments: externalLegsForNodes(semantic, component.nodes)
-    }));
-    const regions = [...cycleRegions, ...componentRegions].filter((region, index, list) => list.findIndex((other) => sameMembers(region.nodes, other.nodes) && sameMembers(region.edges, other.edges)) === index).sort(compareLoopRegions);
-    regions.forEach((region) => {
-      region.contains = regions.filter((other) => other.id !== region.id && isStrictSubset(other.nodes, region.nodes)).map((other) => other.id).sort(compareStable);
-    });
-    return regions;
-  }
-  function classifyMultiLoop(loopOrder, loopRegions, cycles) {
-    if (loopOrder <= 1 || !loopRegions.length) {
-      return null;
-    }
-    const sharedEdges = hasSharedMembers(cycles, "edges");
-    const sharedNodes = hasSharedMembers(cycles, "nodes");
-    const nested = loopRegions.some((region) => region.kind !== "generic" && region.contains.length);
-    const kind = sharedEdges ? "overlapping" : sharedNodes ? "overlapping" : nested ? "nested" : "disjoint";
-    return {
-      kind,
-      loopOrder,
-      regions: loopRegions.map((region) => region.id)
-    };
-  }
-  function buildPrincipalSkeleton(semantic, loopRegions, biconnected) {
-    const regionByNode = /* @__PURE__ */ new Map();
-    loopRegions.forEach((region) => {
-      region.nodes.forEach((node) => {
-        if (!regionByNode.has(node)) {
-          regionByNode.set(node, []);
-        }
-        regionByNode.get(node).push(region.id);
-      });
-    });
-    const edges = biconnected.bridges.map((bridge) => ({
-      ...bridge,
-      regions: [
-        ...regionByNode.get(bridge.source) || [],
-        ...regionByNode.get(bridge.target) || []
-      ].filter((value, index, list) => list.indexOf(value) === index).sort(compareStable)
-    })).sort((left, right) => compareStable(left.id, right.id));
-    return {
-      articulationVertices: biconnected.articulationVertices.slice(),
-      bridges: edges,
-      externalAttachments: semantic.externalVertices.map((external) => ({
-        external,
-        internal: firstInternalNeighbor(semantic, external)
-      })).filter((entry) => entry.internal).sort((left, right) => compareStable(left.external, right.external))
-    };
-  }
-  function compareCycleSummaries(left, right) {
-    return loopTypeRank(left.type) - loopTypeRank(right.type) || left.length - right.length || compareCycleNodeList(left.nodes, right.nodes) || compareCycleNodeList(left.edges, right.edges);
-  }
-  function compareCycleNodeList(left, right) {
-    const count = Math.min(left.length, right.length);
-    for (let index = 0; index < count; index += 1) {
-      const compared = compareStable(left[index], right[index]);
-      if (compared) {
-        return compared;
-      }
-    }
-    return left.length - right.length;
-  }
-  function addInternalNeighbor(adjacency, node, neighbor) {
-    if (!adjacency.has(node)) {
-      adjacency.set(node, /* @__PURE__ */ new Set());
-    }
-    adjacency.get(node).add(neighbor);
-  }
-  function edgePairKey(first, second) {
-    return [first, second].sort(compareStable).join("|");
-  }
-  function detectParallelEdgeGroups(semantic, visibleEdges) {
-    const internal = new Set(semantic.internalVertices);
-    const grouped = /* @__PURE__ */ new Map();
-    visibleEdges.filter((edge) => edge.source !== edge.target).forEach((edge) => {
-      const nodes = [edge.source, edge.target].sort(compareStable);
-      const key = nodes.join("|");
-      if (!grouped.has(key)) {
-        grouped.set(key, {
-          id: key,
-          nodes,
-          internal: nodes.every((node) => internal.has(node)),
-          edges: []
-        });
-      }
-      grouped.get(key).edges.push({
-        id: edge.id,
-        source: edge.source,
-        target: edge.target,
-        edgeIndex: edge.metadata.edgeIndex,
-        style: edge.style,
-        curveSide: edge.metadata.curve?.side,
-        curveAmount: edge.metadata.curve?.amount
-      });
-    });
-    return Array.from(grouped.values()).filter((group) => group.edges.length > 1).map((group) => ({
-      ...group,
-      edges: group.edges.sort((left, right) => left.edgeIndex - right.edgeIndex || compareStable(left.id, right.id)),
-      selfEnergyLike: group.internal && group.edges.length >= 2
-    })).sort((left, right) => compareStable(left.id, right.id));
-  }
   function edgeIdsByPairMap(edges) {
     const map = /* @__PURE__ */ new Map();
     edges.forEach((edge) => {
@@ -1086,43 +1106,53 @@
   function compareComponentSummaries(left, right) {
     return compareCycleNodeList(left.nodes, right.nodes) || compareCycleNodeList(left.edges, right.edges);
   }
-  function loopKind(type) {
-    if (type === "triangle" || type === "box" || type === "tadpole") {
-      return type;
+  var init_biconnected = __esm({
+    "src/markfeyn/renderer/layout/topology/biconnected.js"() {
+      init_model();
+      init_regions();
     }
-    if (type === "polygon" || type === "simple") {
-      return "polygon";
-    }
-    return "generic";
-  }
-  function compareLoopRegions(left, right) {
-    return left.loopOrder - right.loopOrder || left.nodes.length - right.nodes.length || compareCycleNodeList(left.nodes, right.nodes) || compareCycleNodeList(left.edges, right.edges);
-  }
-  function sameMembers(left, right) {
-    return left.length === right.length && left.every((value, index) => value === right[index]);
-  }
-  function isStrictSubset(left, right) {
-    const rightSet = new Set(right);
-    return left.length < right.length && left.every((value) => rightSet.has(value));
-  }
-  function hasSharedMembers(cycles, key) {
-    for (let leftIndex = 0; leftIndex < cycles.length; leftIndex += 1) {
-      const left = new Set(cycles[leftIndex][key]);
-      for (let rightIndex = leftIndex + 1; rightIndex < cycles.length; rightIndex += 1) {
-        if (cycles[rightIndex][key].some((value) => left.has(value))) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-  function firstInternalNeighbor(semantic, node) {
+  });
+
+  // src/markfeyn/renderer/layout/topology/parallel.js
+  function detectParallelEdgeGroups(semantic, visibleEdges) {
     const internal = new Set(semantic.internalVertices);
-    const edge = semantic.propagators.filter((propagator) => !propagator.metadata.hidden).find((propagator) => propagator.source === node && internal.has(propagator.target) || propagator.target === node && internal.has(propagator.source));
-    if (!edge) {
-      return null;
+    const grouped = /* @__PURE__ */ new Map();
+    visibleEdges.filter((edge) => edge.source !== edge.target).forEach((edge) => {
+      const nodes = [edge.source, edge.target].sort(compareStable);
+      const key = nodes.join("|");
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          id: key,
+          nodes,
+          internal: nodes.every((node) => internal.has(node)),
+          edges: []
+        });
+      }
+      grouped.get(key).edges.push({
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        edgeIndex: edge.metadata.edgeIndex,
+        style: edge.style,
+        curveSide: edge.metadata.curve?.side,
+        curveAmount: edge.metadata.curve?.amount
+      });
+    });
+    return Array.from(grouped.values()).filter((group) => group.edges.length > 1).map((group) => ({
+      ...group,
+      edges: group.edges.sort((left, right) => left.edgeIndex - right.edgeIndex || compareStable(left.id, right.id)),
+      selfEnergyLike: group.internal && group.edges.length >= 2
+    })).sort((left, right) => compareStable(left.id, right.id));
+  }
+  var init_parallel = __esm({
+    "src/markfeyn/renderer/layout/topology/parallel.js"() {
+      init_model();
     }
-    return edge.source === node ? edge.target : edge.source;
+  });
+
+  // src/markfeyn/renderer/layout/topology.js
+  function analyzeTopology(semantic) {
+    return new TopologyAnalyzer(semantic).analyze();
   }
   function inferSimpleSymmetryGroups(semantic) {
     if (semantic.unclassified.length >= 2) {
@@ -1137,6 +1167,10 @@
       init_classification();
       init_fermion_flow();
       init_graph();
+      init_cycles();
+      init_biconnected();
+      init_parallel();
+      init_regions();
       init_graph();
       TopologyAnalyzer = class {
         constructor(semantic) {
@@ -1147,7 +1181,7 @@
           const visibleEdges = semantic.propagators.filter((propagator) => !propagator.metadata.hidden);
           const adjacency = adjacencyMap(semantic.vertices.map((vertex) => vertex.id), visibleEdges);
           const internalEdges = visibleEdges.filter((edge) => edge.source !== edge.target && semantic.internalVertices.includes(edge.source) && semantic.internalVertices.includes(edge.target));
-          const internalAdjacency = adjacencyMap(semantic.internalVertices, internalEdges);
+          const internalAdjacency2 = adjacencyMap(semantic.internalVertices, internalEdges);
           const connectedComponents = components(adjacency);
           const externalVertices = semantic.externalVertices.slice().sort(compareStable);
           const internalVertices = semantic.internalVertices.slice().sort(compareStable);
@@ -1157,7 +1191,7 @@
           const oneLoop = selectOneLoopTopology(simpleCycles, tadpoleLoops);
           const edgeCount = visibleEdges.length;
           const loopOrder = Math.max(0, edgeCount - semantic.vertices.length + connectedComponents.length);
-          const biconnected = analyzeBiconnectedComponents(internalAdjacency, internalEdges);
+          const biconnected = analyzeBiconnectedComponents(internalAdjacency2, internalEdges);
           const cycles = [
             ...simpleCycles,
             ...tadpoleLoops
@@ -1715,7 +1749,7 @@
   function oppositeSide(side) {
     return side === "left" ? "right" : "left";
   }
-  var init_parallel = __esm({
+  var init_parallel2 = __esm({
     "src/markfeyn/renderer/layout/parallel.js"() {
     }
   });
@@ -4658,7 +4692,7 @@
       init_orientation();
       init_elk_compiler();
       init_external_order();
-      init_parallel();
+      init_parallel2();
       init_score();
       init_symmetric_unclassified();
       init_multiloop();
@@ -4667,57 +4701,2219 @@
     }
   });
 
-  // src/markfeyn/renderer/layout-engine.js
-  function createLayoutEngine(helpers) {
+  // src/markfeyn/renderer/render/paths.js
+  function wavePath(from, to, amplitude, wavelength) {
+    return wavePathForEdge({}, from, to, amplitude, wavelength);
+  }
+  function wavePathForEdge(edge, from, to, amplitude, wavelength) {
+    const geometry = edgeGeometry2(edge, from, to);
+    const length = geometryLength(geometry);
+    const cycles = Math.max(2, Math.round(length / wavelength));
+    const steps = cycles * 12;
+    const points = [];
+    for (let step = 0; step <= steps; step += 1) {
+      const t = step / steps;
+      const phase = t * cycles * Math.PI * 2;
+      const offset = Math.sin(phase) * amplitude;
+      const sample = geometrySample2(geometry, t);
+      const normal = perpendicularVector(sample.tangent);
+      points.push({
+        x: sample.point.x + normal.x * offset,
+        y: sample.point.y + normal.y * offset
+      });
+    }
+    return pointsToPath(points);
+  }
+  function gluonPath(from, to, radius, loopLength) {
+    return gluonPathForEdge({}, from, to, radius, loopLength);
+  }
+  function gluonPathForEdge(edge, from, to, radius, loopLength) {
+    const geometry = edgeGeometry2(edge, from, to);
+    const length = geometryLength(geometry);
+    const loops = Math.max(3, Math.round(length / loopLength));
+    const steps = loops * 18;
+    const points = [];
+    for (let step = 0; step <= steps; step += 1) {
+      const t = step / steps;
+      const phase = t * loops * Math.PI * 2;
+      const sample = geometrySample2(geometry, t);
+      const tangent = normalizeVector2(sample.tangent.x, sample.tangent.y);
+      const normal = perpendicularVector(tangent);
+      const taper = gluonEndpointTaper(t, loops);
+      const along = Math.sin(phase) * radius * taper;
+      const offset = Math.cos(phase) * radius * taper;
+      points.push({
+        x: sample.point.x + tangent.ux * along + normal.x * offset,
+        y: sample.point.y + tangent.uy * along + normal.y * offset
+      });
+    }
+    return pointsToPath(points);
+  }
+  function gluonEndpointTaper(t, loops) {
+    const loopsFromEndpoint = Math.min(t, 1 - t) * loops;
+    const edgeProgress = Math.min(1, Math.max(0, loopsFromEndpoint / GLUON_ENDPOINT_RAMP_LOOPS));
+    return edgeProgress * edgeProgress * (3 - 2 * edgeProgress);
+  }
+  function trianglePath(from, to, amplitude, wavelength) {
+    return trianglePathForEdge({}, from, to, amplitude, wavelength);
+  }
+  function trianglePathForEdge(edge, from, to, amplitude, wavelength) {
+    const geometry = edgeGeometry2(edge, from, to);
+    const length = geometryLength(geometry);
+    const cycles = Math.max(2, Math.round(length / wavelength));
+    const quarters = cycles * 4;
+    const offsetPattern = [0, amplitude, 0, -amplitude];
+    const samples = [];
+    for (let step = 0; step <= quarters; step += 1) {
+      samples.push({
+        t: step / quarters,
+        offset: offsetPattern[step % 4]
+      });
+    }
+    return offsetSamplesToPath(geometry, samples);
+  }
+  function squarePath(from, to, amplitude, wavelength) {
+    return squarePathForEdge({}, from, to, amplitude, wavelength);
+  }
+  function squarePathForEdge(edge, from, to, amplitude, wavelength) {
+    const geometry = edgeGeometry2(edge, from, to);
+    const length = geometryLength(geometry);
+    const cycles = Math.max(2, Math.round(length / wavelength));
+    const samples = [{ t: 0, offset: 0 }];
+    for (let cycle = 0; cycle < cycles; cycle += 1) {
+      const start = cycle / cycles;
+      const mid = (cycle + 0.5) / cycles;
+      const end = (cycle + 1) / cycles;
+      samples.push({ t: start, offset: amplitude });
+      samples.push({ t: mid, offset: amplitude });
+      samples.push({ t: mid, offset: -amplitude });
+      samples.push({ t: end, offset: -amplitude });
+    }
+    samples.push({ t: 1, offset: 0 });
+    return offsetSamplesToPath(geometry, samples);
+  }
+  function offsetSamplesToPath(geometry, samples) {
+    const points = samples.map(({ t, offset }) => {
+      const sample = geometrySample2(geometry, t);
+      const normal = perpendicularVector(sample.tangent);
+      return {
+        x: sample.point.x + normal.x * offset,
+        y: sample.point.y + normal.y * offset
+      };
+    });
+    return pointsToPath(points);
+  }
+  function doubleLinePath(from, to, separation) {
+    return doubleLinePathForEdge({}, from, to, separation);
+  }
+  function doubleLinePathForEdge(edge, from, to, separation) {
+    const geometry = edgeGeometry2(edge, from, to);
+    const half = separation / 2;
+    const steps = geometry.kind === "cubic" ? 48 : 1;
+    const upper = [];
+    const lower = [];
+    for (let step = 0; step <= steps; step += 1) {
+      const sample = geometrySample2(geometry, step / steps);
+      const normal = perpendicularVector(sample.tangent);
+      upper.push({
+        x: sample.point.x + normal.x * half,
+        y: sample.point.y + normal.y * half
+      });
+      lower.push({
+        x: sample.point.x - normal.x * half,
+        y: sample.point.y - normal.y * half
+      });
+    }
+    return `${pointsToPath(upper)} ${pointsToPath(lower)}`;
+  }
+  function edgePath(edge, from, to) {
+    return geometryToPath(edgeGeometry2(edge, from, to));
+  }
+  function edgeGeometry2(edge, from, to) {
+    const outAngle = Number(edge?.outAngle);
+    const inAngle = Number(edge?.inAngle);
+    if (samePoint2(from, to)) {
+      return selfLoopGeometry2(edge, from, outAngle, inAngle);
+    }
+    if (Number.isFinite(outAngle) || Number.isFinite(inAngle)) {
+      return angleCurveGeometry2(edge, from, to, outAngle, inAngle);
+    }
+    if (edge?.curve) {
+      return offsetCurveGeometry2(edge, from, to);
+    }
     return {
-      async layoutFeynman(diagram, options) {
-        const prepared = prepareFeynmanLayout(diagram, options);
-        const layoutDiagram = prepared.compatibleDiagram;
-        const layoutOptions = helpers.resolveLayoutOptions(layoutDiagram, options);
-        let rawLayout;
-        helpers.applyParallelPropagatorCurves(layoutDiagram, prepared);
-        try {
-          const layoutStartedAt = helpers.profileNow();
-          rawLayout = await helpers.layoutFeynmanPreparedRaw(layoutDiagram, layoutOptions, prepared);
-          prepared.profile?.push("layout", helpers.profileNow() - layoutStartedAt);
-        } catch (error2) {
-          const fallbackStartedAt = helpers.profileNow();
-          rawLayout = helpers.layoutFeynmanPreparedFallbackRaw(layoutDiagram, layoutOptions, prepared);
-          prepared.profile?.push("layout-fallback", helpers.profileNow() - fallbackStartedAt);
-        }
-        const finalLayout = applyIncrementalStability(
-          helpers.finalizeLayout(layoutDiagram, rawLayout, layoutOptions),
-          prepared.incremental
-        );
-        return attachLayoutAnalysis(
-          finalLayout,
-          prepared,
-          { enabled: layoutOptions.debug || layoutOptions.profile, elkGraph: prepared.compiledElkGraph }
-        );
-      },
-      layoutFeynmanFallbackSync(diagram, options) {
-        const prepared = prepareFeynmanLayout(diagram, options);
-        const layoutDiagram = prepared.compatibleDiagram;
-        const layoutOptions = helpers.resolveLayoutOptions(layoutDiagram, options);
-        helpers.applyParallelPropagatorCurves(layoutDiagram, prepared);
-        const fallbackStartedAt = helpers.profileNow();
-        const rawLayout = helpers.layoutFeynmanPreparedFallbackRaw(layoutDiagram, layoutOptions, prepared);
-        prepared.profile?.push("layout-fallback", helpers.profileNow() - fallbackStartedAt);
-        return attachLayoutAnalysis(
-          applyIncrementalStability(
-            helpers.finalizeLayout(layoutDiagram, rawLayout, layoutOptions),
-            prepared.incremental
-          ),
-          prepared,
-          { enabled: layoutOptions.debug || layoutOptions.profile, elkGraph: prepared.compiledElkGraph }
-        );
-      }
+      kind: "line",
+      from,
+      to
     };
   }
-  var init_layout_engine = __esm({
-    "src/markfeyn/renderer/layout-engine.js"() {
-      init_incremental();
-      init_layout();
+  function selfLoopGeometry2(edge, point, outAngle, inAngle) {
+    const amount = clamp2(edge?.curve?.amount ?? 0.72, 0.28, 1.1);
+    const radius = 68 * amount;
+    if (Number.isFinite(outAngle) || Number.isFinite(inAngle)) {
+      const outVector = angleUnitVector2(Number.isFinite(outAngle) ? outAngle : 135);
+      const inVector = angleUnitVector2(Number.isFinite(inAngle) ? inAngle : 45);
+      return {
+        kind: "cubic",
+        from: point,
+        c1: {
+          x: point.x + outVector.x * radius * 1.65,
+          y: point.y + outVector.y * radius * 1.65
+        },
+        c2: {
+          x: point.x + inVector.x * radius * 1.65,
+          y: point.y + inVector.y * radius * 1.65
+        },
+        to: point
+      };
+    }
+    const side = selfLoopSideVector2(edge?.curve?.side);
+    const tangent = { x: -side.y, y: side.x };
+    return {
+      kind: "cubic",
+      from: point,
+      c1: {
+        x: point.x - tangent.x * radius + side.x * radius * 1.7,
+        y: point.y - tangent.y * radius + side.y * radius * 1.7
+      },
+      c2: {
+        x: point.x + tangent.x * radius + side.x * radius * 1.7,
+        y: point.y + tangent.y * radius + side.y * radius * 1.7
+      },
+      to: point
+    };
+  }
+  function samePoint2(from, to) {
+    return Math.abs(from.x - to.x) < 1e-3 && Math.abs(from.y - to.y) < 1e-3;
+  }
+  function selfLoopSideVector2(side) {
+    if (side === "right") {
+      return { x: 1, y: 0 };
+    }
+    if (side === "bottom") {
+      return { x: 0, y: 1 };
+    }
+    if (side === "left") {
+      return { x: -1, y: 0 };
+    }
+    return { x: 0, y: -1 };
+  }
+  function offsetCurveGeometry2(edge, from, to) {
+    const vector = lineVector2(from, to);
+    const normal = leftNormalVector2(vector);
+    const side = edge.curve.side === "right" ? -1 : 1;
+    const looseness = edge.looseness ?? 1;
+    const offset = vector.length * edge.curve.amount * looseness * side;
+    if (edge.curve.shape === "semicircle") {
+      return {
+        kind: "cubic",
+        from,
+        c1: {
+          x: from.x + normal.x * offset,
+          y: from.y + normal.y * offset
+        },
+        c2: {
+          x: to.x + normal.x * offset,
+          y: to.y + normal.y * offset
+        },
+        to
+      };
+    }
+    return {
+      kind: "cubic",
+      from,
+      c1: {
+        x: from.x + vector.dx * 0.33 + normal.x * offset,
+        y: from.y + vector.dy * 0.33 + normal.y * offset
+      },
+      c2: {
+        x: from.x + vector.dx * 0.67 + normal.x * offset,
+        y: from.y + vector.dy * 0.67 + normal.y * offset
+      },
+      to
+    };
+  }
+  function angleCurveGeometry2(edge, from, to, outAngle, inAngle) {
+    const vector = lineVector2(from, to);
+    const looseness = edge?.looseness ?? 1;
+    const handle = vector.length * 0.46 * looseness;
+    const relativeBase = edge?.relativeAngles ? vectorAngle2(vector) : 0;
+    const resolvedOut = Number.isFinite(outAngle) ? relativeBase + outAngle : vectorAngle2(vector);
+    const resolvedIn = Number.isFinite(inAngle) ? relativeBase + inAngle : vectorAngle2(vector) + 180;
+    const outVector = angleUnitVector2(resolvedOut);
+    const inVector = angleUnitVector2(resolvedIn);
+    return {
+      kind: "cubic",
+      from,
+      c1: {
+        x: from.x + outVector.x * handle,
+        y: from.y + outVector.y * handle
+      },
+      c2: {
+        x: to.x + inVector.x * handle,
+        y: to.y + inVector.y * handle
+      },
+      to
+    };
+  }
+  function geometryToPath(geometry) {
+    if (geometry.kind === "cubic") {
+      return [
+        `M ${round(geometry.from.x)} ${round(geometry.from.y)}`,
+        `C ${round(geometry.c1.x)} ${round(geometry.c1.y)}`,
+        `${round(geometry.c2.x)} ${round(geometry.c2.y)}`,
+        `${round(geometry.to.x)} ${round(geometry.to.y)}`
+      ].join(" ");
+    }
+    return `M ${round(geometry.from.x)} ${round(geometry.from.y)} L ${round(geometry.to.x)} ${round(geometry.to.y)}`;
+  }
+  function geometryPoint2(geometry, t) {
+    if (geometry.kind === "cubic") {
+      return cubicPoint2(geometry.from, geometry.c1, geometry.c2, geometry.to, t);
+    }
+    return {
+      x: geometry.from.x + (geometry.to.x - geometry.from.x) * t,
+      y: geometry.from.y + (geometry.to.y - geometry.from.y) * t
+    };
+  }
+  function geometryTangent2(geometry, t) {
+    if (geometry.kind === "cubic") {
+      return cubicTangent2(geometry.from, geometry.c1, geometry.c2, geometry.to, t);
+    }
+    return {
+      x: geometry.to.x - geometry.from.x,
+      y: geometry.to.y - geometry.from.y
+    };
+  }
+  function geometrySample2(geometry, t) {
+    return {
+      point: geometryPoint2(geometry, t),
+      tangent: geometryTangent2(geometry, t)
+    };
+  }
+  function geometryLength(geometry) {
+    const steps = geometry.kind === "cubic" ? 48 : 1;
+    let length = 0;
+    let previous = geometryPoint2(geometry, 0);
+    for (let step = 1; step <= steps; step += 1) {
+      const next = geometryPoint2(geometry, step / steps);
+      length += Math.hypot(next.x - previous.x, next.y - previous.y);
+      previous = next;
+    }
+    return length;
+  }
+  function cubicPoint2(p0, p1, p2, p3, t) {
+    const mt = 1 - t;
+    return {
+      x: mt ** 3 * p0.x + 3 * mt ** 2 * t * p1.x + 3 * mt * t ** 2 * p2.x + t ** 3 * p3.x,
+      y: mt ** 3 * p0.y + 3 * mt ** 2 * t * p1.y + 3 * mt * t ** 2 * p2.y + t ** 3 * p3.y
+    };
+  }
+  function cubicTangent2(p0, p1, p2, p3, t) {
+    const mt = 1 - t;
+    return {
+      x: 3 * mt ** 2 * (p1.x - p0.x) + 6 * mt * t * (p2.x - p1.x) + 3 * t ** 2 * (p3.x - p2.x),
+      y: 3 * mt ** 2 * (p1.y - p0.y) + 6 * mt * t * (p2.y - p1.y) + 3 * t ** 2 * (p3.y - p2.y)
+    };
+  }
+  function lineVector2(from, to) {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const length = Math.hypot(dx, dy) || 1;
+    return {
+      dx,
+      dy,
+      length,
+      ux: dx / length,
+      uy: dy / length,
+      px: -dy / length,
+      py: dx / length
+    };
+  }
+  function normalizeVector2(dx, dy) {
+    const length = Math.hypot(dx, dy) || 1;
+    return {
+      ux: dx / length,
+      uy: dy / length,
+      px: -dy / length,
+      py: dx / length
+    };
+  }
+  function perpendicularVector(vector) {
+    const normalized = normalizeVector2(vector.x ?? vector.dx ?? vector.ux, vector.y ?? vector.dy ?? vector.uy);
+    return {
+      x: normalized.px,
+      y: normalized.py
+    };
+  }
+  function leftNormalVector2(vector) {
+    return {
+      x: vector.dy / vector.length,
+      y: -vector.dx / vector.length
+    };
+  }
+  function vectorAngle2(vector) {
+    return Math.atan2(-vector.dy, vector.dx) * 180 / Math.PI;
+  }
+  function angleUnitVector2(degrees) {
+    const radians = degrees * Math.PI / 180;
+    return {
+      x: Math.cos(radians),
+      y: -Math.sin(radians)
+    };
+  }
+  function pointsToPath(points) {
+    return points.map((point, index) => `${index === 0 ? "M" : "L"} ${round(point.x)} ${round(point.y)}`).join(" ");
+  }
+  function clamp2(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+  function round(value) {
+    return Math.round(value * 100) / 100;
+  }
+  var GLUON_ENDPOINT_RAMP_LOOPS;
+  var init_paths = __esm({
+    "src/markfeyn/renderer/render/paths.js"() {
+      GLUON_ENDPOINT_RAMP_LOOPS = 0.62;
+    }
+  });
+
+  // src/markfeyn/renderer/parser/constants.js
+  var EDGE_DEFINITIONS, SIZE_PRESETS, DEFAULT_DIAGRAM_OPTIONS, VERTEX_SHAPES, BLOB_VERTEX_DEFAULT_RADII, BLOB_VERTEX_SIZE_PRESETS, BLOB_HATCHES;
+  var init_constants = __esm({
+    "src/markfeyn/renderer/parser/constants.js"() {
+      EDGE_DEFINITIONS = /* @__PURE__ */ new Map([
+        ["plain", { type: "plain" }],
+        ["line", { type: "plain" }],
+        ["propagator", { type: "plain" }],
+        ["fermion", { type: "fermion", arrow: "forward" }],
+        ["anti fermion", { type: "fermion", arrow: "reverse" }],
+        ["anti-fermion", { type: "fermion", arrow: "reverse" }],
+        ["antifermion", { type: "fermion", arrow: "reverse" }],
+        ["photon", { type: "photon" }],
+        ["boson", { type: "photon" }],
+        ["charged boson", { type: "photon", arrow: "forward" }],
+        ["charged-boson", { type: "photon", arrow: "forward" }],
+        ["anti charged boson", { type: "photon", arrow: "reverse" }],
+        ["anti-charged-boson", { type: "photon", arrow: "reverse" }],
+        ["gluon", { type: "gluon" }],
+        ["scalar", { type: "scalar" }],
+        ["charged scalar", { type: "scalar", arrow: "forward" }],
+        ["charged-scalar", { type: "scalar", arrow: "forward" }],
+        ["anti charged scalar", { type: "scalar", arrow: "reverse" }],
+        ["anti-charged-scalar", { type: "scalar", arrow: "reverse" }],
+        ["ghost", { type: "ghost" }],
+        ["dashed", { type: "dashed" }],
+        ["dot dashed", { type: "dashdot" }],
+        ["dot-dashed", { type: "dashdot" }],
+        ["dashdot", { type: "dashdot" }],
+        ["dash-dot", { type: "dashdot" }],
+        ["triangle", { type: "triangle" }],
+        ["zigzag", { type: "triangle" }],
+        ["square", { type: "square" }],
+        ["rectangle", { type: "square" }],
+        ["rectangular", { type: "square" }],
+        ["double", { type: "double" }],
+        ["eikonal", { type: "double", arrow: "forward" }],
+        ["wilson line", { type: "double", arrow: "forward" }],
+        ["wilson-line", { type: "double", arrow: "forward" }],
+        ["invisible", { type: "invisible", hidden: true }],
+        ["hidden", { type: "invisible", hidden: true }]
+      ]);
+      SIZE_PRESETS = {
+        small: { width: 420, minHeight: 280, marginX: 70, marginY: 46, externalGap: 82 },
+        medium: { width: 520, minHeight: 330, marginX: 82, marginY: 52, externalGap: 100 },
+        large: { width: 760, minHeight: 480, marginX: 110, marginY: 70, externalGap: 140 }
+      };
+      DEFAULT_DIAGRAM_OPTIONS = {
+        layout: "spring",
+        orientation: "horizontal",
+        size: "medium"
+      };
+      VERTEX_SHAPES = /* @__PURE__ */ new Map([
+        ["dot", "dot"],
+        ["square dot", "square-dot"],
+        ["square-dot", "square-dot"],
+        ["square", "square-dot"],
+        ["empty dot", "empty-dot"],
+        ["empty-dot", "empty-dot"],
+        ["crossed dot", "crossed-dot"],
+        ["crossed-dot", "crossed-dot"],
+        ["cross dot", "crossed-dot"],
+        ["cross-dot", "crossed-dot"],
+        ["cross", "cross"],
+        ["blob", "blob"],
+        ["disk", "disk"],
+        ["large blob", "disk"],
+        ["large-blob", "disk"]
+      ]);
+      BLOB_VERTEX_DEFAULT_RADII = Object.freeze({
+        blob: 18,
+        disk: 44
+      });
+      BLOB_VERTEX_SIZE_PRESETS = /* @__PURE__ */ new Map([
+        ["tiny", 8],
+        ["small", 14],
+        ["medium", BLOB_VERTEX_DEFAULT_RADII.blob],
+        ["large", 28],
+        ["huge", BLOB_VERTEX_DEFAULT_RADII.disk],
+        ["disk", BLOB_VERTEX_DEFAULT_RADII.disk]
+      ]);
+      BLOB_HATCHES = /* @__PURE__ */ new Map([
+        ["hatched", "diagonal"],
+        ["hatch", "diagonal"],
+        ["diagonal", "diagonal"],
+        ["diagonal right", "diagonal"],
+        ["forward diagonal", "diagonal"],
+        ["slash", "diagonal"],
+        ["north east", "diagonal"],
+        ["north east lines", "diagonal"],
+        ["ne", "diagonal"],
+        ["diagonal reverse", "diagonal-reverse"],
+        ["diagonal left", "diagonal-reverse"],
+        ["reverse diagonal", "diagonal-reverse"],
+        ["backward diagonal", "diagonal-reverse"],
+        ["backslash", "diagonal-reverse"],
+        ["north west", "diagonal-reverse"],
+        ["north west lines", "diagonal-reverse"],
+        ["nw", "diagonal-reverse"],
+        ["cross", "cross"],
+        ["cross hatch", "cross"],
+        ["crosshatch", "cross"],
+        ["cross hatched", "cross"],
+        ["horizontal", "horizontal"],
+        ["horizontal lines", "horizontal"],
+        ["vertical", "vertical"],
+        ["vertical lines", "vertical"],
+        ["grid", "grid"],
+        ["grid lines", "grid"]
+      ]);
+    }
+  });
+
+  // src/markfeyn/renderer/render/vertex-shapes.js
+  function vertexDefinitionShape(definition) {
+    if (!definition) {
+      return null;
+    }
+    if (typeof definition === "string") {
+      return definition;
+    }
+    return definition.shape ?? null;
+  }
+  function vertexDefinitionOptions(definition) {
+    if (!definition || typeof definition === "string") {
+      return {};
+    }
+    return definition;
+  }
+  function blobVertexRadii(shape, definition) {
+    const options = vertexDefinitionOptions(definition);
+    const radius = options.size ?? BLOB_VERTEX_DEFAULT_RADII[shape];
+    return {
+      rx: options.rx ?? radius,
+      ry: options.ry ?? radius
+    };
+  }
+  function blobHatchPatternId(index, hatch) {
+    return `feynman-hatch-${hatch}-${index}`;
+  }
+  var init_vertex_shapes = __esm({
+    "src/markfeyn/renderer/render/vertex-shapes.js"() {
+      init_constants();
+    }
+  });
+
+  // src/markfeyn/renderer/layout/coordinates.js
+  function diagramAxes({ width, height, marginX, marginY, orientation: orientation2, tikzOrientation }) {
+    const reverse = orientation2.endsWith("reverse");
+    return {
+      orientation: orientation2,
+      clockwiseBoundaryOrder: !tikzOrientation,
+      stackInternals: orientation2.startsWith("vertical"),
+      layerStart: reverse ? width - marginX : marginX,
+      layerEnd: reverse ? marginX : width - marginX,
+      crossStart: marginY,
+      crossEnd: height - marginY,
+      crossOf: (position) => position.y,
+      setCross: (position, cross) => {
+        position.y = cross;
+      },
+      point: (layer, cross, kind) => ({
+        x: layer,
+        y: cross,
+        kind,
+        labelSide: labelSideForKind(kind, orientation2)
+      })
+    };
+  }
+  function initialFixedPositions(diagram, axes) {
+    const positions = {};
+    Object.entries(diagram.manualPositions || {}).forEach(([node, position]) => {
+      const kind = nodeKind(node, diagram);
+      positions[node] = {
+        x: position.x,
+        y: position.y,
+        kind,
+        labelSide: labelSideForKind(kind, axes.orientation || "horizontal")
+      };
+    });
+    return positions;
+  }
+  function applyManualPositions(positions, diagram, layoutOptions) {
+    Object.entries(diagram.manualPositions || {}).forEach(([node, position]) => {
+      const kind = nodeKind(node, diagram);
+      positions[node] = {
+        x: position.x,
+        y: position.y,
+        kind,
+        labelSide: labelSideForKind(kind, layoutOptions.orientation)
+      };
+    });
+  }
+  function nodeKind(node, diagram) {
+    if (diagram.incoming.includes(node)) {
+      return "incoming";
+    }
+    if (diagram.outgoing.includes(node)) {
+      return "outgoing";
+    }
+    if ((diagram.unclassified || []).includes(node)) {
+      return "unclassified";
+    }
+    return "internal";
+  }
+  function labelSideForKind(kind, orientation2) {
+    const reverse = orientation2.endsWith("reverse");
+    if (kind === "incoming") {
+      return reverse ? "right" : "left";
+    }
+    if (kind === "outgoing") {
+      return reverse ? "left" : "right";
+    }
+    return "top";
+  }
+  function collectNodes(diagram) {
+    const nodes = /* @__PURE__ */ new Set([...diagram.incoming, ...diagram.outgoing, ...diagram.unclassified || []]);
+    diagram.edges.forEach((edge) => {
+      nodes.add(edge.from);
+      nodes.add(edge.to);
+    });
+    Object.keys(diagram.labels).forEach((labelTarget) => {
+      if (!labelTarget.includes("->")) {
+        nodes.add(labelTarget);
+      }
+    });
+    (diagram.braces || []).forEach((brace) => {
+      nodes.add(brace.from);
+      nodes.add(brace.to);
+    });
+    Object.keys(diagram.manualPositions || {}).forEach((node) => {
+      nodes.add(node);
+    });
+    Object.keys(diagram.vertices || {}).forEach((node) => {
+      nodes.add(node);
+    });
+    return nodes;
+  }
+  function placeExternalNodes(nodes, layer, crossStart, crossEnd, kind, axes, positions) {
+    const count = Math.max(nodes.length, 1);
+    nodes.forEach((node, index) => {
+      if (!positions[node]) {
+        positions[node] = axes.point(
+          layer,
+          externalCrossCoordinateAt(index, count, crossStart, crossEnd, layer, axes, kind),
+          kind
+        );
+      }
+    });
+  }
+  function enforceDeclaredExternalOrder(diagram, positions, axes) {
+    const manual = new Set(Object.keys(diagram.manualPositions || {}));
+    [
+      { nodes: diagram.incoming, kind: "incoming" },
+      { nodes: diagram.outgoing, kind: "outgoing" }
+    ].forEach(({ nodes, kind }) => {
+      if (nodes.length <= 1) {
+        return;
+      }
+      const count = Math.max(nodes.length, 1);
+      nodes.forEach((node, index) => {
+        if (!positions[node] || manual.has(node)) {
+          return;
+        }
+        axes.setCross(
+          positions[node],
+          externalCrossCoordinateAt(
+            index,
+            count,
+            axes.crossStart,
+            axes.crossEnd,
+            kind === "incoming" ? axes.layerStart : axes.layerEnd,
+            axes,
+            kind
+          )
+        );
+        positions[node].kind = kind;
+      });
+    });
+  }
+  function externalCrossCoordinateAt(index, count, crossStart, crossEnd, layer, axes, kind) {
+    if (!axes.clockwiseBoundaryOrder || kind !== "incoming" && kind !== "outgoing") {
+      return crossCoordinateAt(index, count, crossStart, crossEnd);
+    }
+    const midpoint = (axes.layerStart + axes.layerEnd) / 2;
+    const isLeftBoundary = layer <= midpoint;
+    return isLeftBoundary ? crossCoordinateAt(index, count, crossEnd, crossStart) : crossCoordinateAt(index, count, crossStart, crossEnd);
+  }
+  function crossCoordinateAt(index, count, crossStart, crossEnd) {
+    if (count <= 1) {
+      return (crossStart + crossEnd) / 2;
+    }
+    return crossStart + (crossEnd - crossStart) * index / (count - 1);
+  }
+  function slotCoordinateAt(slot, count, crossStart, crossEnd) {
+    if (count <= 1) {
+      return (crossStart + crossEnd) / 2;
+    }
+    return crossStart + (crossEnd - crossStart) * slot / (count - 1);
+  }
+  function placeNodesOnRing(nodes, center, radius, positions, diagram, layoutOptions, startAngle) {
+    const count = Math.max(nodes.length, 1);
+    nodes.forEach((node, index) => {
+      if (positions[node]) {
+        return;
+      }
+      const angle = startAngle + 2 * Math.PI * index / count;
+      const kind = nodeKind(node, diagram);
+      positions[node] = {
+        x: center.x + Math.cos(angle) * radius,
+        y: center.y + Math.sin(angle) * radius,
+        kind,
+        labelSide: labelSideForKind(kind, layoutOptions.orientation)
+      };
+    });
+  }
+  function visibleAdjacencyForLayout(diagram, nodes) {
+    const adjacency = new Map(nodes.map((node) => [node, /* @__PURE__ */ new Set()]));
+    diagram.edges.forEach((edge) => {
+      if (edge.hidden || edge.from === edge.to) {
+        return;
+      }
+      if (!adjacency.has(edge.from)) {
+        adjacency.set(edge.from, /* @__PURE__ */ new Set());
+      }
+      if (!adjacency.has(edge.to)) {
+        adjacency.set(edge.to, /* @__PURE__ */ new Set());
+      }
+      adjacency.get(edge.from).add(edge.to);
+      adjacency.get(edge.to).add(edge.from);
+    });
+    return adjacency;
+  }
+  function breadthFirstLayoutDepths(adjacency, start) {
+    const depths = /* @__PURE__ */ new Map();
+    if (!start) {
+      return depths;
+    }
+    const queue = [start];
+    depths.set(start, 0);
+    while (queue.length) {
+      const node = queue.shift();
+      const nextDepth = depths.get(node) + 1;
+      Array.from(adjacency.get(node) || []).sort().forEach((neighbor) => {
+        if (!depths.has(neighbor)) {
+          depths.set(neighbor, nextDepth);
+          queue.push(neighbor);
+        }
+      });
+    }
+    return depths;
+  }
+  function visibleInternalNeighborsForTerminal(diagram, terminal, excludedInternals = /* @__PURE__ */ new Set()) {
+    const neighbors = [];
+    diagram.edges.forEach((edge) => {
+      if (edge.hidden) {
+        return;
+      }
+      if (edge.from === terminal && nodeKind(edge.to, diagram) === "internal" && !excludedInternals.has(edge.to)) {
+        neighbors.push(edge.to);
+      }
+      if (edge.to === terminal && nodeKind(edge.from, diagram) === "internal" && !excludedInternals.has(edge.from)) {
+        neighbors.push(edge.from);
+      }
+    });
+    return neighbors;
+  }
+  function terminalNeighborsByInternal(diagram, kind, excludedTerminals = /* @__PURE__ */ new Set()) {
+    const terminalsByInternal = /* @__PURE__ */ new Map();
+    diagram.edges.forEach((edge) => {
+      if (edge.hidden) {
+        return;
+      }
+      const fromKind = nodeKind(edge.from, diagram);
+      const toKind = nodeKind(edge.to, diagram);
+      let terminal = null;
+      let internal = null;
+      if (fromKind === kind && toKind === "internal") {
+        terminal = edge.from;
+        internal = edge.to;
+      }
+      if (toKind === kind && fromKind === "internal") {
+        terminal = edge.to;
+        internal = edge.from;
+      }
+      if (!terminal || !internal || excludedTerminals.has(terminal)) {
+        return;
+      }
+      if (!terminalsByInternal.has(internal)) {
+        terminalsByInternal.set(internal, /* @__PURE__ */ new Set());
+      }
+      terminalsByInternal.get(internal).add(terminal);
+    });
+    return terminalsByInternal;
+  }
+  function nodesWithoutIncomingEdges(diagram, nodes) {
+    const targets = new Set(diagram.edges.map((edge) => edge.to));
+    const roots = nodes.filter((node) => !targets.has(node));
+    return roots.length ? roots : nodes.slice(0, 1);
+  }
+  function boundsForNodes(nodes, rawPositions) {
+    const xs = [];
+    const ys = [];
+    nodes.forEach((node) => {
+      const raw = rawPositions.get(node);
+      if (raw) {
+        xs.push(raw.x);
+        ys.push(raw.y);
+      }
+    });
+    return {
+      minX: xs.length ? Math.min(...xs) : 0,
+      maxX: xs.length ? Math.max(...xs) : 0,
+      minY: ys.length ? Math.min(...ys) : 0,
+      maxY: ys.length ? Math.max(...ys) : 0
+    };
+  }
+  function boundsForAxis(nodes, rawPositions, axis) {
+    const values = [];
+    nodes.forEach((node) => {
+      const raw = rawPositions.get(node);
+      if (raw) {
+        values.push(raw[axis]);
+      }
+    });
+    return {
+      min: values.length ? Math.min(...values) : 0,
+      max: values.length ? Math.max(...values) : 0
+    };
+  }
+  function fallbackRawPosition(rawPositions, bounds) {
+    if (rawPositions.size) {
+      return {
+        x: (bounds.minX + bounds.maxX) / 2,
+        y: (bounds.minY + bounds.maxY) / 2
+      };
+    }
+    return { x: 0, y: 0 };
+  }
+  function scaleCoordinate(value, sourceMin, sourceMax, targetStart, targetEnd) {
+    if (Math.abs(sourceMax - sourceMin) < 1e-3) {
+      return (targetStart + targetEnd) / 2;
+    }
+    return targetStart + (value - sourceMin) * (targetEnd - targetStart) / (sourceMax - sourceMin);
+  }
+  function positionBounds(positions) {
+    return {
+      minX: Math.min(...positions.map((position) => position.x)),
+      maxX: Math.max(...positions.map((position) => position.x)),
+      minY: Math.min(...positions.map((position) => position.y)),
+      maxY: Math.max(...positions.map((position) => position.y))
+    };
+  }
+  function safeDelta(from, to) {
+    const dx = to.x - from.x || 0.01;
+    const dy = to.y - from.y || 0.01;
+    const distance2 = Math.hypot(dx, dy) || 1;
+    return {
+      dx,
+      dy,
+      distance: distance2,
+      ux: dx / distance2,
+      uy: dy / distance2
+    };
+  }
+  function clamp3(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+  function degreesToRadians(degrees) {
+    return degrees * Math.PI / 180;
+  }
+  var init_coordinates = __esm({
+    "src/markfeyn/renderer/layout/coordinates.js"() {
+    }
+  });
+
+  // src/markfeyn/renderer/layout/normalization.js
+  function elkNodeDimensions(node, diagram) {
+    const definition = diagram.vertices?.[node] ?? null;
+    const shape = vertexDefinitionShape(definition);
+    if (shape === "blob" || shape === "disk") {
+      const radii = blobVertexRadii(shape, definition);
+      return {
+        width: Math.max(12, radii.rx * 2),
+        height: Math.max(12, radii.ry * 2)
+      };
+    }
+    return { width: 8, height: 8 };
+  }
+  function normalizeElkLayout(diagram, layoutOptions, elkGraph) {
+    const { width, height } = layoutOptions;
+    const axes = diagramAxes(layoutOptions);
+    const positions = {};
+    const allNodes = Array.from(collectNodes(diagram));
+    const rawPositions = elkRawPositions(elkGraph);
+    const incoming = new Set(diagram.incoming);
+    const outgoing = new Set(diagram.outgoing);
+    const unclassified = new Set(diagram.unclassified || []);
+    const manual = new Set(Object.keys(diagram.manualPositions || {}));
+    const internalNodes = allNodes.filter((node) => !incoming.has(node) && !outgoing.has(node) && !unclassified.has(node));
+    const sourceNodes = internalNodes.length && !unclassified.size ? internalNodes : allNodes;
+    const sourceBounds = boundsForNodes(sourceNodes, rawPositions);
+    const crossBounds = boundsForAxis(allNodes, rawPositions, "y");
+    const layerRange = elkInternalLayerRange(diagram, axes);
+    placeExternalNodes(diagram.incoming, axes.layerStart, axes.crossStart, axes.crossEnd, "incoming", axes, positions);
+    placeExternalNodes(diagram.outgoing, axes.layerEnd, axes.crossStart, axes.crossEnd, "outgoing", axes, positions);
+    internalNodes.forEach((node) => {
+      const raw = rawPositions.get(node) || fallbackRawPosition(rawPositions, sourceBounds);
+      const layer = scaleCoordinate(raw.x, sourceBounds.minX, sourceBounds.maxX, layerRange.start, layerRange.end);
+      const cross = scaleCoordinate(raw.y, crossBounds.min, crossBounds.max, axes.crossStart, axes.crossEnd);
+      positions[node] = axes.point(layer, cross, "internal");
+    });
+    allNodes.forEach((node) => {
+      if (positions[node] || manual.has(node)) {
+        return;
+      }
+      const raw = rawPositions.get(node) || fallbackRawPosition(rawPositions, sourceBounds);
+      const layer = scaleCoordinate(raw.x, sourceBounds.minX, sourceBounds.maxX, layerRange.start, layerRange.end);
+      const cross = scaleCoordinate(raw.y, crossBounds.min, crossBounds.max, axes.crossStart, axes.crossEnd);
+      const kind = nodeKind(node, diagram);
+      positions[node] = axes.point(layer, cross, kind);
+    });
+    applyManualPositions(positions, diagram, layoutOptions);
+    applyLayoutNormalizations(diagram, positions, axes, layoutOptions);
+    return { width, height, positions, options: layoutOptions };
+  }
+  function applyLayoutNormalizations(diagram, positions, axes, layoutOptions) {
+    centerDefaultSpringExchangeFans(diagram, positions, axes, layoutOptions);
+    centerTikzOrientationEndpointFans(diagram, positions, axes, layoutOptions);
+    if (usesSpringStyleNormalization(layoutOptions)) {
+      alignHorizontalBackboneInternals(diagram, positions, axes, layoutOptions);
+      orientHorizontalBackboneInternals(diagram, positions, axes, layoutOptions);
+      fitCurvedInternalEdgeGroupsToViewBox(diagram, positions, axes, layoutOptions);
+    }
+    straightenSingleTerminalLegs(diagram, positions, axes);
+    if (!layoutOptions.tikzOrientation) {
+      alignVerticalProcessTerminalStacks(diagram, positions, axes, layoutOptions);
+    }
+    straightenSingleTerminalLegs(diagram, positions, axes);
+    alignInternalsAcrossInvisibleTerminalPairs(diagram, positions, axes);
+    enforceDeclaredExternalOrder(diagram, positions, axes);
+    if (!layoutOptions.tikzOrientation) {
+      alignInternalsToDeclaredTerminalRows(diagram, positions, axes, layoutOptions);
+    }
+    applyAlignmentConstraints(diagram, positions, layoutOptions);
+    fitLayoutTranslationToEdgeBounds(diagram, positions, layoutOptions);
+  }
+  function finalizeLayout(diagram, layout, layoutOptions) {
+    applyTikzPostLayoutOrientation(diagram, layout, layoutOptions);
+    applyManualPositions(layout.positions, diagram, layoutOptions);
+    layout.options = layoutOptions;
+    return layout;
+  }
+  function terminalCrossLocks(diagram, positions, axes, pinned) {
+    const externalKinds = /* @__PURE__ */ new Set(["incoming", "outgoing"]);
+    const constraints = /* @__PURE__ */ new Map();
+    const addConstraint = (node, cross) => {
+      if (pinned.has(node)) {
+        return;
+      }
+      if (!constraints.has(node)) {
+        constraints.set(node, []);
+      }
+      constraints.get(node).push(cross);
+    };
+    diagram.edges.forEach((edge) => {
+      if (edge.hidden) {
+        return;
+      }
+      const from = positions[edge.from];
+      const to = positions[edge.to];
+      if (!from || !to) {
+        return;
+      }
+      const fromExternal = externalKinds.has(from.kind);
+      const toExternal = externalKinds.has(to.kind);
+      if (fromExternal && !toExternal) {
+        addConstraint(edge.to, axes.crossOf(from));
+      }
+      if (toExternal && !fromExternal) {
+        addConstraint(edge.from, axes.crossOf(to));
+      }
+    });
+    const locks = /* @__PURE__ */ new Map();
+    constraints.forEach((crosses, node) => {
+      const min = Math.min(...crosses);
+      const max = Math.max(...crosses);
+      if (max - min <= 1) {
+        locks.set(node, crosses.reduce((sum, cross) => sum + cross, 0) / crosses.length);
+      }
+    });
+    return locks;
+  }
+  function usesSpringStyleNormalization(layoutOptions) {
+    return layoutOptions.layout === "spring" || layoutOptions.layout === "spring-electrical";
+  }
+  function elkRawPositions(elkGraph) {
+    const positions = /* @__PURE__ */ new Map();
+    (elkGraph.children || []).forEach((child) => {
+      positions.set(child.id, {
+        x: (child.x || 0) + (child.width || 0) / 2,
+        y: (child.y || 0) + (child.height || 0) / 2
+      });
+    });
+    return positions;
+  }
+  function elkInternalLayerRange(diagram, axes) {
+    if (!diagram.incoming.length && !diagram.outgoing.length) {
+      return { start: axes.layerStart, end: axes.layerEnd };
+    }
+    const layerSpan = axes.layerEnd - axes.layerStart;
+    const terminalGap = Math.min(84, Math.max(48, Math.abs(layerSpan) * 0.24));
+    const direction = Math.sign(layerSpan) || 1;
+    return {
+      start: axes.layerStart + direction * terminalGap,
+      end: axes.layerEnd - direction * terminalGap
+    };
+  }
+  function centerDefaultSpringExchangeFans(diagram, positions, axes, layoutOptions) {
+    if (layoutOptions.layout !== "spring" && layoutOptions.layout !== "spring-electrical" || !layoutOptions.orientation.startsWith("horizontal") || diagram.incoming.length !== 2 || diagram.outgoing.length !== 2) {
+      return;
+    }
+    const incomingInternals = internalsConnectedToTerminalSet(diagram, "incoming", diagram.incoming);
+    const outgoingInternals = internalsConnectedToTerminalSet(diagram, "outgoing", diagram.outgoing);
+    if (incomingInternals.length !== 1 || outgoingInternals.length !== 1) {
+      return;
+    }
+    const incomingInternal = incomingInternals[0];
+    const outgoingInternal = outgoingInternals[0];
+    if (incomingInternal === outgoingInternal || !visibleInternalEdgeConnects(diagram, incomingInternal, outgoingInternal)) {
+      return;
+    }
+    centerMultiTerminalFanJunctions(
+      diagram,
+      positions,
+      axes,
+      /* @__PURE__ */ new Set([incomingInternal, outgoingInternal])
+    );
+  }
+  function internalsConnectedToTerminalSet(diagram, kind, terminals) {
+    const terminalSet = new Set(terminals);
+    const terminalsByInternal = terminalNeighborsByInternal(diagram, kind);
+    return Array.from(terminalsByInternal.entries()).filter(([, connectedTerminals]) => connectedTerminals.size === terminalSet.size && Array.from(connectedTerminals).every((terminal) => terminalSet.has(terminal))).map(([internal]) => internal);
+  }
+  function visibleInternalEdgeConnects(diagram, first, second) {
+    return diagram.edges.some((edge) => {
+      if (edge.hidden) {
+        return false;
+      }
+      return edge.from === first && edge.to === second || edge.from === second && edge.to === first;
+    });
+  }
+  function centerTikzOrientationEndpointFans(diagram, positions, axes, layoutOptions) {
+    const orientation2 = layoutOptions.tikzOrientation;
+    if (!orientation2) {
+      return;
+    }
+    centerMultiTerminalFanJunctions(
+      diagram,
+      positions,
+      axes,
+      /* @__PURE__ */ new Set([orientation2.from, orientation2.to])
+    );
+  }
+  function centerMultiTerminalFanJunctions(diagram, positions, axes, eligibleInternals) {
+    const manual = new Set(Object.keys(diagram.manualPositions || {}));
+    const targetCrossesByInternal = /* @__PURE__ */ new Map();
+    const terminalKinds = ["incoming", "outgoing"];
+    terminalKinds.forEach((kind) => {
+      const terminalsByInternal = terminalNeighborsByInternal(diagram, kind);
+      terminalsByInternal.forEach((terminals, internal) => {
+        if (terminals.size < 2 || !eligibleInternals.has(internal) || manual.has(internal) || !positions[internal]) {
+          return;
+        }
+        const crosses = Array.from(terminals).map((terminal) => positions[terminal]).filter(Boolean).map((position) => axes.crossOf(position));
+        if (crosses.length < 2) {
+          return;
+        }
+        if (!targetCrossesByInternal.has(internal)) {
+          targetCrossesByInternal.set(internal, []);
+        }
+        targetCrossesByInternal.get(internal).push(
+          crosses.reduce((sum, cross) => sum + cross, 0) / crosses.length
+        );
+      });
+    });
+    targetCrossesByInternal.forEach((crosses, internal) => {
+      if (positions[internal]) {
+        axes.setCross(
+          positions[internal],
+          crosses.reduce((sum, cross) => sum + cross, 0) / crosses.length
+        );
+      }
+    });
+  }
+  function internalAdjacency(diagram) {
+    const adjacency = /* @__PURE__ */ new Map();
+    const addNeighbor = (first, second) => {
+      if (!adjacency.has(first)) {
+        adjacency.set(first, /* @__PURE__ */ new Set());
+      }
+      adjacency.get(first).add(second);
+    };
+    diagram.edges.forEach((edge) => {
+      if (edge.hidden) {
+        return;
+      }
+      const fromKind = nodeKind(edge.from, diagram);
+      const toKind = nodeKind(edge.to, diagram);
+      if (fromKind === "internal" && toKind === "internal") {
+        addNeighbor(edge.from, edge.to);
+        addNeighbor(edge.to, edge.from);
+      }
+    });
+    return adjacency;
+  }
+  function internalsAdjacentToTerminals(diagram, kind) {
+    const internals = /* @__PURE__ */ new Set();
+    const terminalsByInternal = terminalNeighborsByInternal(diagram, kind);
+    terminalsByInternal.forEach((terminals, internal) => {
+      if (terminals.size > 0) {
+        internals.add(internal);
+      }
+    });
+    return internals;
+  }
+  function shortestInternalPath(adjacency, start, end) {
+    if (start === end) {
+      return [start];
+    }
+    const queue = [[start]];
+    const visited = /* @__PURE__ */ new Set([start]);
+    while (queue.length) {
+      const path = queue.shift();
+      const node = path[path.length - 1];
+      const neighbors = adjacency.get(node) || /* @__PURE__ */ new Set();
+      for (const neighbor of neighbors) {
+        if (visited.has(neighbor)) {
+          continue;
+        }
+        const nextPath = [...path, neighbor];
+        if (neighbor === end) {
+          return nextPath;
+        }
+        visited.add(neighbor);
+        queue.push(nextPath);
+      }
+    }
+    return null;
+  }
+  function mainHorizontalBackboneNodes(diagram) {
+    if (!diagram.incoming.length && !diagram.outgoing.length) {
+      return null;
+    }
+    const leftInternals = internalsAdjacentToTerminals(diagram, "incoming");
+    const rightInternals = internalsAdjacentToTerminals(diagram, "outgoing");
+    if (!leftInternals.size || !rightInternals.size) {
+      return null;
+    }
+    const adjacency = internalAdjacency(diagram);
+    let bestPath = null;
+    leftInternals.forEach((start) => {
+      rightInternals.forEach((end) => {
+        if (start === end) {
+          return;
+        }
+        const path = shortestInternalPath(adjacency, start, end);
+        if (!path) {
+          return;
+        }
+        if (!bestPath || path.length < bestPath.length) {
+          bestPath = path;
+        }
+      });
+    });
+    return bestPath;
+  }
+  function alignHorizontalBackboneInternals(diagram, positions, axes, layoutOptions) {
+    if (!layoutOptions.orientation.startsWith("horizontal")) {
+      return;
+    }
+    const backbone = mainHorizontalBackboneNodes(diagram);
+    if (!backbone || backbone.length < 1) {
+      return;
+    }
+    const manual = new Set(Object.keys(diagram.manualPositions || {}));
+    const positioned = backbone.map((node) => ({ node, position: positions[node] })).filter((entry) => entry.position);
+    if (!positioned.length) {
+      return;
+    }
+    const targetCross = positioned.reduce(
+      (sum, entry) => sum + axes.crossOf(entry.position),
+      0
+    ) / positioned.length;
+    positioned.forEach((entry) => {
+      if (!manual.has(entry.node)) {
+        axes.setCross(entry.position, targetCross);
+      }
+    });
+  }
+  function orientHorizontalBackboneInternals(diagram, positions, axes, layoutOptions) {
+    if (!layoutOptions.orientation.startsWith("horizontal")) {
+      return;
+    }
+    const backbone = mainHorizontalBackboneNodes(diagram);
+    const manual = new Set(Object.keys(diagram.manualPositions || {}));
+    if (!backbone || backbone.length < 2 || backbone.some((node) => !positions[node] || manual.has(node))) {
+      return;
+    }
+    const direction = Math.sign(axes.layerEnd - axes.layerStart) || 1;
+    const orderedLayers = backbone.map((node) => positions[node].x).sort((left, right) => direction * (left - right));
+    backbone.forEach((node, index) => {
+      positions[node].x = orderedLayers[index];
+    });
+  }
+  function curvedInternalEdgeGroups(diagram) {
+    const groups = /* @__PURE__ */ new Map();
+    diagram.edges.forEach((edge) => {
+      if (edge.hidden || !edge.curve) {
+        return;
+      }
+      const fromKind = nodeKind(edge.from, diagram);
+      const toKind = nodeKind(edge.to, diagram);
+      if (fromKind !== "internal" || toKind !== "internal") {
+        return;
+      }
+      const key = [edge.from, edge.to].sort().join("|");
+      if (!groups.has(key)) {
+        groups.set(key, {
+          nodes: [edge.from, edge.to].sort(),
+          edges: []
+        });
+      }
+      groups.get(key).edges.push(edge);
+    });
+    return groups;
+  }
+  function curveArcAmount(edge) {
+    if (!edge.curve) {
+      return 0;
+    }
+    return edge.curve.amount * (edge.looseness ?? 1);
+  }
+  function maxChordForCurvedEdgeGroup(edges, availableCross) {
+    const maxAmount = Math.max(...edges.map((edge) => curveArcAmount(edge)), 0);
+    if (maxAmount <= 0 || availableCross <= 0) {
+      return null;
+    }
+    const bilateral = edges.length >= 2;
+    if (bilateral) {
+      return availableCross / (2 * maxAmount) * 0.95;
+    }
+    return availableCross / 2 / maxAmount * 0.95;
+  }
+  function fitCurvedInternalEdgeGroupsToViewBox(diagram, positions, axes, layoutOptions) {
+    if (!layoutOptions.orientation.startsWith("horizontal")) {
+      return;
+    }
+    const manual = new Set(Object.keys(diagram.manualPositions || {}));
+    const availableCross = axes.crossEnd - axes.crossStart;
+    curvedInternalEdgeGroups(diagram).forEach(({ nodes, edges }) => {
+      const [firstNode, secondNode] = nodes;
+      const first = positions[firstNode];
+      const second = positions[secondNode];
+      if (!first || !second || nodes.some((node) => manual.has(node))) {
+        return;
+      }
+      const maxChord = maxChordForCurvedEdgeGroup(edges, availableCross);
+      const currentChord = Math.abs(first.x - second.x);
+      if (maxChord && currentChord > maxChord) {
+        const midLayer = (first.x + second.x) / 2;
+        const halfChord = maxChord / 2;
+        first.x = midLayer - halfChord;
+        second.x = midLayer + halfChord;
+      }
+      const targetCross = (axes.crossStart + axes.crossEnd) / 2;
+      axes.setCross(first, targetCross);
+      axes.setCross(second, targetCross);
+    });
+  }
+  function layoutEdgePathBounds(diagram, positions) {
+    const bounds = {
+      minX: Infinity,
+      maxX: -Infinity,
+      minY: Infinity,
+      maxY: -Infinity
+    };
+    let hasGeometry = false;
+    diagram.edges.forEach((edge) => {
+      if (edge.hidden) {
+        return;
+      }
+      const from = positions[edge.from];
+      const to = positions[edge.to];
+      if (!from || !to) {
+        return;
+      }
+      const numbers = edgePath(edge, from, to).match(/-?\d+(?:\.\d+)?/g);
+      if (!numbers) {
+        return;
+      }
+      numbers.map(Number).forEach((value, index) => {
+        if (index % 2 === 0) {
+          hasGeometry = true;
+          bounds.minX = Math.min(bounds.minX, value);
+          bounds.maxX = Math.max(bounds.maxX, value);
+          return;
+        }
+        bounds.minY = Math.min(bounds.minY, value);
+        bounds.maxY = Math.max(bounds.maxY, value);
+      });
+    });
+    return hasGeometry ? bounds : null;
+  }
+  function fitLayoutTranslationToEdgeBounds(diagram, positions, layoutOptions) {
+    const bounds = layoutEdgePathBounds(diagram, positions);
+    if (!bounds) {
+      return;
+    }
+    const minX = layoutOptions.marginX;
+    const maxX = layoutOptions.width - layoutOptions.marginX;
+    const minY = layoutOptions.marginY;
+    const maxY = layoutOptions.height - layoutOptions.marginY;
+    let offsetX = 0;
+    let offsetY = 0;
+    if (bounds.minX < minX) {
+      offsetX = minX - bounds.minX;
+    } else if (bounds.maxX > maxX) {
+      offsetX = maxX - bounds.maxX;
+    }
+    if (bounds.minY < minY) {
+      offsetY = minY - bounds.minY;
+    } else if (bounds.maxY > maxY) {
+      offsetY = maxY - bounds.maxY;
+    }
+    if (!offsetX && !offsetY) {
+      return;
+    }
+    Object.values(positions).forEach((position) => {
+      position.x += offsetX;
+      position.y += offsetY;
+    });
+  }
+  function straightenSingleTerminalLegs(diagram, positions, axes) {
+    const manual = new Set(Object.keys(diagram.manualPositions || {}));
+    const terminalKinds = ["incoming", "outgoing"];
+    terminalKinds.forEach((kind) => {
+      const terminalsByInternal = terminalNeighborsByInternal(diagram, kind, manual);
+      terminalsByInternal.forEach((terminals, internal) => {
+        if (terminals.size !== 1 || !positions[internal]) {
+          return;
+        }
+        const terminal = Array.from(terminals)[0];
+        if (!positions[terminal]) {
+          return;
+        }
+        if (canMoveTerminalCross(terminal, axes.crossOf(positions[internal]), positions, axes, kind)) {
+          axes.setCross(positions[terminal], axes.crossOf(positions[internal]));
+        }
+      });
+    });
+  }
+  function alignVerticalProcessTerminalStacks(diagram, positions, axes, layoutOptions) {
+    if (!layoutOptions.orientation.startsWith("vertical")) {
+      return;
+    }
+    const manual = new Set(Object.keys(diagram.manualPositions || {}));
+    const orderedInternals = [];
+    const terminalsByInternal = /* @__PURE__ */ new Map();
+    diagram.incoming.forEach((terminal) => {
+      const internals = visibleInternalNeighborsForTerminal(diagram, terminal, manual);
+      if (internals.length !== 1) {
+        return;
+      }
+      const internal = internals[0];
+      if (!orderedInternals.includes(internal)) {
+        orderedInternals.push(internal);
+      }
+      addTerminalForInternal(terminalsByInternal, internal, terminal);
+    });
+    diagram.outgoing.forEach((terminal) => {
+      const internals = visibleInternalNeighborsForTerminal(diagram, terminal, manual);
+      if (internals.length !== 1) {
+        return;
+      }
+      const internal = internals[0];
+      if (!orderedInternals.includes(internal)) {
+        orderedInternals.push(internal);
+      }
+      addTerminalForInternal(terminalsByInternal, internal, terminal);
+    });
+    if (orderedInternals.length < 2) {
+      return;
+    }
+    orderedInternals.forEach((internal, index) => {
+      const cross = crossCoordinateAt(index, orderedInternals.length, axes.crossStart, axes.crossEnd);
+      if (positions[internal] && !manual.has(internal)) {
+        axes.setCross(positions[internal], cross);
+      }
+      (terminalsByInternal.get(internal) || []).forEach((terminal) => {
+        if (positions[terminal] && !manual.has(terminal)) {
+          axes.setCross(positions[terminal], cross);
+        }
+      });
+    });
+  }
+  function addTerminalForInternal(terminalsByInternal, internal, terminal) {
+    if (!terminalsByInternal.has(internal)) {
+      terminalsByInternal.set(internal, []);
+    }
+    if (!terminalsByInternal.get(internal).includes(terminal)) {
+      terminalsByInternal.get(internal).push(terminal);
+    }
+  }
+  function alignInternalsAcrossInvisibleTerminalPairs(diagram, positions, axes) {
+    const manual = new Set(Object.keys(diagram.manualPositions || {}));
+    const terminalKinds = /* @__PURE__ */ new Set(["incoming", "outgoing"]);
+    diagram.edges.forEach((edge) => {
+      if (!edge.hidden) {
+        return;
+      }
+      const fromKind = nodeKind(edge.from, diagram);
+      const toKind = nodeKind(edge.to, diagram);
+      if (!terminalKinds.has(fromKind) || fromKind !== toKind) {
+        return;
+      }
+      const internalsFrom = visibleInternalNeighborsForTerminal(diagram, edge.from, manual);
+      const internalsTo = visibleInternalNeighborsForTerminal(diagram, edge.to, manual);
+      if (internalsFrom.length !== 1 || internalsTo.length !== 1) {
+        return;
+      }
+      const firstInternal = internalsFrom[0];
+      const secondInternal = internalsTo[0];
+      if (firstInternal === secondInternal || !positions[firstInternal] || !positions[secondInternal] || manual.has(firstInternal) || manual.has(secondInternal)) {
+        return;
+      }
+      const sharedLayer = (positions[firstInternal].x + positions[secondInternal].x) / 2;
+      positions[firstInternal].x = sharedLayer;
+      positions[secondInternal].x = sharedLayer;
+    });
+  }
+  function canMoveTerminalCross(node, cross, positions, axes, kind) {
+    const minGap = 28;
+    return Object.entries(positions).every(([otherNode, position]) => otherNode === node || position.kind === "internal" || position.kind !== kind || Math.abs(axes.crossOf(position) - cross) >= minGap);
+  }
+  function applyTikzPostLayoutOrientation(diagram, layout, layoutOptions) {
+    const orientation2 = layoutOptions.tikzOrientation;
+    if (!orientation2) {
+      return;
+    }
+    const from = layout.positions[orientation2.from];
+    const to = layout.positions[orientation2.to];
+    if (!from || !to) {
+      return;
+    }
+    const currentAngle = Math.atan2(to.y - from.y, to.x - from.x);
+    const targetAngle = degreesToRadians(orientation2.angle);
+    const rotation = targetAngle - currentAngle;
+    const pivot = { x: from.x, y: from.y };
+    Object.values(layout.positions).forEach((position) => {
+      rotatePositionAround(position, pivot, rotation);
+    });
+    if (orientation2.flip) {
+      Object.values(layout.positions).forEach((position) => {
+        reflectPositionAcrossLine(position, pivot, targetAngle);
+      });
+    }
+    fanTikzOrientationMixedTerminalPairs(diagram, layout, orientation2);
+    fanTikzOrientationProcessTerminalGroups(diagram, layout, orientation2);
+    enforceDeclaredExternalOrder(diagram, layout.positions, diagramAxes(layoutOptions));
+    fitLayoutPositions(layout, layoutOptions);
+  }
+  function fanTikzOrientationMixedTerminalPairs(diagram, layout, orientation2) {
+    const from = layout.positions[orientation2.from];
+    const to = layout.positions[orientation2.to];
+    if (!from || !to) {
+      return;
+    }
+    const axis = lineVector2(from, to);
+    const axisGap = clamp3(Math.min(layout.width, layout.height) * 0.24, 72, 104);
+    const fanGap = orientation2.axis === "vertical" ? clamp3(Math.min(layout.width, layout.height) * 0.45, 126, 150) : clamp3(Math.min(layout.width, layout.height) * 0.33, 84, 126);
+    [
+      { internal: orientation2.from, outward: -1 },
+      { internal: orientation2.to, outward: 1 }
+    ].forEach(({ internal, outward }) => {
+      const endpoint = layout.positions[internal];
+      const terminals = mixedTerminalPairForInternal(diagram, internal);
+      if (!endpoint || !terminals) {
+        return;
+      }
+      moveTerminalIntoOrientationFan(
+        layout.positions[terminals.incoming],
+        endpoint,
+        axis,
+        outward,
+        1,
+        axisGap,
+        fanGap
+      );
+      moveTerminalIntoOrientationFan(
+        layout.positions[terminals.outgoing],
+        endpoint,
+        axis,
+        outward,
+        -1,
+        axisGap,
+        fanGap
+      );
+    });
+  }
+  function mixedTerminalPairForInternal(diagram, internal) {
+    const terminals = { incoming: [], outgoing: [] };
+    const terminalKinds = /* @__PURE__ */ new Set(["incoming", "outgoing"]);
+    diagram.edges.forEach((edge) => {
+      if (edge.hidden) {
+        return;
+      }
+      let terminal = null;
+      if (edge.from === internal && terminalKinds.has(nodeKind(edge.to, diagram))) {
+        terminal = edge.to;
+      }
+      if (edge.to === internal && terminalKinds.has(nodeKind(edge.from, diagram))) {
+        terminal = edge.from;
+      }
+      if (!terminal) {
+        return;
+      }
+      terminals[nodeKind(terminal, diagram)].push(terminal);
+    });
+    if (terminals.incoming.length !== 1 || terminals.outgoing.length !== 1) {
+      return null;
+    }
+    return {
+      incoming: terminals.incoming[0],
+      outgoing: terminals.outgoing[0]
+    };
+  }
+  function fanTikzOrientationProcessTerminalGroups(diagram, layout, orientation2) {
+    const from = layout.positions[orientation2.from];
+    const to = layout.positions[orientation2.to];
+    if (!from || !to) {
+      return;
+    }
+    const axis = lineVector2(from, to);
+    const axisGap = clamp3(Math.min(layout.width, layout.height) * 0.24, 72, 104);
+    const fanGap = clamp3(Math.min(layout.width, layout.height) * 0.33, 84, 126);
+    [
+      { internal: orientation2.from, kind: "incoming", outward: -1 },
+      { internal: orientation2.to, kind: "outgoing", outward: 1 }
+    ].forEach(({ internal, kind, outward }) => {
+      const endpoint = layout.positions[internal];
+      const terminals = Array.from(terminalNeighborsByInternal(diagram, kind).get(internal) || []).filter((terminal) => layout.positions[terminal]).sort((left, right) => terminalDeclarationOrder(diagram, kind, left) - terminalDeclarationOrder(diagram, kind, right) || left.localeCompare(right));
+      if (!endpoint || terminals.length < 2) {
+        return;
+      }
+      terminals.forEach((terminal, index) => {
+        const side = terminals.length === 1 ? 0 : -1 + 2 * index / (terminals.length - 1);
+        const position = layout.positions[terminal];
+        position.x = endpoint.x + axis.ux * axisGap * outward + axis.px * fanGap * side;
+        position.y = endpoint.y + axis.uy * axisGap * outward + axis.py * fanGap * side;
+      });
+    });
+  }
+  function terminalDeclarationOrder(diagram, kind, terminal) {
+    const list = kind === "incoming" ? diagram.incoming : diagram.outgoing;
+    const index = list.indexOf(terminal);
+    return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+  }
+  function moveTerminalIntoOrientationFan(position, endpoint, axis, outward, side, axisGap, fanGap) {
+    if (!position) {
+      return;
+    }
+    position.x = endpoint.x + axis.ux * axisGap * outward + axis.px * fanGap * side;
+    position.y = endpoint.y + axis.uy * axisGap * outward + axis.py * fanGap * side;
+  }
+  function rotatePositionAround(position, pivot, angle) {
+    const dx = position.x - pivot.x;
+    const dy = position.y - pivot.y;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    position.x = pivot.x + dx * cos - dy * sin;
+    position.y = pivot.y + dx * sin + dy * cos;
+  }
+  function reflectPositionAcrossLine(position, pivot, angle) {
+    const ux = Math.cos(angle);
+    const uy = Math.sin(angle);
+    const dx = position.x - pivot.x;
+    const dy = position.y - pivot.y;
+    const parallel = dx * ux + dy * uy;
+    const projection = {
+      x: pivot.x + parallel * ux,
+      y: pivot.y + parallel * uy
+    };
+    position.x = 2 * projection.x - position.x;
+    position.y = 2 * projection.y - position.y;
+  }
+  function fitLayoutPositions(layout, layoutOptions) {
+    const positions = Object.values(layout.positions);
+    if (!positions.length) {
+      return;
+    }
+    const bounds = positionBounds(positions);
+    const availableWidth = Math.max(1, layoutOptions.width - 2 * layoutOptions.marginX);
+    const availableHeight = Math.max(1, layoutOptions.height - 2 * layoutOptions.marginY);
+    const scale = Math.min(
+      1,
+      availableWidth / Math.max(1, bounds.maxX - bounds.minX),
+      availableHeight / Math.max(1, bounds.maxY - bounds.minY)
+    );
+    const scaledWidth = (bounds.maxX - bounds.minX) * scale;
+    const scaledHeight = (bounds.maxY - bounds.minY) * scale;
+    const offsetX = layoutOptions.marginX + (availableWidth - scaledWidth) / 2 - bounds.minX * scale;
+    const offsetY = layoutOptions.marginY + (availableHeight - scaledHeight) / 2 - bounds.minY * scale;
+    positions.forEach((position) => {
+      position.x = position.x * scale + offsetX;
+      position.y = position.y * scale + offsetY;
+    });
+  }
+  function alignInternalsToDeclaredTerminalRows(diagram, positions, axes, layoutOptions) {
+    if (!diagram.incoming.length && !diagram.outgoing.length) {
+      return;
+    }
+    const pinned = /* @__PURE__ */ new Set([
+      ...diagram.incoming,
+      ...diagram.outgoing,
+      ...Object.keys(diagram.manualPositions || {})
+    ]);
+    terminalCrossLocks(diagram, positions, axes, pinned).forEach((cross, node) => {
+      if (positions[node]?.kind === "internal") {
+        axes.setCross(positions[node], cross);
+      }
+    });
+    if (layoutOptions.layout === "spring") {
+      alignJunctionsToTerminalRowCorridors(diagram, positions, axes, pinned);
+    }
+    alignTerminalLaneInternals(diagram, positions, axes, pinned);
+  }
+  function alignJunctionsToTerminalRowCorridors(diagram, positions, axes, pinned) {
+    if (axes.stackInternals) {
+      return;
+    }
+    const externalKinds = /* @__PURE__ */ new Set(["incoming", "outgoing"]);
+    const directLocks = terminalCrossLocks(diagram, positions, axes, pinned);
+    const adjacency = visibleAdjacencyForLayout(diagram, Object.keys(positions));
+    const tolerance = 1;
+    adjacency.forEach((neighbors, node) => {
+      const position = positions[node];
+      if (!position || position.kind !== "internal" || pinned.has(node) || directLocks.has(node)) {
+        return;
+      }
+      const crosses = [];
+      neighbors.forEach((neighbor) => {
+        const neighborPosition = positions[neighbor];
+        if (!neighborPosition) {
+          return;
+        }
+        if (externalKinds.has(neighborPosition.kind)) {
+          crosses.push(axes.crossOf(neighborPosition));
+          return;
+        }
+        if (directLocks.has(neighbor)) {
+          crosses.push(directLocks.get(neighbor));
+        }
+      });
+      if (crosses.length < 2) {
+        return;
+      }
+      const groups = groupNearbyCrosses(crosses, tolerance);
+      if (groups.length < 2) {
+        return;
+      }
+      const largest = Math.max(...groups.map((group) => group.count));
+      const dominantGroups = groups.filter((group) => group.count === largest);
+      const target = dominantGroups.length === 1 && largest > 1 ? dominantGroups[0].sum / dominantGroups[0].count : crosses.reduce((sum, cross) => sum + cross, 0) / crosses.length;
+      axes.setCross(position, target);
+    });
+  }
+  function groupNearbyCrosses(crosses, tolerance) {
+    const groups = [];
+    crosses.filter(Number.isFinite).sort((left, right) => left - right).forEach((cross) => {
+      const last = groups[groups.length - 1];
+      if (!last || Math.abs(cross - last.center) > tolerance) {
+        groups.push({ center: cross, sum: cross, count: 1 });
+        return;
+      }
+      last.sum += cross;
+      last.count += 1;
+      last.center = last.sum / last.count;
+    });
+    return groups;
+  }
+  function alignTerminalLaneInternals(diagram, positions, axes, pinned) {
+    if (diagram.incoming.length <= 1 && diagram.outgoing.length <= 1) {
+      return;
+    }
+    const tolerance = 1;
+    const moved = /* @__PURE__ */ new Set();
+    diagram.incoming.forEach((incoming) => {
+      const incomingPosition = positions[incoming];
+      if (!incomingPosition) {
+        return;
+      }
+      diagram.outgoing.forEach((outgoing) => {
+        const outgoingPosition = positions[outgoing];
+        if (!outgoingPosition || Math.abs(axes.crossOf(incomingPosition) - axes.crossOf(outgoingPosition)) > tolerance) {
+          return;
+        }
+        const path = terminalLanePath(diagram, positions, axes, incoming, outgoing, axes.crossOf(incomingPosition), tolerance);
+        if (!path) {
+          return;
+        }
+        const internals = path.filter((node) => positions[node]?.kind === "internal" && !pinned.has(node) && !moved.has(node));
+        if (!internals.length) {
+          return;
+        }
+        internals.forEach((node, index) => {
+          positions[node].x = axes.layerStart + (axes.layerEnd - axes.layerStart) * (index + 1) / (internals.length + 1);
+          moved.add(node);
+        });
+      });
+    });
+  }
+  function terminalLanePath(diagram, positions, axes, incoming, outgoing, cross, tolerance) {
+    const allowed = /* @__PURE__ */ new Set([incoming, outgoing]);
+    Object.entries(positions).forEach(([node, position]) => {
+      if (position.kind === "internal" && Math.abs(axes.crossOf(position) - cross) <= tolerance) {
+        allowed.add(node);
+      }
+    });
+    const adjacency = new Map(Array.from(allowed).map((node) => [node, []]));
+    diagram.edges.forEach((edge) => {
+      if (edge.hidden || !allowed.has(edge.from) || !allowed.has(edge.to)) {
+        return;
+      }
+      adjacency.get(edge.from).push(edge.to);
+      adjacency.get(edge.to).push(edge.from);
+    });
+    adjacency.forEach((neighbors) => {
+      neighbors.sort((left, right) => left.localeCompare(right));
+    });
+    const queue = [[incoming]];
+    const visited = /* @__PURE__ */ new Set([incoming]);
+    while (queue.length) {
+      const path = queue.shift();
+      const node = path[path.length - 1];
+      if (node === outgoing) {
+        return path;
+      }
+      (adjacency.get(node) || []).forEach((neighbor) => {
+        if (visited.has(neighbor)) {
+          return;
+        }
+        visited.add(neighbor);
+        queue.push([...path, neighbor]);
+      });
+    }
+    return null;
+  }
+  function applyAlignmentConstraints(diagram, positions, layoutOptions) {
+    const alignments = layoutOptions.alignments || [];
+    if (!alignments.length) {
+      return;
+    }
+    const manual = new Set(Object.keys(diagram.manualPositions || {}));
+    alignments.forEach((alignment) => {
+      const coordinate = alignment.axis === "vertical" ? "x" : "y";
+      const crossCoordinate = alignment.axis === "vertical" ? "y" : "x";
+      const positioned = alignment.nodes.map((node) => ({ node, position: positions[node] })).filter((entry) => entry.position && Number.isFinite(entry.position[coordinate]));
+      if (positioned.length < 2) {
+        return;
+      }
+      const anchors = positioned.filter((entry) => manual.has(entry.node));
+      const source = anchors.length ? anchors : positioned;
+      const target = source.reduce((sum, entry) => sum + entry.position[coordinate], 0) / source.length;
+      positioned.forEach(({ node, position }) => {
+        if (!manual.has(node)) {
+          position[coordinate] = target;
+        }
+      });
+      orderAlignedNodesAlongCrossAxis(positioned, crossCoordinate, manual);
+    });
+  }
+  function orderAlignedNodesAlongCrossAxis(positioned, crossCoordinate, manual) {
+    if (positioned.length < 2 || positioned.some((entry) => manual.has(entry.node))) {
+      return;
+    }
+    const slots = positioned.map((entry) => entry.position[crossCoordinate]).filter((value) => Number.isFinite(value)).sort((left, right) => left - right);
+    if (slots.length !== positioned.length) {
+      return;
+    }
+    positioned.forEach((entry, index) => {
+      entry.position[crossCoordinate] = slots[index];
+    });
+  }
+  var init_normalization = __esm({
+    "src/markfeyn/renderer/layout/normalization.js"() {
+      init_paths();
+      init_vertex_shapes();
+      init_coordinates();
+    }
+  });
+
+  // src/markfeyn/renderer/parser/options.js
+  function parseEdgeOptions(source) {
+    const options = {};
+    splitOptionList(source).map((item) => item.trim()).filter(Boolean).forEach((item) => {
+      const parsed = parseOptionItem(item);
+      const name = normalizeOptionName(parsed.name);
+      if (name === "hidden" || name === "invisible" || name === "draw" && parsed.value === "none") {
+        options.hidden = true;
+      }
+      if (name === "reverse" || name === "anti") {
+        options.arrow = "reverse";
+      }
+      if (name === "forward") {
+        options.arrow = "forward";
+      }
+      if (name === "overlay" || name === "foreground" || name === "front") {
+        options.overlay = true;
+      }
+      applyCurveOption(options, name, parsed.value);
+      if (name === "out") {
+        const outAngle = Number(parsed.value);
+        if (Number.isFinite(outAngle)) {
+          options.outAngle = outAngle;
+        }
+      }
+      if (name === "in") {
+        const inAngle = Number(parsed.value);
+        if (Number.isFinite(inAngle)) {
+          options.inAngle = inAngle;
+        }
+      }
+      if (name === "looseness") {
+        const looseness = Number(parsed.value);
+        if (Number.isFinite(looseness) && looseness > 0) {
+          options.looseness = looseness;
+        }
+      }
+      if (name === "relative") {
+        options.relativeAngles = parsed.value !== "false";
+      }
+      if (name === "edge label" || name === "label") {
+        options.label = cleanLabelValue(parsed.value);
+        options.labelSide = "left";
+      }
+      if (name === "edge label'" || name === "label'") {
+        options.label = cleanLabelValue(parsed.value);
+        options.labelSide = "right";
+      }
+      if (name === "momentum" || name === "reversed momentum" || name === "rmomentum") {
+        const momentum = parseMomentumValue(parsed.value);
+        options.label = momentum.label;
+        options.labelSide = "left";
+        options.labelPlacement = "momentum";
+        options.momentumDirection = name === "momentum" ? "forward" : "reverse";
+        options.momentum = momentum.options;
+      }
+      if (name === "momentum'" || name === "reversed momentum'" || name === "rmomentum'") {
+        const momentum = parseMomentumValue(parsed.value);
+        options.label = momentum.label;
+        options.labelSide = "right";
+        options.labelPlacement = "momentum-prime";
+        options.momentumDirection = name === "momentum'" ? "forward" : "reverse";
+        options.momentum = momentum.options;
+      }
+    });
+    return options;
+  }
+  function parseMomentumValue(value) {
+    let text = unwrapLabelValue(value);
+    const options = {};
+    const optionMatch = text.match(/^\[([^\]]*)\]\s*/);
+    if (optionMatch) {
+      Object.assign(options, parseMomentumOptions(optionMatch[1]));
+      text = text.slice(optionMatch[0].length).trim();
+    }
+    return {
+      label: cleanLabelValue(text),
+      options
+    };
+  }
+  function unwrapLabelValue(value) {
+    let text = String(value || "").trim();
+    if (text.startsWith("{") && text.endsWith("}") || text.startsWith('"') && text.endsWith('"') || text.startsWith("'") && text.endsWith("'")) {
+      text = text.slice(1, -1).trim();
+    }
+    return text;
+  }
+  function parseMomentumOptions(source) {
+    const options = {};
+    splitOptionList(source).map((item) => item.trim()).filter(Boolean).forEach((item) => {
+      const parsed = parseOptionItem(item);
+      const name = normalizeOptionName(parsed.name);
+      if (name === "arrow distance") {
+        const distance2 = parseDistanceValue(parsed.value);
+        if (Number.isFinite(distance2) && distance2 >= 0) {
+          options.arrowDistance = distance2;
+        }
+      }
+      if (name === "label distance") {
+        const distance2 = parseDistanceValue(parsed.value);
+        if (Number.isFinite(distance2) && distance2 >= 0) {
+          options.labelDistance = distance2;
+        }
+      }
+      if (name === "arrow shorten") {
+        const shorten = parseFractionValue(parsed.value);
+        if (Number.isFinite(shorten)) {
+          options.arrowShorten = clamp4(shorten, 0, 0.45);
+        }
+      }
+    });
+    return options;
+  }
+  function parseDistanceValue(value) {
+    const match = String(value || "").trim().match(/^(-?\d+(?:\.\d+)?)(px|pt|mm|cm|em)?$/i);
+    if (!match) {
+      return NaN;
+    }
+    const number = Number(match[1]);
+    const unit = (match[2] || "px").toLowerCase();
+    const scale = {
+      px: 1,
+      pt: 4 / 3,
+      mm: 96 / 25.4,
+      cm: 96 / 2.54,
+      em: 16
+    }[unit] ?? 1;
+    return number * scale;
+  }
+  function parseFractionValue(value) {
+    const text = String(value || "").trim();
+    if (text.endsWith("%")) {
+      return Number(text.slice(0, -1)) / 100;
+    }
+    return Number(text);
+  }
+  function splitOptionList(source) {
+    const items = [];
+    let buffer = "";
+    let braceDepth = 0;
+    let bracketDepth = 0;
+    let quote = null;
+    for (const character of String(source || "")) {
+      if (quote) {
+        buffer += character;
+        if (character === quote) {
+          quote = null;
+        }
+        continue;
+      }
+      if (character === '"') {
+        quote = character;
+        buffer += character;
+        continue;
+      }
+      if (character === "{") {
+        braceDepth += 1;
+        buffer += character;
+        continue;
+      }
+      if (character === "}") {
+        braceDepth = Math.max(0, braceDepth - 1);
+        buffer += character;
+        continue;
+      }
+      if (character === "[") {
+        bracketDepth += 1;
+        buffer += character;
+        continue;
+      }
+      if (character === "]") {
+        bracketDepth = Math.max(0, bracketDepth - 1);
+        buffer += character;
+        continue;
+      }
+      if (character === "," && braceDepth === 0 && bracketDepth === 0) {
+        items.push(buffer);
+        buffer = "";
+        continue;
+      }
+      buffer += character;
+    }
+    if (buffer) {
+      items.push(buffer);
+    }
+    return items;
+  }
+  function parseOptionItem(item) {
+    const separator = item.indexOf("=");
+    if (separator === -1) {
+      return {
+        name: item.trim(),
+        value: ""
+      };
+    }
+    return {
+      name: item.slice(0, separator).trim(),
+      value: item.slice(separator + 1).trim()
+    };
+  }
+  function normalizeOptionName(value) {
+    return String(value || "").trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+  }
+  function applyCurveOption(options, name, value) {
+    const normalizedValue = String(value || "").trim();
+    if (name === "half left") {
+      options.curve = { side: "left", amount: 2 / 3, shape: "semicircle" };
+      return;
+    }
+    if (name === "half right") {
+      options.curve = { side: "right", amount: 2 / 3, shape: "semicircle" };
+      return;
+    }
+    if (name === "quarter left") {
+      options.curve = { side: "left", amount: 0.28 };
+      return;
+    }
+    if (name === "quarter right") {
+      options.curve = { side: "right", amount: 0.28 };
+      return;
+    }
+    if (name === "bend left") {
+      options.curve = {
+        side: "left",
+        amount: bendAmountFromValue(normalizedValue)
+      };
+      return;
+    }
+    if (name === "bend right") {
+      options.curve = {
+        side: "right",
+        amount: bendAmountFromValue(normalizedValue)
+      };
+    }
+  }
+  function bendAmountFromValue(value) {
+    const angle = Number(value);
+    if (!Number.isFinite(angle) || angle <= 0) {
+      return 0.35;
+    }
+    return clamp4(angle / 90, 0.12, 0.8);
+  }
+  function cleanLabelValue(value) {
+    let text = String(value || "").trim();
+    if (text.startsWith("{") && text.endsWith("}") || text.startsWith('"') && text.endsWith('"') || text.startsWith("'") && text.endsWith("'")) {
+      text = text.slice(1, -1).trim();
+    }
+    text = text.replace(/^\[[^\]]*\]\s*/, "");
+    if (text.startsWith("\\(") && text.endsWith("\\)")) {
+      text = text.slice(2, -2).trim();
+    }
+    return text;
+  }
+  function parseDiagramOptions(tokens, diagram, lineNumber) {
+    tokens.forEach((token) => {
+      const [key, ...valueParts] = token.split("=");
+      if (!valueParts.length) {
+        diagram.errors.push(`Line ${lineNumber}: option "${token}" must use key=value`);
+        return;
+      }
+      setDiagramOption(diagram, key, valueParts.join("="), lineNumber);
+    });
+  }
+  function setDiagramOption(diagram, key, value, lineNumber) {
+    const normalizedKey = String(key || "").trim().toLowerCase().replace(/-/g, "_");
+    const normalizedValue = String(value || "").trim();
+    if (!normalizedValue) {
+      diagram.errors.push(`Line ${lineNumber}: ${key} requires a value`);
+      return;
+    }
+    if (normalizedKey === "layout") {
+      const layout = normalizeLayoutName(normalizedValue);
+      if (!layout) {
+        diagram.errors.push(`Line ${lineNumber}: unsupported layout "${normalizedValue}"`);
+        return;
+      }
+      diagram.options.layout = layout;
+      return;
+    }
+    if (normalizedKey === "orientation" || normalizedKey === "orient") {
+      const orientation2 = normalizeOrientation(normalizedValue);
+      if (!orientation2) {
+        diagram.errors.push(`Line ${lineNumber}: unsupported orientation "${normalizedValue}"`);
+        return;
+      }
+      diagram.options.orientation = orientation2;
+      return;
+    }
+    if (normalizedKey === "size") {
+      const size = normalizedValue.toLowerCase();
+      if (!SIZE_PRESETS[size]) {
+        diagram.errors.push(`Line ${lineNumber}: unsupported size "${normalizedValue}"`);
+        return;
+      }
+      diagram.options.size = size;
+      return;
+    }
+    if (normalizedKey === "width" || normalizedKey === "height" || normalizedKey === "margin_x" || normalizedKey === "margin_y") {
+      const number = Number(normalizedValue);
+      if (!Number.isFinite(number) || number <= 0) {
+        diagram.errors.push(`Line ${lineNumber}: ${key} must be a positive number`);
+        return;
+      }
+      diagram.options[normalizedKey] = number;
+      return;
+    }
+    diagram.errors.push(`Line ${lineNumber}: unknown option "${key}"`);
+  }
+  function normalizeLayoutName(value) {
+    const normalized = value.toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+    if (normalized === "layered" || normalized === "layered layout") {
+      return "layered";
+    }
+    if (normalized === "spring" || normalized === "spring layout") {
+      return "spring";
+    }
+    if (normalized === "spring electrical" || normalized === "spring electrical layout" || normalized === "electrical" || normalized === "electrical layout") {
+      return "spring-electrical";
+    }
+    if (normalized === "tree" || normalized === "tree layout") {
+      return "tree";
+    }
+    return null;
+  }
+  function normalizeQuality(value) {
+    const normalized = String(value || "balanced").toLowerCase();
+    if (normalized === "fast" || normalized === "high") {
+      return normalized;
+    }
+    return "balanced";
+  }
+  function normalizeOrientation(value) {
+    const normalized = value.toLowerCase().replace(/_/g, "-").replace(/\s+/g, "-").trim();
+    if (normalized === "horizontal") {
+      return "horizontal";
+    }
+    if (normalized === "horizontal'" || normalized === "horizontal-reverse" || normalized === "horizontal-flipped") {
+      return "horizontal-reverse";
+    }
+    if (normalized === "vertical") {
+      return "vertical";
+    }
+    if (normalized === "vertical'" || normalized === "vertical-reverse" || normalized === "vertical-flipped") {
+      return "vertical-reverse";
+    }
+    return null;
+  }
+  function isTikzOrientationCommand(command) {
+    return command === "horizontal" || command === "horizontal'" || command === "vertical" || command === "vertical'";
+  }
+  function isNodeIdentifier(value) {
+    return /^[A-Za-z0-9_.-]+$/.test(String(value || ""));
+  }
+  function normalizeTikzOrientation(value) {
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+    const axis = value.axis === "vertical" ? "vertical" : "horizontal";
+    const from = String(value.from || "").trim();
+    const to = String(value.to || "").trim();
+    if (!isNodeIdentifier(from) || !isNodeIdentifier(to)) {
+      return null;
+    }
+    return {
+      axis,
+      from,
+      to,
+      flip: Boolean(value.flip),
+      angle: axis === "vertical" ? 90 : 0
+    };
+  }
+  function clamp4(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+  var init_options = __esm({
+    "src/markfeyn/renderer/parser/options.js"() {
+      init_constants();
+    }
+  });
+
+  // src/markfeyn/renderer/layout/options.js
+  function resolveLayoutOptions(diagram, options) {
+    const merged = {
+      ...DEFAULT_DIAGRAM_OPTIONS,
+      ...diagram.options || {},
+      ...options || {}
+    };
+    const size = SIZE_PRESETS[merged.size] || SIZE_PRESETS.medium;
+    const incomingCount = Math.max(diagram.incoming.length, 1);
+    const outgoingCount = Math.max(diagram.outgoing.length, 1);
+    const orientation2 = normalizeOrientation(merged.orientation) || DEFAULT_DIAGRAM_OPTIONS.orientation;
+    const tikzOrientation = normalizeTikzOrientation(merged.tikzOrientation || merged.tikz_orientation);
+    const alignments = normalizeAlignmentConstraints(merged.alignments || merged.alignmentConstraints);
+    const portrait = orientation2.startsWith("vertical") || tikzOrientation?.axis === "vertical";
+    const width = merged.width ?? (portrait ? size.minHeight : size.width);
+    const defaultHeight = Math.max(size.minHeight, 70 + Math.max(incomingCount, outgoingCount) * size.externalGap);
+    const height = merged.height ?? (portrait ? Math.max(size.width, defaultHeight) : defaultHeight);
+    const defaultMarginX = portrait ? Math.min(size.marginX, size.marginY) : size.marginX;
+    return {
+      layout: normalizeLayoutName(merged.layout) || DEFAULT_DIAGRAM_OPTIONS.layout,
+      orientation: orientation2,
+      width,
+      height,
+      marginX: merged.margin_x ?? merged.marginX ?? defaultMarginX,
+      marginY: merged.margin_y ?? merged.marginY ?? size.marginY,
+      tikzOrientation,
+      alignments,
+      orientationMode: merged.orientationMode,
+      direction: merged.direction,
+      deterministicSeed: merged.deterministicSeed,
+      debug: Boolean(merged.debug),
+      profile: Boolean(merged.profile),
+      quality: normalizeQuality(merged.quality),
+      preservePreviousLayout: Boolean(merged.preservePreviousLayout),
+      previousLayout: merged.previousLayout
+    };
+  }
+  function normalizeAlignmentConstraints(value) {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    return value.map((constraint) => {
+      const axis = constraint?.axis === "vertical" ? "vertical" : constraint?.axis === "horizontal" ? "horizontal" : null;
+      const nodes = Array.isArray(constraint?.nodes) ? constraint.nodes.map((node) => String(node || "").trim()).filter(isNodeIdentifier) : [];
+      if (!axis || nodes.length < 2) {
+        return null;
+      }
+      return { axis, nodes };
+    }).filter(Boolean);
+  }
+  var init_options2 = __esm({
+    "src/markfeyn/renderer/layout/options.js"() {
+      init_constants();
+      init_options();
     }
   });
 
@@ -96798,6 +98994,375 @@
     }
   });
 
+  // src/markfeyn/renderer/layout/fallback.js
+  function layoutFeynmanFallbackRaw(diagram, layoutOptions) {
+    if (layoutOptions.layout === "spring" || layoutOptions.layout === "spring-electrical") {
+      return layoutSpring(diagram, layoutOptions, {
+        electrical: layoutOptions.layout === "spring-electrical"
+      });
+    }
+    if (layoutOptions.layout === "tree") {
+      return layoutTree(diagram, layoutOptions);
+    }
+    return layoutLayered(diagram, layoutOptions);
+  }
+  function layoutLayered(diagram, layoutOptions) {
+    const { width, height } = layoutOptions;
+    const axes = diagramAxes(layoutOptions);
+    const positions = initialFixedPositions(diagram, axes);
+    const incoming = new Set(diagram.incoming);
+    const outgoing = new Set(diagram.outgoing);
+    const unclassified = new Set(diagram.unclassified || []);
+    const allNodes = collectNodes(diagram);
+    placeExternalNodes(diagram.incoming, axes.layerStart, axes.crossStart, axes.crossEnd, "incoming", axes, positions);
+    placeExternalNodes(diagram.outgoing, axes.layerEnd, axes.crossStart, axes.crossEnd, "outgoing", axes, positions);
+    const internalNodes = Array.from(allNodes).filter((node) => !incoming.has(node) && !outgoing.has(node) && !unclassified.has(node) && !positions[node]);
+    const layerByNode = computeInternalLayers(diagram, internalNodes, incoming);
+    const maxLayer = Math.max(1, ...Array.from(layerByNode.values()));
+    const layers = /* @__PURE__ */ new Map();
+    internalNodes.forEach((node) => {
+      const layer = layerByNode.get(node) || 1;
+      const layerPosition = axes.layerStart + (axes.layerEnd - axes.layerStart) * layer / (maxLayer + 1);
+      const cross = estimateInternalCross(node, diagram, positions, axes);
+      if (!layers.has(layer)) {
+        layers.set(layer, []);
+      }
+      layers.get(layer).push({ node, layer: layerPosition, cross });
+    });
+    layers.forEach((nodes) => {
+      distributeLayer(nodes, axes.crossStart, axes.crossEnd).forEach(({ node, layer, cross }) => {
+        positions[node] = axes.point(layer, cross, "internal");
+      });
+    });
+    placeNodesOnRing(
+      Array.from(unclassified).filter((node) => !positions[node]),
+      { x: width / 2, y: height / 2 },
+      Math.max(52, Math.min(width - 2 * layoutOptions.marginX, height - 2 * layoutOptions.marginY) * 0.38),
+      positions,
+      diagram,
+      layoutOptions,
+      -3 * Math.PI / 4
+    );
+    return { width, height, positions, options: layoutOptions };
+  }
+  function layoutTree(diagram, layoutOptions) {
+    const { width, height } = layoutOptions;
+    const axes = diagramAxes(layoutOptions);
+    const positions = initialFixedPositions(diagram, axes);
+    const allNodes = Array.from(collectNodes(diagram)).filter((node) => !positions[node]);
+    const nodeSet = new Set(allNodes);
+    const childrenByNode = treeChildrenByNode(diagram, nodeSet);
+    const roots = treeRoots(diagram, allNodes, nodeSet);
+    const depthByNode = /* @__PURE__ */ new Map();
+    const slotByNode = /* @__PURE__ */ new Map();
+    const visited = /* @__PURE__ */ new Set();
+    const visiting = /* @__PURE__ */ new Set();
+    let nextSlot = 0;
+    const assignSubtree = (node, depth) => {
+      if (!nodeSet.has(node)) {
+        return null;
+      }
+      depthByNode.set(node, Math.max(depthByNode.get(node) ?? 0, depth));
+      if (slotByNode.has(node)) {
+        return slotByNode.get(node);
+      }
+      if (visiting.has(node)) {
+        return null;
+      }
+      visiting.add(node);
+      const childSlots = (childrenByNode.get(node) || []).map((child) => assignSubtree(child, depth + 1)).filter((slot2) => slot2 !== null);
+      let slot;
+      if (childSlots.length) {
+        slot = childSlots.reduce((sum, childSlot) => sum + childSlot, 0) / childSlots.length;
+      } else {
+        slot = nextSlot;
+        nextSlot += 1;
+      }
+      slotByNode.set(node, slot);
+      visiting.delete(node);
+      visited.add(node);
+      return slot;
+    };
+    roots.forEach((root) => {
+      assignSubtree(root, 0);
+    });
+    allNodes.forEach((node) => {
+      if (!visited.has(node)) {
+        assignSubtree(node, 0);
+      }
+    });
+    allNodes.forEach((node) => {
+      const maxDepth = Math.max(1, ...Array.from(depthByNode.values()));
+      const depth = depthByNode.get(node) ?? 0;
+      const slotCount = Math.max(nextSlot, 1);
+      const kind = nodeKind(node, diagram);
+      const layer = treeLayerForNode(kind, depth, maxDepth, axes);
+      const cross = slotCoordinateAt(slotByNode.get(node) ?? 0, slotCount, axes.crossStart, axes.crossEnd);
+      positions[node] = axes.point(layer, cross, kind);
+    });
+    return { width, height, positions, options: layoutOptions };
+  }
+  function layoutSpring(diagram, layoutOptions, springOptions = {}) {
+    const { width, height, marginX, marginY } = layoutOptions;
+    const axes = diagramAxes(layoutOptions);
+    const base = layoutLayered(diagram, { ...layoutOptions, layout: "layered" });
+    const positions = { ...base.positions };
+    const allNodes = Array.from(collectNodes(diagram));
+    const pinned = /* @__PURE__ */ new Set([
+      ...diagram.incoming,
+      ...diagram.outgoing,
+      ...Object.keys(diagram.manualPositions || {})
+    ]);
+    const crossLocks = axes.stackInternals ? /* @__PURE__ */ new Map() : terminalCrossLocks(diagram, positions, axes, pinned);
+    const targetLength = Math.max(70, Math.min(width, height) / 3);
+    const repulsion = targetLength * targetLength * (springOptions.electrical ? 0.16 : 0.08);
+    const stiffness = 0.025;
+    allNodes.forEach((node, index) => {
+      if (positions[node]) {
+        return;
+      }
+      const angle = Math.PI * 2 * index / Math.max(allNodes.length, 1);
+      positions[node] = {
+        x: width / 2 + Math.cos(angle) * Math.min(width, height) * 0.25,
+        y: height / 2 + Math.sin(angle) * Math.min(width, height) * 0.25,
+        kind: nodeKind(node, diagram),
+        labelSide: labelSideForKind(nodeKind(node, diagram), layoutOptions.orientation)
+      };
+    });
+    applyCrossLocks(positions, crossLocks, axes);
+    for (let iteration = 0; iteration < 90; iteration += 1) {
+      const forces = new Map(allNodes.map((node) => [node, { x: 0, y: 0 }]));
+      for (let first = 0; first < allNodes.length; first += 1) {
+        for (let second = first + 1; second < allNodes.length; second += 1) {
+          const a = allNodes[first];
+          const b = allNodes[second];
+          const delta = safeDelta(positions[a], positions[b]);
+          const force = repulsion / Math.max(delta.distance * delta.distance, 1);
+          const fx = delta.ux * force;
+          const fy = delta.uy * force;
+          forces.get(a).x -= fx;
+          forces.get(a).y -= fy;
+          forces.get(b).x += fx;
+          forces.get(b).y += fy;
+        }
+      }
+      diagram.edges.forEach((edge) => {
+        const from = positions[edge.from];
+        const to = positions[edge.to];
+        if (!from || !to) {
+          return;
+        }
+        const delta = safeDelta(from, to);
+        const force = (delta.distance - targetLength) * stiffness;
+        const fx = delta.ux * force;
+        const fy = delta.uy * force;
+        forces.get(edge.from).x += fx;
+        forces.get(edge.from).y += fy;
+        forces.get(edge.to).x -= fx;
+        forces.get(edge.to).y -= fy;
+      });
+      allNodes.forEach((node) => {
+        if (pinned.has(node)) {
+          return;
+        }
+        const force = forces.get(node);
+        positions[node] = clampSpringPosition(
+          positions[node],
+          force,
+          layoutOptions,
+          axes,
+          diagram
+        );
+        applyCrossLock(positions[node], crossLocks.get(node), axes);
+      });
+    }
+    applyLayoutNormalizations(diagram, positions, axes, layoutOptions);
+    return { width, height, positions, options: layoutOptions };
+  }
+  function treeLayerForNode(kind, depth, maxDepth, axes) {
+    if (kind === "incoming") {
+      return axes.layerStart;
+    }
+    if (kind === "outgoing") {
+      return axes.layerEnd;
+    }
+    return axes.layerStart + (axes.layerEnd - axes.layerStart) * depth / maxDepth;
+  }
+  function treeChildrenByNode(diagram, nodeSet) {
+    const childrenByNode = /* @__PURE__ */ new Map();
+    const addChild = (parent, child) => {
+      if (!childrenByNode.has(parent)) {
+        childrenByNode.set(parent, []);
+      }
+      const children = childrenByNode.get(parent);
+      if (!children.includes(child)) {
+        children.push(child);
+      }
+    };
+    diagram.edges.forEach((edge) => {
+      if (!nodeSet.has(edge.from) || !nodeSet.has(edge.to) || edge.from === edge.to) {
+        return;
+      }
+      const direction = treeLayoutEdgeDirection(edge, diagram);
+      if (direction) {
+        addChild(direction.parent, direction.child);
+      }
+    });
+    return childrenByNode;
+  }
+  function treeLayoutEdgeDirection(edge, diagram) {
+    const fromKind = nodeKind(edge.from, diagram);
+    const toKind = nodeKind(edge.to, diagram);
+    if (fromKind === "incoming" && toKind !== "incoming") {
+      return { parent: edge.from, child: edge.to };
+    }
+    if (toKind === "incoming" && fromKind !== "incoming") {
+      return { parent: edge.to, child: edge.from };
+    }
+    if (fromKind !== "outgoing" && toKind === "outgoing") {
+      return { parent: edge.from, child: edge.to };
+    }
+    if (toKind !== "outgoing" && fromKind === "outgoing") {
+      return { parent: edge.to, child: edge.from };
+    }
+    return { parent: edge.from, child: edge.to };
+  }
+  function treeRoots(diagram, allNodes, nodeSet) {
+    const declaredRoots = diagram.incoming.filter((node) => nodeSet.has(node));
+    if (declaredRoots.length) {
+      return declaredRoots;
+    }
+    return nodesWithoutIncomingEdges(diagram, allNodes);
+  }
+  function clampSpringPosition(position, force, layoutOptions, axes, diagram) {
+    const { width, height, marginX, marginY } = layoutOptions;
+    const next = {
+      ...position,
+      x: clamp3(position.x + force.x, marginX, width - marginX),
+      y: clamp3(position.y + force.y, marginY, height - marginY)
+    };
+    if (position.kind !== "internal" || !diagram.incoming.length && !diagram.outgoing.length) {
+      return next;
+    }
+    const layerMin = Math.min(axes.layerStart, axes.layerEnd);
+    const layerMax = Math.max(axes.layerStart, axes.layerEnd);
+    const terminalGap = Math.min(72, Math.max(42, (layerMax - layerMin) * 0.24));
+    if (layerMax - layerMin > 2 * terminalGap) {
+      next.x = clamp3(next.x, layerMin + terminalGap, layerMax - terminalGap);
+    }
+    return next;
+  }
+  function applyCrossLocks(positions, crossLocks, axes) {
+    crossLocks.forEach((cross, node) => {
+      if (positions[node]) {
+        applyCrossLock(positions[node], cross, axes);
+      }
+    });
+  }
+  function applyCrossLock(position, cross, axes) {
+    if (cross === void 0) {
+      return;
+    }
+    axes.setCross(position, cross);
+  }
+  function computeInternalLayers(diagram, internalNodes, incoming) {
+    const layers = new Map(internalNodes.map((node) => [node, 1]));
+    const knownSources = new Set(incoming);
+    const maxUsefulLayer = Math.max(1, internalNodes.length);
+    for (let pass = 0; pass < internalNodes.length + diagram.edges.length + 1; pass += 1) {
+      let changed = false;
+      diagram.edges.forEach((edge) => {
+        if (!layers.has(edge.to)) {
+          return;
+        }
+        const sourceLayer = layers.get(edge.from) ?? (knownSources.has(edge.from) ? 0 : 1);
+        const nextLayer = Math.max(layers.get(edge.to), Math.min(sourceLayer + 1, maxUsefulLayer));
+        if (nextLayer !== layers.get(edge.to)) {
+          layers.set(edge.to, nextLayer);
+          changed = true;
+        }
+      });
+      if (!changed) {
+        break;
+      }
+    }
+    return layers;
+  }
+  function estimateInternalCross(node, diagram, fixedPositions, axes) {
+    const singleIncomingCross = axes.stackInternals ? null : directSingleIncomingCross(node, diagram, fixedPositions, axes);
+    if (singleIncomingCross !== null) {
+      return singleIncomingCross;
+    }
+    const neighborCrosses = [];
+    diagram.edges.forEach((edge) => {
+      if (edge.from === node && fixedPositions[edge.to]) {
+        neighborCrosses.push(axes.crossOf(fixedPositions[edge.to]));
+      }
+      if (edge.to === node && fixedPositions[edge.from]) {
+        neighborCrosses.push(axes.crossOf(fixedPositions[edge.from]));
+      }
+    });
+    if (!neighborCrosses.length) {
+      return (axes.crossStart + axes.crossEnd) / 2;
+    }
+    const average2 = neighborCrosses.reduce((sum, cross) => sum + cross, 0) / neighborCrosses.length;
+    if (axes.stackInternals) {
+      return pullCrossTowardCenter(average2, axes);
+    }
+    return average2;
+  }
+  function pullCrossTowardCenter(cross, axes) {
+    const center = (axes.crossStart + axes.crossEnd) / 2;
+    return center + (cross - center) * 0.5;
+  }
+  function directSingleIncomingCross(node, diagram, fixedPositions, axes) {
+    if (diagram.incoming.length !== 1) {
+      return null;
+    }
+    const incoming = diagram.incoming[0];
+    if (!fixedPositions[incoming]) {
+      return null;
+    }
+    const connected = diagram.edges.some((edge) => !edge.hidden && (edge.from === incoming && edge.to === node || edge.to === incoming && edge.from === node));
+    return connected ? axes.crossOf(fixedPositions[incoming]) : null;
+  }
+  function distributeLayer(nodes, minCross, maxCross) {
+    const minGap = 42;
+    const sorted = [...nodes].sort((a, b) => a.cross - b.cross || a.node.localeCompare(b.node));
+    for (let index = 1; index < sorted.length; index += 1) {
+      if (sorted[index].cross - sorted[index - 1].cross < minGap) {
+        sorted[index].cross = sorted[index - 1].cross + minGap;
+      }
+    }
+    const overflow = sorted.length ? sorted[sorted.length - 1].cross - maxCross : 0;
+    if (overflow > 0) {
+      sorted.forEach((item) => {
+        item.cross -= overflow;
+      });
+    }
+    for (let index = sorted.length - 2; index >= 0; index -= 1) {
+      if (sorted[index + 1].cross - sorted[index].cross < minGap) {
+        sorted[index].cross = sorted[index + 1].cross - minGap;
+      }
+    }
+    const underflow = sorted.length ? minCross - sorted[0].cross : 0;
+    if (underflow > 0) {
+      sorted.forEach((item) => {
+        item.cross += underflow;
+      });
+    }
+    return sorted.map((item) => ({
+      ...item,
+      cross: Math.max(minCross, Math.min(maxCross, item.cross))
+    }));
+  }
+  var init_fallback = __esm({
+    "src/markfeyn/renderer/layout/fallback.js"() {
+      init_coordinates();
+      init_normalization();
+    }
+  });
+
   // src/markfeyn/renderer/layout/loop-candidates.js
   function hasLoopCandidateLayout(prepared) {
     return Boolean(
@@ -97037,7 +99602,7 @@
           x: layer,
           y: boundaryCrossCoordinate(index, nodes.length, leftBoundary, layoutOptions),
           kind: kindForExternalRole(role),
-          labelSide: labelSideForKind(role, layoutOptions.orientation)
+          labelSide: labelSideForKind2(role, layoutOptions.orientation)
         };
       });
     });
@@ -97075,7 +99640,7 @@
     if (role === "incoming" || role === "outgoing") {
       return {
         x: terminalLayerForRole(role, layoutOptions),
-        y: clamp2(anchor.y + offset, layoutOptions.marginY, layoutOptions.height - layoutOptions.marginY)
+        y: clamp5(anchor.y + offset, layoutOptions.marginY, layoutOptions.height - layoutOptions.marginY)
       };
     }
     const direction = outwardUnit2(anchor, center, -Math.PI / 2);
@@ -97154,8 +99719,8 @@
       return { x: 0, y: 0 };
     }
     return {
-      x: clamp2(availableWidth * 0.28, 62, loop.length >= 4 ? 134 : 118),
-      y: clamp2(availableHeight * 0.32, 54, loop.length >= 4 ? 112 : 104)
+      x: clamp5(availableWidth * 0.28, 62, loop.length >= 4 ? 134 : 118),
+      y: clamp5(availableHeight * 0.32, 54, loop.length >= 4 ? 112 : 104)
     };
   }
   function centerForNodes2(positions, nodes) {
@@ -97193,8 +99758,8 @@
   }
   function clampPosition(point, layoutOptions) {
     return {
-      x: clamp2(point.x, layoutOptions.marginX, layoutOptions.width - layoutOptions.marginX),
-      y: clamp2(point.y, layoutOptions.marginY, layoutOptions.height - layoutOptions.marginY)
+      x: clamp5(point.x, layoutOptions.marginX, layoutOptions.width - layoutOptions.marginX),
+      y: clamp5(point.y, layoutOptions.marginY, layoutOptions.height - layoutOptions.marginY)
     };
   }
   function positionForKind2(x, y, kind, layoutOptions) {
@@ -97202,7 +99767,7 @@
       x,
       y,
       kind,
-      labelSide: labelSideForKind(kind, layoutOptions.orientation)
+      labelSide: labelSideForKind2(kind, layoutOptions.orientation)
     };
   }
   function vertexKind(prepared, node) {
@@ -97218,7 +99783,7 @@
     }
     return "internal";
   }
-  function labelSideForKind(kind, orientation2 = "horizontal") {
+  function labelSideForKind2(kind, orientation2 = "horizontal") {
     const reverse = String(orientation2 || "").endsWith("reverse");
     if (kind === "incoming") {
       return reverse ? "right" : "left";
@@ -97297,7 +99862,7 @@
   function roundScore2(value) {
     return Math.round(value * 1e3) / 1e3;
   }
-  function clamp2(value, min, max) {
+  function clamp5(value, min, max) {
     return Math.min(max, Math.max(min, value));
   }
   var LOOP_TOPOLOGIES;
@@ -97308,6 +99873,525 @@
       init_score();
       init_labels();
       LOOP_TOPOLOGIES = /* @__PURE__ */ new Set(["triangleLoop", "boxLoop", "polygonLoop", "tadpole", "oneLoop"]);
+    }
+  });
+
+  // src/markfeyn/renderer/layout/symmetric.js
+  function layoutSymmetricContact(diagram, layoutOptions, prepared) {
+    const { width, height, marginX, marginY } = layoutOptions;
+    const positions = initialFixedPositions(diagram, diagramAxes(layoutOptions));
+    const structuralCenter = {
+      x: width / 2,
+      y: height / 2
+    };
+    const centerNode = prepared.topology.internalVertices[0] || prepared.topology.graphCenters[0];
+    const externalNodes = orderedSemanticExternalNodes(prepared);
+    const radius = Math.max(
+      54,
+      Math.min(width - 2 * marginX, height - 2 * marginY) * 0.38
+    );
+    if (centerNode && !positions[centerNode]) {
+      positions[centerNode] = {
+        ...structuralCenter,
+        kind: nodeKind(centerNode, diagram),
+        labelSide: labelSideForKind(nodeKind(centerNode, diagram), layoutOptions.orientation)
+      };
+    }
+    const contactCenter = centerNode && positions[centerNode] ? positions[centerNode] : structuralCenter;
+    placeNodesOnRing(
+      externalNodes,
+      contactCenter,
+      radius,
+      positions,
+      diagram,
+      layoutOptions,
+      contactStarStartAngle(externalNodes.length)
+    );
+    Array.from(collectNodes(diagram)).sort().forEach((node) => {
+      if (!positions[node]) {
+        positions[node] = {
+          ...contactCenter,
+          kind: nodeKind(node, diagram),
+          labelSide: labelSideForKind(nodeKind(node, diagram), layoutOptions.orientation)
+        };
+      }
+    });
+    return { width, height, positions, options: layoutOptions };
+  }
+  function layoutSymmetricUnclassifiedRefinement(diagram, layoutOptions, prepared) {
+    const refinement = prepared.symmetricUnclassified;
+    const { width, height, marginX, marginY } = layoutOptions;
+    const positions = initialFixedPositions(diagram, diagramAxes(layoutOptions));
+    const center = { x: width / 2, y: height / 2 };
+    const axes = diagramAxes(layoutOptions);
+    const vertical = axes.orientation === "vertical" || axes.orientation === "vertical-reverse";
+    if (refinement.kind === "twoCenterTree") {
+      const leftCenter = refinement.leftCenter;
+      const rightCenter = refinement.rightCenter;
+      const leftLeaves = orderedLeafNodes(prepared, refinement.leftLeaves);
+      const rightLeaves = orderedLeafNodes(prepared, refinement.rightLeaves);
+      if (vertical) {
+        placeSymmetricTwoCenterTreeVertical(
+          positions,
+          diagram,
+          layoutOptions,
+          axes,
+          leftCenter,
+          rightCenter,
+          leftLeaves,
+          rightLeaves,
+          refinement
+        );
+      } else {
+        placeSymmetricTwoCenterTreeHorizontal(
+          positions,
+          diagram,
+          layoutOptions,
+          axes,
+          leftCenter,
+          rightCenter,
+          leftLeaves,
+          rightLeaves,
+          refinement
+        );
+      }
+    } else if (refinement.kind === "twoPointLoop") {
+      const [endpointA, endpointB] = refinement.loopEndpoints;
+      const legA = refinement.externalLegs.find((leg) => leg.internal === endpointA);
+      const legB = refinement.externalLegs.find((leg) => leg.internal === endpointB);
+      if (vertical) {
+        placeSymmetricTwoPointLoopVertical(
+          positions,
+          diagram,
+          layoutOptions,
+          axes,
+          endpointA,
+          endpointB,
+          legA,
+          legB
+        );
+      } else {
+        placeSymmetricTwoPointLoopHorizontal(
+          positions,
+          diagram,
+          layoutOptions,
+          axes,
+          endpointA,
+          endpointB,
+          legA,
+          legB
+        );
+      }
+    }
+    Array.from(collectNodes(diagram)).sort().forEach((node) => {
+      if (!positions[node]) {
+        positions[node] = {
+          ...center,
+          kind: nodeKind(node, diagram),
+          labelSide: labelSideForKind(nodeKind(node, diagram), layoutOptions.orientation)
+        };
+      }
+    });
+    return { width, height, positions, options: layoutOptions };
+  }
+  function layoutSymmetricTree(diagram, layoutOptions, prepared) {
+    const { width, height, marginX, marginY } = layoutOptions;
+    const positions = initialFixedPositions(diagram, diagramAxes(layoutOptions));
+    const allNodes = Array.from(collectNodes(diagram)).sort();
+    const centerNode = prepared.topology.graphCenters[0] || allNodes[0];
+    const center = { x: width / 2, y: height / 2 };
+    const adjacency = visibleAdjacencyForLayout(diagram, allNodes);
+    const depths = breadthFirstLayoutDepths(adjacency, centerNode);
+    const maxDepth = Math.max(1, ...Array.from(depths.values()));
+    const maxRadius = Math.max(60, Math.min(width - 2 * marginX, height - 2 * marginY) * 0.42);
+    const nodesByDepth = /* @__PURE__ */ new Map();
+    allNodes.forEach((node) => {
+      const depth = depths.get(node) ?? maxDepth;
+      if (!nodesByDepth.has(depth)) {
+        nodesByDepth.set(depth, []);
+      }
+      nodesByDepth.get(depth).push(node);
+    });
+    nodesByDepth.forEach((nodes, depth) => {
+      const sortedNodes = nodes.sort((left, right) => semanticOrder(prepared, left, right));
+      if (depth === 0) {
+        sortedNodes.forEach((node) => {
+          if (!positions[node]) {
+            positions[node] = {
+              ...center,
+              kind: nodeKind(node, diagram),
+              labelSide: labelSideForKind(nodeKind(node, diagram), layoutOptions.orientation)
+            };
+          }
+        });
+        return;
+      }
+      const radius = maxRadius * depth / maxDepth;
+      const startAngle = sortedNodes.length === 1 ? 0 : -Math.PI / 2;
+      placeNodesOnRing(sortedNodes, center, radius, positions, diagram, layoutOptions, startAngle);
+    });
+    return { width, height, positions, options: layoutOptions };
+  }
+  function contactStarStartAngle(count) {
+    if (count % 2 === 1) {
+      const medianIndex = Math.floor(count / 2);
+      return -Math.PI / 2 - 2 * Math.PI * medianIndex / count;
+    }
+    return -Math.PI / 2 - Math.PI / Math.max(count, 1);
+  }
+  function orderedLeafNodes(prepared, leaves) {
+    return leaves.slice().sort((left, right) => compareExternalOrdering(prepared.externalOrdering, left, right));
+  }
+  function placeSymmetricTwoCenterTreeHorizontal(positions, diagram, layoutOptions, axes, leftCenter, rightCenter, leftLeaves, rightLeaves, refinement = {}) {
+    const { width, height, marginY } = layoutOptions;
+    if (refinement.centerExternal) {
+      placeSymmetricCenterExternalHorizontal(
+        positions,
+        diagram,
+        layoutOptions,
+        width,
+        height,
+        marginY,
+        refinement.centerExternal,
+        refinement.centerAttachedCenter === leftCenter
+      );
+    }
+    placeExternalNodes(leftLeaves, axes.layerStart, axes.crossStart, axes.crossEnd, "unclassified", axes, positions);
+    placeExternalNodes(rightLeaves, axes.layerEnd, axes.crossStart, axes.crossEnd, "unclassified", axes, positions);
+    const layerSpan = axes.layerEnd - axes.layerStart;
+    const terminalGap = Math.min(84, Math.max(48, Math.abs(layerSpan) * 0.24));
+    const direction = Math.sign(layerSpan) || 1;
+    const leftLayer = axes.layerStart + direction * terminalGap;
+    const rightLayer = axes.layerEnd - direction * terminalGap;
+    const leftCrossLeaves = refinement.centerExternal && refinement.centerAttachedCenter === leftCenter ? [...leftLeaves, refinement.centerExternal] : leftLeaves;
+    const rightCrossLeaves = refinement.centerExternal && refinement.centerAttachedCenter === rightCenter ? [...rightLeaves, refinement.centerExternal] : rightLeaves;
+    placeSymmetricInternalOnLayer(positions, diagram, layoutOptions, axes, leftCenter, leftLayer, leftCrossLeaves);
+    placeSymmetricInternalOnLayer(positions, diagram, layoutOptions, axes, rightCenter, rightLayer, rightCrossLeaves);
+  }
+  function placeSymmetricTwoCenterTreeVertical(positions, diagram, layoutOptions, axes, leftCenter, rightCenter, leftLeaves, rightLeaves, refinement = {}) {
+    const { width, marginX } = layoutOptions;
+    const sideAxes = {
+      ...axes,
+      crossOf: (position) => position.x,
+      setCross: (position, cross) => {
+        position.x = cross;
+      },
+      point: (cross, layer, kind) => ({
+        x: cross,
+        y: layer,
+        kind,
+        labelSide: labelSideForKind(kind, layoutOptions.orientation)
+      })
+    };
+    if (refinement.centerExternal) {
+      placeSymmetricCenterExternalVertical(
+        positions,
+        diagram,
+        layoutOptions,
+        width,
+        marginX,
+        refinement.centerExternal,
+        refinement.centerAttachedCenter === leftCenter
+      );
+    }
+    placeExternalNodes(leftLeaves, axes.crossStart, axes.layerStart, axes.layerEnd, "unclassified", sideAxes, positions);
+    placeExternalNodes(rightLeaves, axes.crossEnd, axes.layerStart, axes.layerEnd, "unclassified", sideAxes, positions);
+    const layerSpan = axes.layerEnd - axes.layerStart;
+    const terminalGap = Math.min(84, Math.max(48, Math.abs(layerSpan) * 0.24));
+    const direction = Math.sign(layerSpan) || 1;
+    const leftLayer = axes.layerStart + direction * terminalGap;
+    const rightLayer = axes.layerEnd - direction * terminalGap;
+    const verticalAxes = {
+      crossOf: (position) => position.x,
+      point: (cross, layer, kind) => ({
+        x: cross,
+        y: layer,
+        kind,
+        labelSide: labelSideForKind(kind, layoutOptions.orientation)
+      })
+    };
+    const leftCrossLeaves = refinement.centerExternal && refinement.centerAttachedCenter === leftCenter ? [...leftLeaves, refinement.centerExternal] : leftLeaves;
+    const rightCrossLeaves = refinement.centerExternal && refinement.centerAttachedCenter === rightCenter ? [...rightLeaves, refinement.centerExternal] : rightLeaves;
+    placeSymmetricInternalOnLayer(positions, diagram, layoutOptions, verticalAxes, leftCenter, leftLayer, leftCrossLeaves, "y");
+    placeSymmetricInternalOnLayer(positions, diagram, layoutOptions, verticalAxes, rightCenter, rightLayer, rightCrossLeaves, "y");
+  }
+  function placeSymmetricCenterExternalHorizontal(positions, diagram, layoutOptions, width, height, marginY, node, useTopMiddle) {
+    if (!node || positions[node]) {
+      return;
+    }
+    positions[node] = {
+      x: width / 2,
+      y: useTopMiddle ? marginY : height - marginY,
+      kind: nodeKind(node, diagram),
+      labelSide: labelSideForKind(nodeKind(node, diagram), layoutOptions.orientation)
+    };
+  }
+  function placeSymmetricCenterExternalVertical(positions, diagram, layoutOptions, width, marginX, node, useStartMiddle) {
+    if (!node || positions[node]) {
+      return;
+    }
+    positions[node] = {
+      x: useStartMiddle ? marginX : width - marginX,
+      y: layoutOptions.height / 2,
+      kind: nodeKind(node, diagram),
+      labelSide: labelSideForKind(nodeKind(node, diagram), layoutOptions.orientation)
+    };
+  }
+  function symmetricTwoPointLoopLayers(axes) {
+    const span = Math.abs(axes.layerEnd - axes.layerStart);
+    const minLeg = 48;
+    const loopChord = Math.min(span - 2 * minLeg, Math.max(120, span * 0.452));
+    const legLength = (span - loopChord) / 2;
+    const direction = Math.sign(axes.layerEnd - axes.layerStart) || 1;
+    return {
+      centerCross: (axes.crossStart + axes.crossEnd) / 2,
+      externalStart: axes.layerStart,
+      externalEnd: axes.layerEnd,
+      internalStart: axes.layerStart + direction * legLength,
+      internalEnd: axes.layerEnd - direction * legLength
+    };
+  }
+  function placeSymmetricTwoPointLoopHorizontal(positions, diagram, layoutOptions, axes, endpointA, endpointB, legA, legB) {
+    const layers = symmetricTwoPointLoopLayers(axes);
+    if (legA && !positions[legA.external]) {
+      positions[legA.external] = axes.point(layers.externalStart, layers.centerCross, "unclassified");
+    }
+    if (legB && !positions[legB.external]) {
+      positions[legB.external] = axes.point(layers.externalEnd, layers.centerCross, "unclassified");
+    }
+    if (!positions[endpointA]) {
+      positions[endpointA] = axes.point(layers.internalStart, layers.centerCross, "internal");
+    }
+    if (!positions[endpointB]) {
+      positions[endpointB] = axes.point(layers.internalEnd, layers.centerCross, "internal");
+    }
+  }
+  function placeSymmetricTwoPointLoopVertical(positions, diagram, layoutOptions, axes, endpointA, endpointB, legA, legB) {
+    const verticalAxes = {
+      orientation: axes.orientation,
+      layerStart: axes.crossStart,
+      layerEnd: axes.crossEnd,
+      crossStart: axes.layerStart,
+      crossEnd: axes.layerEnd,
+      crossOf: (position) => position.x,
+      setCross: (position, cross) => {
+        position.x = cross;
+      },
+      point: (cross, layer, kind) => ({
+        x: cross,
+        y: layer,
+        kind,
+        labelSide: labelSideForKind(kind, layoutOptions.orientation)
+      })
+    };
+    const layers = symmetricTwoPointLoopLayers(verticalAxes);
+    if (legA && !positions[legA.external]) {
+      positions[legA.external] = verticalAxes.point(layers.centerCross, layers.externalStart, "unclassified");
+    }
+    if (legB && !positions[legB.external]) {
+      positions[legB.external] = verticalAxes.point(layers.centerCross, layers.externalEnd, "unclassified");
+    }
+    if (!positions[endpointA]) {
+      positions[endpointA] = verticalAxes.point(layers.centerCross, layers.internalStart, "internal");
+    }
+    if (!positions[endpointB]) {
+      positions[endpointB] = verticalAxes.point(layers.centerCross, layers.internalEnd, "internal");
+    }
+  }
+  function placeSymmetricInternalOnLayer(positions, diagram, layoutOptions, axes, centerNode, layer, leaves, layerAxis = "x") {
+    if (positions[centerNode]) {
+      return;
+    }
+    const crosses = leaves.map((leaf) => positions[leaf]).filter(Boolean).map((position) => axes.crossOf(position));
+    const cross = crosses.length ? crosses.reduce((sum, value) => sum + value, 0) / crosses.length : (layoutOptions.marginY + (layoutOptions.height - layoutOptions.marginY)) / 2;
+    positions[centerNode] = layerAxis === "y" ? axes.point(cross, layer, "internal") : axes.point(layer, cross, "internal");
+  }
+  function orderedSemanticExternalNodes(prepared) {
+    return prepared.externalOrdering.all.map((entry) => entry.id);
+  }
+  function semanticOrder(prepared, left, right) {
+    const leftExternal = prepared.semantic.externalVertices.includes(left);
+    const rightExternal = prepared.semantic.externalVertices.includes(right);
+    if (leftExternal || rightExternal) {
+      return compareExternalOrdering(prepared.externalOrdering, left, right);
+    }
+    const vertexById = new Map(prepared.semantic.vertices.map((vertex) => [vertex.id, vertex]));
+    const leftIndex = vertexById.get(left)?.metadata?.declarationIndex ?? Number.MAX_SAFE_INTEGER;
+    const rightIndex = vertexById.get(right)?.metadata?.declarationIndex ?? Number.MAX_SAFE_INTEGER;
+    return leftIndex - rightIndex || left.localeCompare(right);
+  }
+  var init_symmetric = __esm({
+    "src/markfeyn/renderer/layout/symmetric.js"() {
+      init_external_order();
+      init_coordinates();
+    }
+  });
+
+  // src/markfeyn/renderer/layout/strategies.js
+  async function layoutFeynmanPreparedRaw(diagram, layoutOptions, prepared) {
+    const loopCandidateLayout = layoutLoopCandidate(diagram, layoutOptions, prepared);
+    if (loopCandidateLayout) {
+      return loopCandidateLayout;
+    }
+    const multiloopLayout = layoutMultiloopCandidate(diagram, layoutOptions, prepared);
+    if (multiloopLayout) {
+      return multiloopLayout;
+    }
+    if (shouldUseSymmetricContactLayout(prepared)) {
+      return layoutSymmetricContact(diagram, layoutOptions, prepared);
+    }
+    if (shouldUseSymmetricUnclassifiedLayout(prepared)) {
+      return layoutSymmetricUnclassifiedRefinement(diagram, layoutOptions, prepared);
+    }
+    if (shouldUseSymmetricTreeLayout(prepared)) {
+      return layoutSymmetricTree(diagram, layoutOptions, prepared);
+    }
+    if (layoutOptions.layout === "tree") {
+      return layoutTree(diagram, layoutOptions);
+    }
+    return layoutFeynmanWithElk(diagram, layoutOptions, prepared);
+  }
+  function layoutFeynmanPreparedFallbackRaw(diagram, layoutOptions, prepared) {
+    const loopCandidateLayout = layoutLoopCandidate(diagram, layoutOptions, prepared);
+    if (loopCandidateLayout) {
+      return loopCandidateLayout;
+    }
+    const multiloopLayout = layoutMultiloopCandidate(diagram, layoutOptions, prepared);
+    if (multiloopLayout) {
+      return multiloopLayout;
+    }
+    if (shouldUseSymmetricContactLayout(prepared)) {
+      return layoutSymmetricContact(diagram, layoutOptions, prepared);
+    }
+    if (shouldUseSymmetricUnclassifiedLayout(prepared)) {
+      return layoutSymmetricUnclassifiedRefinement(diagram, layoutOptions, prepared);
+    }
+    if (shouldUseSymmetricTreeLayout(prepared)) {
+      return layoutSymmetricTree(diagram, layoutOptions, prepared);
+    }
+    return layoutFeynmanFallbackRaw(diagram, layoutOptions);
+  }
+  function applyParallelPropagatorCurves(diagram, prepared) {
+    (prepared.parallelCurvePlan || []).forEach((assignment) => {
+      const edge = diagram.edges[assignment.edgeIndex];
+      if (!edge || edge.hidden || edge.curve || Number.isFinite(Number(edge.outAngle)) || Number.isFinite(Number(edge.inAngle))) {
+        return;
+      }
+      edge.curve = {
+        side: assignment.side,
+        amount: assignment.amount
+      };
+      edge.autoParallelCurve = true;
+    });
+  }
+  function layoutLoopCandidate(diagram, layoutOptions, prepared) {
+    const selection = selectLoopCandidateLayout(prepared, layoutOptions);
+    if (!selection) {
+      return null;
+    }
+    prepared.loopCandidateSelection = selection.selection;
+    applyLoopCandidateCurves(diagram, selection.selection.selected);
+    return selection.layout;
+  }
+  function layoutMultiloopCandidate(diagram, layoutOptions, prepared) {
+    const selection = selectMultiloopLayout(prepared, layoutOptions);
+    if (!selection) {
+      return null;
+    }
+    prepared.multiloopCandidateSelection = selection.selection;
+    return selection.layout;
+  }
+  async function layoutFeynmanWithElk(diagram, layoutOptions, prepared) {
+    return layoutWithElk(diagram, layoutOptions, prepared, {
+      buildSemanticElkGraph,
+      elkNodeDimensions,
+      normalizeElkLayout
+    });
+  }
+  function applyLoopCandidateCurves(diagram, selectedCandidate) {
+    (selectedCandidate?.curvePlan || []).forEach((assignment) => {
+      const edge = diagram.edges[assignment.edgeIndex];
+      if (!edge || edge.hidden || edge.curve || Number.isFinite(Number(edge.outAngle)) || Number.isFinite(Number(edge.inAngle))) {
+        return;
+      }
+      edge.curve = {
+        side: assignment.side,
+        amount: assignment.amount,
+        shape: assignment.shape
+      };
+      edge.autoLoopCurve = true;
+    });
+  }
+  var init_strategies = __esm({
+    "src/markfeyn/renderer/layout/strategies.js"() {
+      init_elk_compiler();
+      init_elk_runner();
+      init_fallback();
+      init_layout();
+      init_loop_candidates();
+      init_multiloop();
+      init_normalization();
+      init_symmetric();
+    }
+  });
+
+  // src/markfeyn/renderer/layout-engine.js
+  function createLayoutEngine() {
+    return {
+      async layoutFeynman(diagram, options) {
+        const prepared = prepareFeynmanLayout(diagram, options);
+        const layoutDiagram = prepared.compatibleDiagram;
+        const layoutOptions = resolveLayoutOptions(layoutDiagram, options);
+        let rawLayout;
+        applyParallelPropagatorCurves(layoutDiagram, prepared);
+        try {
+          const layoutStartedAt = profileNow();
+          rawLayout = await layoutFeynmanPreparedRaw(layoutDiagram, layoutOptions, prepared);
+          prepared.profile?.push("layout", profileNow() - layoutStartedAt);
+        } catch (error2) {
+          const fallbackStartedAt = profileNow();
+          rawLayout = layoutFeynmanPreparedFallbackRaw(layoutDiagram, layoutOptions, prepared);
+          prepared.profile?.push("layout-fallback", profileNow() - fallbackStartedAt);
+        }
+        const finalLayout = applyIncrementalStability(
+          finalizeLayout(layoutDiagram, rawLayout, layoutOptions),
+          prepared.incremental
+        );
+        return attachLayoutAnalysis(
+          finalLayout,
+          prepared,
+          { enabled: layoutOptions.debug || layoutOptions.profile, elkGraph: prepared.compiledElkGraph }
+        );
+      },
+      layoutFeynmanFallbackSync(diagram, options) {
+        const prepared = prepareFeynmanLayout(diagram, options);
+        const layoutDiagram = prepared.compatibleDiagram;
+        const layoutOptions = resolveLayoutOptions(layoutDiagram, options);
+        applyParallelPropagatorCurves(layoutDiagram, prepared);
+        const fallbackStartedAt = profileNow();
+        const rawLayout = layoutFeynmanPreparedFallbackRaw(layoutDiagram, layoutOptions, prepared);
+        prepared.profile?.push("layout-fallback", profileNow() - fallbackStartedAt);
+        return attachLayoutAnalysis(
+          applyIncrementalStability(
+            finalizeLayout(layoutDiagram, rawLayout, layoutOptions),
+            prepared.incremental
+          ),
+          prepared,
+          { enabled: layoutOptions.debug || layoutOptions.profile, elkGraph: prepared.compiledElkGraph }
+        );
+      }
+    };
+  }
+  function profileNow() {
+    return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+  }
+  var init_layout_engine = __esm({
+    "src/markfeyn/renderer/layout-engine.js"() {
+      init_incremental();
+      init_layout();
+      init_normalization();
+      init_options2();
+      init_strategies();
     }
   });
 
@@ -97342,496 +100426,68 @@
     }
   });
 
-  // src/markfeyn/renderer/parser/constants.js
-  var EDGE_DEFINITIONS, SIZE_PRESETS, DEFAULT_DIAGRAM_OPTIONS, VERTEX_SHAPES, BLOB_VERTEX_DEFAULT_RADII, BLOB_VERTEX_SIZE_PRESETS, BLOB_HATCHES;
-  var init_constants = __esm({
-    "src/markfeyn/renderer/parser/constants.js"() {
-      EDGE_DEFINITIONS = /* @__PURE__ */ new Map([
-        ["plain", { type: "plain" }],
-        ["line", { type: "plain" }],
-        ["propagator", { type: "plain" }],
-        ["fermion", { type: "fermion", arrow: "forward" }],
-        ["anti fermion", { type: "fermion", arrow: "reverse" }],
-        ["anti-fermion", { type: "fermion", arrow: "reverse" }],
-        ["antifermion", { type: "fermion", arrow: "reverse" }],
-        ["photon", { type: "photon" }],
-        ["boson", { type: "photon" }],
-        ["charged boson", { type: "photon", arrow: "forward" }],
-        ["charged-boson", { type: "photon", arrow: "forward" }],
-        ["anti charged boson", { type: "photon", arrow: "reverse" }],
-        ["anti-charged-boson", { type: "photon", arrow: "reverse" }],
-        ["gluon", { type: "gluon" }],
-        ["scalar", { type: "scalar" }],
-        ["charged scalar", { type: "scalar", arrow: "forward" }],
-        ["charged-scalar", { type: "scalar", arrow: "forward" }],
-        ["anti charged scalar", { type: "scalar", arrow: "reverse" }],
-        ["anti-charged-scalar", { type: "scalar", arrow: "reverse" }],
-        ["ghost", { type: "ghost" }],
-        ["dashed", { type: "dashed" }],
-        ["dot dashed", { type: "dashdot" }],
-        ["dot-dashed", { type: "dashdot" }],
-        ["dashdot", { type: "dashdot" }],
-        ["dash-dot", { type: "dashdot" }],
-        ["triangle", { type: "triangle" }],
-        ["zigzag", { type: "triangle" }],
-        ["square", { type: "square" }],
-        ["rectangle", { type: "square" }],
-        ["rectangular", { type: "square" }],
-        ["double", { type: "double" }],
-        ["eikonal", { type: "double", arrow: "forward" }],
-        ["wilson line", { type: "double", arrow: "forward" }],
-        ["wilson-line", { type: "double", arrow: "forward" }],
-        ["invisible", { type: "invisible", hidden: true }],
-        ["hidden", { type: "invisible", hidden: true }]
-      ]);
-      SIZE_PRESETS = {
-        small: { width: 420, minHeight: 280, marginX: 70, marginY: 46, externalGap: 82 },
-        medium: { width: 520, minHeight: 330, marginX: 82, marginY: 52, externalGap: 100 },
-        large: { width: 760, minHeight: 480, marginX: 110, marginY: 70, externalGap: 140 }
-      };
-      DEFAULT_DIAGRAM_OPTIONS = {
-        layout: "spring",
-        orientation: "horizontal",
-        size: "medium"
-      };
-      VERTEX_SHAPES = /* @__PURE__ */ new Map([
-        ["dot", "dot"],
-        ["square dot", "square-dot"],
-        ["square-dot", "square-dot"],
-        ["square", "square-dot"],
-        ["empty dot", "empty-dot"],
-        ["empty-dot", "empty-dot"],
-        ["crossed dot", "crossed-dot"],
-        ["crossed-dot", "crossed-dot"],
-        ["cross dot", "crossed-dot"],
-        ["cross-dot", "crossed-dot"],
-        ["cross", "cross"],
-        ["blob", "blob"],
-        ["disk", "disk"],
-        ["large blob", "disk"],
-        ["large-blob", "disk"]
-      ]);
-      BLOB_VERTEX_DEFAULT_RADII = Object.freeze({
-        blob: 18,
-        disk: 44
-      });
-      BLOB_VERTEX_SIZE_PRESETS = /* @__PURE__ */ new Map([
-        ["tiny", 8],
-        ["small", 14],
-        ["medium", BLOB_VERTEX_DEFAULT_RADII.blob],
-        ["large", 28],
-        ["huge", BLOB_VERTEX_DEFAULT_RADII.disk],
-        ["disk", BLOB_VERTEX_DEFAULT_RADII.disk]
-      ]);
-      BLOB_HATCHES = /* @__PURE__ */ new Map([
-        ["hatched", "diagonal"],
-        ["hatch", "diagonal"],
-        ["diagonal", "diagonal"],
-        ["diagonal right", "diagonal"],
-        ["forward diagonal", "diagonal"],
-        ["slash", "diagonal"],
-        ["north east", "diagonal"],
-        ["north east lines", "diagonal"],
-        ["ne", "diagonal"],
-        ["diagonal reverse", "diagonal-reverse"],
-        ["diagonal left", "diagonal-reverse"],
-        ["reverse diagonal", "diagonal-reverse"],
-        ["backward diagonal", "diagonal-reverse"],
-        ["backslash", "diagonal-reverse"],
-        ["north west", "diagonal-reverse"],
-        ["north west lines", "diagonal-reverse"],
-        ["nw", "diagonal-reverse"],
-        ["cross", "cross"],
-        ["cross hatch", "cross"],
-        ["crosshatch", "cross"],
-        ["cross hatched", "cross"],
-        ["horizontal", "horizontal"],
-        ["horizontal lines", "horizontal"],
-        ["vertical", "vertical"],
-        ["vertical lines", "vertical"],
-        ["grid", "grid"],
-        ["grid lines", "grid"]
-      ]);
-    }
-  });
-
-  // src/markfeyn/renderer/parser/options.js
-  function parseEdgeOptions(source) {
-    const options = {};
-    splitOptionList(source).map((item) => item.trim()).filter(Boolean).forEach((item) => {
-      const parsed = parseOptionItem(item);
-      const name = normalizeOptionName(parsed.name);
-      if (name === "hidden" || name === "invisible" || name === "draw" && parsed.value === "none") {
-        options.hidden = true;
-      }
-      if (name === "reverse" || name === "anti") {
-        options.arrow = "reverse";
-      }
-      if (name === "forward") {
-        options.arrow = "forward";
-      }
-      if (name === "overlay" || name === "foreground" || name === "front") {
-        options.overlay = true;
-      }
-      applyCurveOption(options, name, parsed.value);
-      if (name === "out") {
-        const outAngle = Number(parsed.value);
-        if (Number.isFinite(outAngle)) {
-          options.outAngle = outAngle;
-        }
-      }
-      if (name === "in") {
-        const inAngle = Number(parsed.value);
-        if (Number.isFinite(inAngle)) {
-          options.inAngle = inAngle;
-        }
-      }
-      if (name === "looseness") {
-        const looseness = Number(parsed.value);
-        if (Number.isFinite(looseness) && looseness > 0) {
-          options.looseness = looseness;
-        }
-      }
-      if (name === "relative") {
-        options.relativeAngles = parsed.value !== "false";
-      }
-      if (name === "edge label" || name === "label") {
-        options.label = cleanLabelValue(parsed.value);
-        options.labelSide = "left";
-      }
-      if (name === "edge label'" || name === "label'") {
-        options.label = cleanLabelValue(parsed.value);
-        options.labelSide = "right";
-      }
-      if (name === "momentum" || name === "reversed momentum" || name === "rmomentum") {
-        const momentum = parseMomentumValue(parsed.value);
-        options.label = momentum.label;
-        options.labelSide = "left";
-        options.labelPlacement = "momentum";
-        options.momentumDirection = name === "momentum" ? "forward" : "reverse";
-        options.momentum = momentum.options;
-      }
-      if (name === "momentum'" || name === "reversed momentum'" || name === "rmomentum'") {
-        const momentum = parseMomentumValue(parsed.value);
-        options.label = momentum.label;
-        options.labelSide = "right";
-        options.labelPlacement = "momentum-prime";
-        options.momentumDirection = name === "momentum'" ? "forward" : "reverse";
-        options.momentum = momentum.options;
-      }
-    });
-    return options;
-  }
-  function parseMomentumValue(value) {
-    let text = unwrapLabelValue(value);
-    const options = {};
-    const optionMatch = text.match(/^\[([^\]]*)\]\s*/);
-    if (optionMatch) {
-      Object.assign(options, parseMomentumOptions(optionMatch[1]));
-      text = text.slice(optionMatch[0].length).trim();
-    }
-    return {
-      label: cleanLabelValue(text),
-      options
-    };
-  }
-  function unwrapLabelValue(value) {
-    let text = String(value || "").trim();
-    if (text.startsWith("{") && text.endsWith("}") || text.startsWith('"') && text.endsWith('"') || text.startsWith("'") && text.endsWith("'")) {
-      text = text.slice(1, -1).trim();
-    }
-    return text;
-  }
-  function parseMomentumOptions(source) {
-    const options = {};
-    splitOptionList(source).map((item) => item.trim()).filter(Boolean).forEach((item) => {
-      const parsed = parseOptionItem(item);
-      const name = normalizeOptionName(parsed.name);
-      if (name === "arrow distance") {
-        const distance2 = parseDistanceValue(parsed.value);
-        if (Number.isFinite(distance2) && distance2 >= 0) {
-          options.arrowDistance = distance2;
-        }
-      }
-      if (name === "label distance") {
-        const distance2 = parseDistanceValue(parsed.value);
-        if (Number.isFinite(distance2) && distance2 >= 0) {
-          options.labelDistance = distance2;
-        }
-      }
-      if (name === "arrow shorten") {
-        const shorten = parseFractionValue(parsed.value);
-        if (Number.isFinite(shorten)) {
-          options.arrowShorten = clamp3(shorten, 0, 0.45);
-        }
-      }
-    });
-    return options;
-  }
-  function parseDistanceValue(value) {
-    const match = String(value || "").trim().match(/^(-?\d+(?:\.\d+)?)(px|pt|mm|cm|em)?$/i);
-    if (!match) {
-      return NaN;
-    }
-    const number = Number(match[1]);
-    const unit = (match[2] || "px").toLowerCase();
-    const scale = {
-      px: 1,
-      pt: 4 / 3,
-      mm: 96 / 25.4,
-      cm: 96 / 2.54,
-      em: 16
-    }[unit] ?? 1;
-    return number * scale;
-  }
-  function parseFractionValue(value) {
-    const text = String(value || "").trim();
-    if (text.endsWith("%")) {
-      return Number(text.slice(0, -1)) / 100;
-    }
-    return Number(text);
-  }
-  function splitOptionList(source) {
-    const items = [];
-    let buffer = "";
-    let braceDepth = 0;
-    let bracketDepth = 0;
-    let quote = null;
-    for (const character of String(source || "")) {
-      if (quote) {
-        buffer += character;
-        if (character === quote) {
-          quote = null;
-        }
-        continue;
-      }
-      if (character === '"') {
-        quote = character;
-        buffer += character;
-        continue;
-      }
-      if (character === "{") {
-        braceDepth += 1;
-        buffer += character;
-        continue;
-      }
-      if (character === "}") {
-        braceDepth = Math.max(0, braceDepth - 1);
-        buffer += character;
-        continue;
-      }
-      if (character === "[") {
-        bracketDepth += 1;
-        buffer += character;
-        continue;
-      }
-      if (character === "]") {
-        bracketDepth = Math.max(0, bracketDepth - 1);
-        buffer += character;
-        continue;
-      }
-      if (character === "," && braceDepth === 0 && bracketDepth === 0) {
-        items.push(buffer);
-        buffer = "";
-        continue;
-      }
-      buffer += character;
-    }
-    if (buffer) {
-      items.push(buffer);
-    }
-    return items;
-  }
-  function parseOptionItem(item) {
-    const separator = item.indexOf("=");
-    if (separator === -1) {
-      return {
-        name: item.trim(),
-        value: ""
-      };
-    }
-    return {
-      name: item.slice(0, separator).trim(),
-      value: item.slice(separator + 1).trim()
-    };
-  }
-  function normalizeOptionName(value) {
-    return String(value || "").trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
-  }
-  function applyCurveOption(options, name, value) {
-    const normalizedValue = String(value || "").trim();
-    if (name === "half left") {
-      options.curve = { side: "left", amount: 2 / 3, shape: "semicircle" };
+  // src/markfeyn/renderer/parser/directives.js
+  function parseExplicitTikzOrientationCommand(parts, diagram, lineNumber) {
+    const command = parts[0];
+    if (!isTikzOrientationCommand(command)) {
+      diagram.errors.push(`Line ${lineNumber}: tikz must use "tikz vertical a to b" or "tikz horizontal a to b"`);
       return;
     }
-    if (name === "half right") {
-      options.curve = { side: "right", amount: 2 / 3, shape: "semicircle" };
+    parseTikzOrientationCommand(command, parts.slice(1), diagram, lineNumber);
+  }
+  function parseTikzOrientationCommand(command, parts, diagram, lineNumber, options = {}) {
+    const axis = command.startsWith("vertical") ? "vertical" : "horizontal";
+    const flip = command.endsWith("'");
+    if (parts.length !== 3 || parts[1] !== "to" || !isNodeIdentifier(parts[0]) || !isNodeIdentifier(parts[2])) {
+      diagram.errors.push(`Line ${lineNumber}: ${command} must use "${command} a to b"`);
       return;
     }
-    if (name === "quarter left") {
-      options.curve = { side: "left", amount: 0.28 };
-      return;
+    if (options.deprecated) {
+      diagram.warnings.push(
+        `Line ${lineNumber}: "${command} ${parts.join(" ")}" is deprecated; use "tikz ${command} ${parts.join(" ")}" for post-layout rotation or "align ${axis} ${parts[0]} ${parts[2]}" for a native layout constraint`
+      );
     }
-    if (name === "quarter right") {
-      options.curve = { side: "right", amount: 0.28 };
-      return;
-    }
-    if (name === "bend left") {
-      options.curve = {
-        side: "left",
-        amount: bendAmountFromValue(normalizedValue)
-      };
-      return;
-    }
-    if (name === "bend right") {
-      options.curve = {
-        side: "right",
-        amount: bendAmountFromValue(normalizedValue)
-      };
-    }
-  }
-  function bendAmountFromValue(value) {
-    const angle = Number(value);
-    if (!Number.isFinite(angle) || angle <= 0) {
-      return 0.35;
-    }
-    return clamp3(angle / 90, 0.12, 0.8);
-  }
-  function cleanLabelValue(value) {
-    let text = String(value || "").trim();
-    if (text.startsWith("{") && text.endsWith("}") || text.startsWith('"') && text.endsWith('"') || text.startsWith("'") && text.endsWith("'")) {
-      text = text.slice(1, -1).trim();
-    }
-    text = text.replace(/^\[[^\]]*\]\s*/, "");
-    if (text.startsWith("\\(") && text.endsWith("\\)")) {
-      text = text.slice(2, -2).trim();
-    }
-    return text;
-  }
-  function parseDiagramOptions(tokens, diagram, lineNumber) {
-    tokens.forEach((token) => {
-      const [key, ...valueParts] = token.split("=");
-      if (!valueParts.length) {
-        diagram.errors.push(`Line ${lineNumber}: option "${token}" must use key=value`);
-        return;
-      }
-      setDiagramOption(diagram, key, valueParts.join("="), lineNumber);
-    });
-  }
-  function setDiagramOption(diagram, key, value, lineNumber) {
-    const normalizedKey = String(key || "").trim().toLowerCase().replace(/-/g, "_");
-    const normalizedValue = String(value || "").trim();
-    if (!normalizedValue) {
-      diagram.errors.push(`Line ${lineNumber}: ${key} requires a value`);
-      return;
-    }
-    if (normalizedKey === "layout") {
-      const layout = normalizeLayoutName(normalizedValue);
-      if (!layout) {
-        diagram.errors.push(`Line ${lineNumber}: unsupported layout "${normalizedValue}"`);
-        return;
-      }
-      diagram.options.layout = layout;
-      return;
-    }
-    if (normalizedKey === "orientation" || normalizedKey === "orient") {
-      const orientation2 = normalizeOrientation(normalizedValue);
-      if (!orientation2) {
-        diagram.errors.push(`Line ${lineNumber}: unsupported orientation "${normalizedValue}"`);
-        return;
-      }
-      diagram.options.orientation = orientation2;
-      return;
-    }
-    if (normalizedKey === "size") {
-      const size = normalizedValue.toLowerCase();
-      if (!SIZE_PRESETS[size]) {
-        diagram.errors.push(`Line ${lineNumber}: unsupported size "${normalizedValue}"`);
-        return;
-      }
-      diagram.options.size = size;
-      return;
-    }
-    if (normalizedKey === "width" || normalizedKey === "height" || normalizedKey === "margin_x" || normalizedKey === "margin_y") {
-      const number = Number(normalizedValue);
-      if (!Number.isFinite(number) || number <= 0) {
-        diagram.errors.push(`Line ${lineNumber}: ${key} must be a positive number`);
-        return;
-      }
-      diagram.options[normalizedKey] = number;
-      return;
-    }
-    diagram.errors.push(`Line ${lineNumber}: unknown option "${key}"`);
-  }
-  function normalizeLayoutName(value) {
-    const normalized = value.toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
-    if (normalized === "layered" || normalized === "layered layout") {
-      return "layered";
-    }
-    if (normalized === "spring" || normalized === "spring layout") {
-      return "spring";
-    }
-    if (normalized === "spring electrical" || normalized === "spring electrical layout" || normalized === "electrical" || normalized === "electrical layout") {
-      return "spring-electrical";
-    }
-    if (normalized === "tree" || normalized === "tree layout") {
-      return "tree";
-    }
-    return null;
-  }
-  function normalizeQuality(value) {
-    const normalized = String(value || "balanced").toLowerCase();
-    if (normalized === "fast" || normalized === "high") {
-      return normalized;
-    }
-    return "balanced";
-  }
-  function normalizeOrientation(value) {
-    const normalized = value.toLowerCase().replace(/_/g, "-").replace(/\s+/g, "-").trim();
-    if (normalized === "horizontal") {
-      return "horizontal";
-    }
-    if (normalized === "horizontal'" || normalized === "horizontal-reverse" || normalized === "horizontal-flipped") {
-      return "horizontal-reverse";
-    }
-    if (normalized === "vertical") {
-      return "vertical";
-    }
-    if (normalized === "vertical'" || normalized === "vertical-reverse" || normalized === "vertical-flipped") {
-      return "vertical-reverse";
-    }
-    return null;
-  }
-  function isTikzOrientationCommand(command) {
-    return command === "horizontal" || command === "horizontal'" || command === "vertical" || command === "vertical'";
-  }
-  function isNodeIdentifier(value) {
-    return /^[A-Za-z0-9_.-]+$/.test(String(value || ""));
-  }
-  function normalizeTikzOrientation(value) {
-    if (!value || typeof value !== "object") {
-      return null;
-    }
-    const axis = value.axis === "vertical" ? "vertical" : "horizontal";
-    const from = String(value.from || "").trim();
-    const to = String(value.to || "").trim();
-    if (!isNodeIdentifier(from) || !isNodeIdentifier(to)) {
-      return null;
-    }
-    return {
+    diagram.options.tikzOrientation = {
       axis,
-      from,
-      to,
-      flip: Boolean(value.flip),
+      from: parts[0],
+      to: parts[2],
+      flip,
       angle: axis === "vertical" ? 90 : 0
     };
   }
-  function clamp3(value, min, max) {
-    return Math.max(min, Math.min(max, value));
+  function parseAlignmentCommand(parts, diagram, lineNumber) {
+    const axis = String(parts[0] || "").toLowerCase();
+    if (axis !== "vertical" && axis !== "horizontal") {
+      diagram.errors.push(`Line ${lineNumber}: align must use "align vertical a b" or "align horizontal a b"`);
+      return;
+    }
+    const nodes = parts.slice(1).filter((part) => part !== "to");
+    if (nodes.length < 2 || nodes.some((node) => !isNodeIdentifier(node))) {
+      diagram.errors.push(`Line ${lineNumber}: align ${axis} requires at least two node names`);
+      return;
+    }
+    diagram.options.alignments = [
+      ...diagram.options.alignments || [],
+      { axis, nodes }
+    ];
   }
-  var init_options = __esm({
-    "src/markfeyn/renderer/parser/options.js"() {
-      init_constants();
+  function parseManualPosition(parts, diagram, lineNumber) {
+    if (parts.length !== 3) {
+      diagram.errors.push(`Line ${lineNumber}: position must use "position node x y"`);
+      return;
+    }
+    const [node, rawX, rawY] = parts;
+    const x = Number(rawX);
+    const y = Number(rawY);
+    if (!node || !Number.isFinite(x) || !Number.isFinite(y)) {
+      diagram.errors.push(`Line ${lineNumber}: position coordinates must be numbers`);
+      return;
+    }
+    diagram.manualPositions[node] = { x, y };
+  }
+  var init_directives = __esm({
+    "src/markfeyn/renderer/parser/directives.js"() {
+      init_options();
     }
   });
 
@@ -97937,71 +100593,6 @@
   var init_edges = __esm({
     "src/markfeyn/renderer/parser/edges.js"() {
       init_constants();
-      init_options();
-    }
-  });
-
-  // src/markfeyn/renderer/parser/directives.js
-  function parseExplicitTikzOrientationCommand(parts, diagram, lineNumber) {
-    const command = parts[0];
-    if (!isTikzOrientationCommand(command)) {
-      diagram.errors.push(`Line ${lineNumber}: tikz must use "tikz vertical a to b" or "tikz horizontal a to b"`);
-      return;
-    }
-    parseTikzOrientationCommand(command, parts.slice(1), diagram, lineNumber);
-  }
-  function parseTikzOrientationCommand(command, parts, diagram, lineNumber, options = {}) {
-    const axis = command.startsWith("vertical") ? "vertical" : "horizontal";
-    const flip = command.endsWith("'");
-    if (parts.length !== 3 || parts[1] !== "to" || !isNodeIdentifier(parts[0]) || !isNodeIdentifier(parts[2])) {
-      diagram.errors.push(`Line ${lineNumber}: ${command} must use "${command} a to b"`);
-      return;
-    }
-    if (options.deprecated) {
-      diagram.warnings.push(
-        `Line ${lineNumber}: "${command} ${parts.join(" ")}" is deprecated; use "tikz ${command} ${parts.join(" ")}" for post-layout rotation or "align ${axis} ${parts[0]} ${parts[2]}" for a native layout constraint`
-      );
-    }
-    diagram.options.tikzOrientation = {
-      axis,
-      from: parts[0],
-      to: parts[2],
-      flip,
-      angle: axis === "vertical" ? 90 : 0
-    };
-  }
-  function parseAlignmentCommand(parts, diagram, lineNumber) {
-    const axis = String(parts[0] || "").toLowerCase();
-    if (axis !== "vertical" && axis !== "horizontal") {
-      diagram.errors.push(`Line ${lineNumber}: align must use "align vertical a b" or "align horizontal a b"`);
-      return;
-    }
-    const nodes = parts.slice(1).filter((part) => part !== "to");
-    if (nodes.length < 2 || nodes.some((node) => !isNodeIdentifier(node))) {
-      diagram.errors.push(`Line ${lineNumber}: align ${axis} requires at least two node names`);
-      return;
-    }
-    diagram.options.alignments = [
-      ...diagram.options.alignments || [],
-      { axis, nodes }
-    ];
-  }
-  function parseManualPosition(parts, diagram, lineNumber) {
-    if (parts.length !== 3) {
-      diagram.errors.push(`Line ${lineNumber}: position must use "position node x y"`);
-      return;
-    }
-    const [node, rawX, rawY] = parts;
-    const x = Number(rawX);
-    const y = Number(rawY);
-    if (!node || !Number.isFinite(x) || !Number.isFinite(y)) {
-      diagram.errors.push(`Line ${lineNumber}: position coordinates must be numbers`);
-      return;
-    }
-    diagram.manualPositions[node] = { x, y };
-  }
-  var init_directives = __esm({
-    "src/markfeyn/renderer/parser/directives.js"() {
       init_options();
     }
   });
@@ -98416,380 +101007,66 @@
     }
   });
 
-  // src/markfeyn/renderer/render/paths.js
-  function wavePath(from, to, amplitude, wavelength) {
-    return wavePathForEdge({}, from, to, amplitude, wavelength);
+  // src/markfeyn/renderer/parser/index.js
+  function createEmptyFeynmanDiagram() {
+    return {
+      incoming: [],
+      outgoing: [],
+      edges: [],
+      labels: {},
+      braces: [],
+      manualPositions: {},
+      vertices: {},
+      options: { ...DEFAULT_DIAGRAM_OPTIONS },
+      errors: [],
+      warnings: []
+    };
   }
-  function wavePathForEdge(edge, from, to, amplitude, wavelength) {
-    const geometry = edgeGeometry2(edge, from, to);
-    const length = geometryLength(geometry);
-    const cycles = Math.max(2, Math.round(length / wavelength));
-    const steps = cycles * 12;
-    const points = [];
-    for (let step = 0; step <= steps; step += 1) {
-      const t = step / steps;
-      const phase = t * cycles * Math.PI * 2;
-      const offset = Math.sin(phase) * amplitude;
-      const sample = geometrySample2(geometry, t);
-      const normal = perpendicularVector(sample.tangent);
-      points.push({
-        x: sample.point.x + normal.x * offset,
-        y: sample.point.y + normal.y * offset
-      });
+  function parseFeynman(source) {
+    return new FeynmanParser(source, {
+      createEmptyFeynmanDiagram,
+      matchEdgeCommand,
+      parseAlignmentCommand,
+      parseBrace,
+      parseDiagramOptions,
+      parseEdges,
+      parseExplicitTikzOrientationCommand,
+      parseLabels,
+      parseManualPosition,
+      parseTikzOrientationCommand,
+      parseVertices,
+      setDiagramOption,
+      isTikzOrientationCommand
+    }).parse();
+  }
+  var init_parser = __esm({
+    "src/markfeyn/renderer/parser/index.js"() {
+      init_braces();
+      init_constants();
+      init_directives();
+      init_edges();
+      init_feynman_parser();
+      init_labels2();
+      init_options();
+      init_vertices();
     }
-    return pointsToPath(points);
-  }
-  function gluonPath(from, to, radius, loopLength) {
-    return gluonPathForEdge({}, from, to, radius, loopLength);
-  }
-  function gluonPathForEdge(edge, from, to, radius, loopLength) {
-    const geometry = edgeGeometry2(edge, from, to);
-    const length = geometryLength(geometry);
-    const loops = Math.max(3, Math.round(length / loopLength));
-    const steps = loops * 18;
-    const points = [];
-    for (let step = 0; step <= steps; step += 1) {
-      const t = step / steps;
-      const phase = t * loops * Math.PI * 2;
-      const sample = geometrySample2(geometry, t);
-      const tangent = normalizeVector2(sample.tangent.x, sample.tangent.y);
-      const normal = perpendicularVector(tangent);
-      const taper = gluonEndpointTaper(t, loops);
-      const along = Math.sin(phase) * radius * taper;
-      const offset = Math.cos(phase) * radius * taper;
-      points.push({
-        x: sample.point.x + tangent.ux * along + normal.x * offset,
-        y: sample.point.y + tangent.uy * along + normal.y * offset
-      });
-    }
-    return pointsToPath(points);
-  }
-  function gluonEndpointTaper(t, loops) {
-    const loopsFromEndpoint = Math.min(t, 1 - t) * loops;
-    const edgeProgress = Math.min(1, Math.max(0, loopsFromEndpoint / GLUON_ENDPOINT_RAMP_LOOPS));
-    return edgeProgress * edgeProgress * (3 - 2 * edgeProgress);
-  }
-  function trianglePath(from, to, amplitude, wavelength) {
-    return trianglePathForEdge({}, from, to, amplitude, wavelength);
-  }
-  function trianglePathForEdge(edge, from, to, amplitude, wavelength) {
-    const geometry = edgeGeometry2(edge, from, to);
-    const length = geometryLength(geometry);
-    const cycles = Math.max(2, Math.round(length / wavelength));
-    const quarters = cycles * 4;
-    const offsetPattern = [0, amplitude, 0, -amplitude];
-    const samples = [];
-    for (let step = 0; step <= quarters; step += 1) {
-      samples.push({
-        t: step / quarters,
-        offset: offsetPattern[step % 4]
-      });
-    }
-    return offsetSamplesToPath(geometry, samples);
-  }
-  function squarePath(from, to, amplitude, wavelength) {
-    return squarePathForEdge({}, from, to, amplitude, wavelength);
-  }
-  function squarePathForEdge(edge, from, to, amplitude, wavelength) {
-    const geometry = edgeGeometry2(edge, from, to);
-    const length = geometryLength(geometry);
-    const cycles = Math.max(2, Math.round(length / wavelength));
-    const samples = [{ t: 0, offset: 0 }];
-    for (let cycle = 0; cycle < cycles; cycle += 1) {
-      const start = cycle / cycles;
-      const mid = (cycle + 0.5) / cycles;
-      const end = (cycle + 1) / cycles;
-      samples.push({ t: start, offset: amplitude });
-      samples.push({ t: mid, offset: amplitude });
-      samples.push({ t: mid, offset: -amplitude });
-      samples.push({ t: end, offset: -amplitude });
-    }
-    samples.push({ t: 1, offset: 0 });
-    return offsetSamplesToPath(geometry, samples);
-  }
-  function offsetSamplesToPath(geometry, samples) {
-    const points = samples.map(({ t, offset }) => {
-      const sample = geometrySample2(geometry, t);
-      const normal = perpendicularVector(sample.tangent);
-      return {
-        x: sample.point.x + normal.x * offset,
-        y: sample.point.y + normal.y * offset
-      };
+  });
+
+  // src/markfeyn/renderer/render/dom.js
+  function createSvg(tagName, attributes) {
+    const element = document.createElementNS(SVG_NS, tagName);
+    Object.entries(attributes || {}).forEach(([name, value]) => {
+      element.setAttribute(name, String(value));
     });
-    return pointsToPath(points);
+    return element;
   }
-  function doubleLinePath(from, to, separation) {
-    return doubleLinePathForEdge({}, from, to, separation);
-  }
-  function doubleLinePathForEdge(edge, from, to, separation) {
-    const geometry = edgeGeometry2(edge, from, to);
-    const half = separation / 2;
-    const steps = geometry.kind === "cubic" ? 48 : 1;
-    const upper = [];
-    const lower = [];
-    for (let step = 0; step <= steps; step += 1) {
-      const sample = geometrySample2(geometry, step / steps);
-      const normal = perpendicularVector(sample.tangent);
-      upper.push({
-        x: sample.point.x + normal.x * half,
-        y: sample.point.y + normal.y * half
-      });
-      lower.push({
-        x: sample.point.x - normal.x * half,
-        y: sample.point.y - normal.y * half
-      });
-    }
-    return `${pointsToPath(upper)} ${pointsToPath(lower)}`;
-  }
-  function edgePath(edge, from, to) {
-    return geometryToPath(edgeGeometry2(edge, from, to));
-  }
-  function edgeGeometry2(edge, from, to) {
-    const outAngle = Number(edge?.outAngle);
-    const inAngle = Number(edge?.inAngle);
-    if (samePoint2(from, to)) {
-      return selfLoopGeometry2(edge, from, outAngle, inAngle);
-    }
-    if (Number.isFinite(outAngle) || Number.isFinite(inAngle)) {
-      return angleCurveGeometry2(edge, from, to, outAngle, inAngle);
-    }
-    if (edge?.curve) {
-      return offsetCurveGeometry2(edge, from, to);
-    }
-    return {
-      kind: "line",
-      from,
-      to
-    };
-  }
-  function selfLoopGeometry2(edge, point, outAngle, inAngle) {
-    const amount = clamp4(edge?.curve?.amount ?? 0.72, 0.28, 1.1);
-    const radius = 68 * amount;
-    if (Number.isFinite(outAngle) || Number.isFinite(inAngle)) {
-      const outVector = angleUnitVector2(Number.isFinite(outAngle) ? outAngle : 135);
-      const inVector = angleUnitVector2(Number.isFinite(inAngle) ? inAngle : 45);
-      return {
-        kind: "cubic",
-        from: point,
-        c1: {
-          x: point.x + outVector.x * radius * 1.65,
-          y: point.y + outVector.y * radius * 1.65
-        },
-        c2: {
-          x: point.x + inVector.x * radius * 1.65,
-          y: point.y + inVector.y * radius * 1.65
-        },
-        to: point
-      };
-    }
-    const side = selfLoopSideVector2(edge?.curve?.side);
-    const tangent = { x: -side.y, y: side.x };
-    return {
-      kind: "cubic",
-      from: point,
-      c1: {
-        x: point.x - tangent.x * radius + side.x * radius * 1.7,
-        y: point.y - tangent.y * radius + side.y * radius * 1.7
-      },
-      c2: {
-        x: point.x + tangent.x * radius + side.x * radius * 1.7,
-        y: point.y + tangent.y * radius + side.y * radius * 1.7
-      },
-      to: point
-    };
-  }
-  function samePoint2(from, to) {
-    return Math.abs(from.x - to.x) < 1e-3 && Math.abs(from.y - to.y) < 1e-3;
-  }
-  function selfLoopSideVector2(side) {
-    if (side === "right") {
-      return { x: 1, y: 0 };
-    }
-    if (side === "bottom") {
-      return { x: 0, y: 1 };
-    }
-    if (side === "left") {
-      return { x: -1, y: 0 };
-    }
-    return { x: 0, y: -1 };
-  }
-  function offsetCurveGeometry2(edge, from, to) {
-    const vector = lineVector2(from, to);
-    const normal = leftNormalVector2(vector);
-    const side = edge.curve.side === "right" ? -1 : 1;
-    const looseness = edge.looseness ?? 1;
-    const offset = vector.length * edge.curve.amount * looseness * side;
-    if (edge.curve.shape === "semicircle") {
-      return {
-        kind: "cubic",
-        from,
-        c1: {
-          x: from.x + normal.x * offset,
-          y: from.y + normal.y * offset
-        },
-        c2: {
-          x: to.x + normal.x * offset,
-          y: to.y + normal.y * offset
-        },
-        to
-      };
-    }
-    return {
-      kind: "cubic",
-      from,
-      c1: {
-        x: from.x + vector.dx * 0.33 + normal.x * offset,
-        y: from.y + vector.dy * 0.33 + normal.y * offset
-      },
-      c2: {
-        x: from.x + vector.dx * 0.67 + normal.x * offset,
-        y: from.y + vector.dy * 0.67 + normal.y * offset
-      },
-      to
-    };
-  }
-  function angleCurveGeometry2(edge, from, to, outAngle, inAngle) {
-    const vector = lineVector2(from, to);
-    const looseness = edge?.looseness ?? 1;
-    const handle = vector.length * 0.46 * looseness;
-    const relativeBase = edge?.relativeAngles ? vectorAngle2(vector) : 0;
-    const resolvedOut = Number.isFinite(outAngle) ? relativeBase + outAngle : vectorAngle2(vector);
-    const resolvedIn = Number.isFinite(inAngle) ? relativeBase + inAngle : vectorAngle2(vector) + 180;
-    const outVector = angleUnitVector2(resolvedOut);
-    const inVector = angleUnitVector2(resolvedIn);
-    return {
-      kind: "cubic",
-      from,
-      c1: {
-        x: from.x + outVector.x * handle,
-        y: from.y + outVector.y * handle
-      },
-      c2: {
-        x: to.x + inVector.x * handle,
-        y: to.y + inVector.y * handle
-      },
-      to
-    };
-  }
-  function geometryToPath(geometry) {
-    if (geometry.kind === "cubic") {
-      return [
-        `M ${round(geometry.from.x)} ${round(geometry.from.y)}`,
-        `C ${round(geometry.c1.x)} ${round(geometry.c1.y)}`,
-        `${round(geometry.c2.x)} ${round(geometry.c2.y)}`,
-        `${round(geometry.to.x)} ${round(geometry.to.y)}`
-      ].join(" ");
-    }
-    return `M ${round(geometry.from.x)} ${round(geometry.from.y)} L ${round(geometry.to.x)} ${round(geometry.to.y)}`;
-  }
-  function geometryPoint2(geometry, t) {
-    if (geometry.kind === "cubic") {
-      return cubicPoint2(geometry.from, geometry.c1, geometry.c2, geometry.to, t);
-    }
-    return {
-      x: geometry.from.x + (geometry.to.x - geometry.from.x) * t,
-      y: geometry.from.y + (geometry.to.y - geometry.from.y) * t
-    };
-  }
-  function geometryTangent2(geometry, t) {
-    if (geometry.kind === "cubic") {
-      return cubicTangent2(geometry.from, geometry.c1, geometry.c2, geometry.to, t);
-    }
-    return {
-      x: geometry.to.x - geometry.from.x,
-      y: geometry.to.y - geometry.from.y
-    };
-  }
-  function geometrySample2(geometry, t) {
-    return {
-      point: geometryPoint2(geometry, t),
-      tangent: geometryTangent2(geometry, t)
-    };
-  }
-  function geometryLength(geometry) {
-    const steps = geometry.kind === "cubic" ? 48 : 1;
-    let length = 0;
-    let previous = geometryPoint2(geometry, 0);
-    for (let step = 1; step <= steps; step += 1) {
-      const next = geometryPoint2(geometry, step / steps);
-      length += Math.hypot(next.x - previous.x, next.y - previous.y);
-      previous = next;
-    }
-    return length;
-  }
-  function cubicPoint2(p0, p1, p2, p3, t) {
-    const mt = 1 - t;
-    return {
-      x: mt ** 3 * p0.x + 3 * mt ** 2 * t * p1.x + 3 * mt * t ** 2 * p2.x + t ** 3 * p3.x,
-      y: mt ** 3 * p0.y + 3 * mt ** 2 * t * p1.y + 3 * mt * t ** 2 * p2.y + t ** 3 * p3.y
-    };
-  }
-  function cubicTangent2(p0, p1, p2, p3, t) {
-    const mt = 1 - t;
-    return {
-      x: 3 * mt ** 2 * (p1.x - p0.x) + 6 * mt * t * (p2.x - p1.x) + 3 * t ** 2 * (p3.x - p2.x),
-      y: 3 * mt ** 2 * (p1.y - p0.y) + 6 * mt * t * (p2.y - p1.y) + 3 * t ** 2 * (p3.y - p2.y)
-    };
-  }
-  function lineVector2(from, to) {
-    const dx = to.x - from.x;
-    const dy = to.y - from.y;
-    const length = Math.hypot(dx, dy) || 1;
-    return {
-      dx,
-      dy,
-      length,
-      ux: dx / length,
-      uy: dy / length,
-      px: -dy / length,
-      py: dx / length
-    };
-  }
-  function normalizeVector2(dx, dy) {
-    const length = Math.hypot(dx, dy) || 1;
-    return {
-      ux: dx / length,
-      uy: dy / length,
-      px: -dy / length,
-      py: dx / length
-    };
-  }
-  function perpendicularVector(vector) {
-    const normalized = normalizeVector2(vector.x ?? vector.dx ?? vector.ux, vector.y ?? vector.dy ?? vector.uy);
-    return {
-      x: normalized.px,
-      y: normalized.py
-    };
-  }
-  function leftNormalVector2(vector) {
-    return {
-      x: vector.dy / vector.length,
-      y: -vector.dx / vector.length
-    };
-  }
-  function vectorAngle2(vector) {
-    return Math.atan2(-vector.dy, vector.dx) * 180 / Math.PI;
-  }
-  function angleUnitVector2(degrees) {
-    const radians = degrees * Math.PI / 180;
-    return {
-      x: Math.cos(radians),
-      y: -Math.sin(radians)
-    };
-  }
-  function pointsToPath(points) {
-    return points.map((point, index) => `${index === 0 ? "M" : "L"} ${round(point.x)} ${round(point.y)}`).join(" ");
-  }
-  function clamp4(value, min, max) {
-    return Math.max(min, Math.min(max, value));
-  }
-  function round(value) {
+  function round2(value) {
     return Math.round(value * 100) / 100;
   }
-  var GLUON_ENDPOINT_RAMP_LOOPS;
-  var init_paths = __esm({
-    "src/markfeyn/renderer/render/paths.js"() {
-      GLUON_ENDPOINT_RAMP_LOOPS = 0.62;
+  var SVG_NS;
+  var init_dom = __esm({
+    "src/markfeyn/renderer/render/dom.js"() {
+      SVG_NS = "http://www.w3.org/2000/svg";
     }
   });
 
@@ -99139,3410 +101416,906 @@
     }
   });
 
-  // src/markfeyn/renderer/feynman-diagrams.js
-  var require_feynman_diagrams = __commonJS({
-    "src/markfeyn/renderer/feynman-diagrams.js"(exports, module) {
-      init_layout_engine();
-      init_elk_compiler();
-      init_elk_runner();
-      init_external_order();
-      init_loop_candidates();
-      init_multiloop();
-      init_braces();
-      init_constants();
-      init_edges();
-      init_directives();
-      init_feynman_parser();
-      init_labels2();
-      init_vertices();
-      init_options();
+  // src/markfeyn/renderer/render/visual-defaults.js
+  var GLUON_JUNCTION_CAP_RADIUS, VISUAL_DEFAULTS, TEX_BRACE_METRICS, BRACE_LABEL_PADDING, BRACE_SIDE_GAP, TEX_BRACE_PATHS, BLOB_HATCH_PATTERNS;
+  var init_visual_defaults = __esm({
+    "src/markfeyn/renderer/render/visual-defaults.js"() {
+      GLUON_JUNCTION_CAP_RADIUS = 1.7;
+      VISUAL_DEFAULTS = Object.freeze({
+        edgeStrokeWidth: 2.6,
+        gluonStrokeWidth: 2.1,
+        vertexStrokeWidth: 2.3,
+        blobStrokeWidth: 2.8,
+        vertexMarkStrokeWidth: 2.4,
+        labelFontSize: 32,
+        edgeLabelFontSize: 26,
+        mathLabelFontScale: 0.72,
+        labelFontFamily: '"Latin Modern Math", "Latin Modern Roman", "Computer Modern Serif", "CMU Serif", "STIX Two Text", "Times New Roman", serif',
+        labelFontStyle: "italic",
+        scriptFontSizePercent: 82,
+        labelHorizontalOffset: 20,
+        labelTopOffset: 24,
+        labelBottomOffset: 30,
+        edgeLabelOffset: 32,
+        momentumArrowOffset: 19,
+        momentumLabelGap: 20,
+        momentumArrowShorten: 0.22,
+        momentumArrowStrokeWidth: 1.4,
+        momentumArrowHeadLength: 8,
+        momentumArrowHeadWidth: 7,
+        arrowMarkerWidth: 11,
+        arrowMarkerHeight: 11,
+        arrowMarkerRefX: 7,
+        arrowMarkerRefY: 4,
+        arrowPath: "M0,0 L8,4 L0,8 Z"
+      });
+      TEX_BRACE_METRICS = Object.freeze({
+        centerX: 4.4234125,
+        topMinY: 9963e-6,
+        bottomMaxY: 8.956413,
+        topAdvance: 8.966467,
+        extenderAdvance: 2.988822,
+        middleAdvance: 17.932934,
+        baseHeight: 35.855814,
+        targetScale: 1.45
+      });
+      BRACE_LABEL_PADDING = VISUAL_DEFAULTS.labelFontSize * 0.68;
+      BRACE_SIDE_GAP = VISUAL_DEFAULTS.labelHorizontalOffset + 34;
+      TEX_BRACE_PATHS = Object.freeze({
+        left: {
+          top: "M5.021171 4.513076C5.021171 3.696139 5.240349 1.793275 7.013699 .537983C7.143213 .438356 7.153176 .428394 7.153176 .249066C7.153176 .019925 7.143213 .009963 6.894147 .009963H6.734745C4.592777 1.165629 3.825654 3.048568 3.825654 4.513076V8.797011C3.825654 9.05604 3.835616 9.066002 4.104608 9.066002H4.742217C5.011208 9.066002 5.021171 9.05604 5.021171 8.797011V4.513076Z",
+          middle: "M3.825654 17.763387C3.825654 18.022416 3.835616 18.032379 4.104608 18.032379H4.742217C5.011208 18.032379 5.021171 18.022416 5.021171 17.763387V13.559153C5.021171 12.353674 4.513076 10.321295 2.281445 8.966376C4.533001 7.601494 5.021171 5.549191 5.021171 4.373599V.169365C5.021171-.089664 5.011208-.099626 4.742217-.099626H4.104608C3.835616-.099626 3.825654-.089664 3.825654 .169365V4.383562C3.825654 5.220423 3.646326 7.292653 1.8132 8.687422C1.703611 8.777086 1.693649 8.787049 1.693649 8.966376S1.703611 9.155666 1.8132 9.24533C2.072229 9.444583 2.759651 9.972603 3.237858 10.978829C3.626401 11.775841 3.825654 12.662516 3.825654 13.549191V17.763387Z",
+          bottom: "M6.894147 8.956413C7.143213 8.956413 7.153176 8.946451 7.153176 8.71731C7.153176 8.537983 7.143213 8.52802 7.103362 8.498132C6.794521 8.268991 6.07721 7.760897 5.608966 6.844334C5.220423 6.087173 5.021171 5.32005 5.021171 4.4533V.169365C5.021171-.089664 5.011208-.099626 4.742217-.099626H4.104608C3.835616-.099626 3.825654-.089664 3.825654 .169365V4.4533C3.825654 5.927771 4.592777 7.81071 6.734745 8.956413H6.894147Z"
+        },
+        right: {
+          top: "M3.825654 8.797011C3.825654 9.05604 3.835616 9.066002 4.104608 9.066002H4.742217C5.011208 9.066002 5.021171 9.05604 5.021171 8.797011V4.513076C5.021171 3.048568 4.254047 1.165629 2.11208 .009963H1.96264C1.703611 .009963 1.693649 .019925 1.693649 .249066C1.693649 .428394 1.703611 .438356 1.743462 .468244C2.052304 .697385 2.769614 1.205479 3.237858 2.122042C3.506849 2.660025 3.825654 3.437111 3.825654 4.513076V8.797011Z",
+          middle: "M5.021171 13.549191C5.021171 12.712329 5.200498 10.6401 7.033624 9.24533C7.143213 9.155666 7.153176 9.145704 7.153176 8.966376S7.143213 8.777086 7.033624 8.687422C6.774595 8.488169 6.087173 7.960149 5.608966 6.953923C5.220423 6.156912 5.021171 5.270237 5.021171 4.383562V.169365C5.021171-.089664 5.011208-.099626 4.742217-.099626H4.104608C3.835616-.099626 3.825654-.089664 3.825654 .169365V4.373599C3.825654 5.579078 4.333748 7.611457 6.56538 8.966376C4.313823 10.331258 3.825654 12.383562 3.825654 13.559153V17.763387C3.825654 18.022416 3.835616 18.032379 4.104608 18.032379H4.742217C5.011208 18.032379 5.021171 18.022416 5.021171 17.763387V13.549191Z",
+          bottom: "M3.825654 4.4533C3.825654 5.32005 3.58655 7.193026 1.833126 8.428394C1.703611 8.52802 1.693649 8.537983 1.693649 8.71731C1.693649 8.946451 1.703611 8.956413 1.96264 8.956413H2.11208C4.26401 7.800747 5.021171 5.917808 5.021171 4.4533V.169365C5.021171-.089664 5.011208-.099626 4.742217-.099626H4.104608C3.835616-.099626 3.825654-.089664 3.825654 .169365V4.4533Z"
+        },
+        extender: "M5.021171 .169365C5.021171-.089664 5.011208-.099626 4.742217-.099626H4.104608C3.835616-.099626 3.825654-.089664 3.825654 .169365V2.819427C3.825654 3.078456 3.835616 3.088418 4.104608 3.088418H4.742217C5.011208 3.088418 5.021171 3.078456 5.021171 2.819427V.169365Z"
+      });
+      BLOB_HATCH_PATTERNS = Object.freeze({
+        diagonal: {
+          size: 8,
+          paths: ["M -2 10 L 10 -2"]
+        },
+        "diagonal-reverse": {
+          size: 8,
+          paths: ["M -2 -2 L 10 10"]
+        },
+        cross: {
+          size: 8,
+          paths: ["M -2 10 L 10 -2", "M -2 -2 L 10 10"]
+        },
+        horizontal: {
+          size: 7,
+          paths: ["M 0 2 L 7 2"]
+        },
+        vertical: {
+          size: 7,
+          paths: ["M 2 0 L 2 7"]
+        },
+        grid: {
+          size: 8,
+          paths: ["M 0 2 L 8 2", "M 2 0 L 2 8"]
+        }
+      });
+    }
+  });
+
+  // src/markfeyn/renderer/render/edges.js
+  function renderEdges(diagram, layout, index, includeEdge) {
+    return diagram.edges.filter(includeEdge).map((edge) => {
+      const from = layout.positions[edge.from];
+      const to = layout.positions[edge.to];
+      if (!from || !to) {
+        return null;
+      }
+      return renderEdge(edge, from, to, index);
+    }).filter(Boolean);
+  }
+  function isOverlayEdge(edge) {
+    return edge.type === "ghost" || edge.overlay;
+  }
+  function renderJunctionCaps(diagram, layout) {
+    return junctionCapNodes(diagram, layout).map((cap) => createSvg("circle", {
+      class: "feynman-diagram__junction-cap",
+      cx: cap.position.x,
+      cy: cap.position.y,
+      r: GLUON_JUNCTION_CAP_RADIUS,
+      "aria-hidden": "true"
+    }));
+  }
+  function junctionCapNodes(diagram, layout) {
+    const incident = /* @__PURE__ */ new Map();
+    diagram.edges.filter(isVisibleJunctionEdge).forEach((edge) => {
+      markIncidentEdge(incident, edge.from, edge);
+      markIncidentEdge(incident, edge.to, edge);
+    });
+    return Object.entries(layout.positions).filter(([node, position]) => position.kind === "internal" && !diagram.vertices?.[node] && (incident.get(node)?.count ?? 0) > 1 && incident.get(node)?.hasGluon).map(([node, position]) => ({ node, position }));
+  }
+  function renderEdge(edge, from, to, index) {
+    if (edge.hidden) {
+      return null;
+    }
+    if (edge.type === "fermion") {
+      return renderDirectedEdge(edge, from, to, "feynman-diagram__edge feynman-diagram__edge--fermion");
+    }
+    if (edge.type === "plain") {
+      return createSvg("path", {
+        class: "feynman-diagram__edge feynman-diagram__edge--plain",
+        d: edgePath(edge, from, to)
+      });
+    }
+    if (edge.type === "photon") {
+      return createSvg("path", {
+        class: "feynman-diagram__edge feynman-diagram__edge--photon",
+        d: wavePathForEdge(edge, from, to, 7, 18)
+      });
+    }
+    if (edge.type === "gluon") {
+      return createSvg("path", {
+        class: "feynman-diagram__edge feynman-diagram__edge--gluon",
+        d: gluonPathForEdge(edge, from, to, 5.5, 13)
+      });
+    }
+    if (edge.type === "ghost") {
+      return createSvg("path", {
+        class: "feynman-diagram__edge feynman-diagram__edge--ghost",
+        d: edgePath(edge, from, to)
+      });
+    }
+    if (edge.type === "dashed") {
+      return createSvg("path", {
+        class: "feynman-diagram__edge feynman-diagram__edge--dashed",
+        d: edgePath(edge, from, to)
+      });
+    }
+    if (edge.type === "dashdot") {
+      return createSvg("path", {
+        class: "feynman-diagram__edge feynman-diagram__edge--dashdot",
+        d: edgePath(edge, from, to)
+      });
+    }
+    if (edge.type === "triangle") {
+      return createSvg("path", {
+        class: "feynman-diagram__edge feynman-diagram__edge--triangle",
+        d: trianglePathForEdge(edge, from, to, 7, 16)
+      });
+    }
+    if (edge.type === "square") {
+      return createSvg("path", {
+        class: "feynman-diagram__edge feynman-diagram__edge--square",
+        d: squarePathForEdge(edge, from, to, 6, 18)
+      });
+    }
+    if (edge.type === "double") {
+      return renderDoubleEdge(edge, from, to);
+    }
+    if (edge.arrow) {
+      return renderDirectedEdge(edge, from, to, "feynman-diagram__edge feynman-diagram__edge--scalar");
+    }
+    return createSvg("path", {
+      class: "feynman-diagram__edge feynman-diagram__edge--scalar",
+      d: edgePath(edge, from, to)
+    });
+  }
+  function edgeLabelPosition2(edge, from, to, side, options = {}) {
+    const sample = geometrySample2(edgeGeometry2(edge, from, to), 0.5);
+    const tangent = normalizeVector2(sample.tangent.x, sample.tangent.y);
+    const resolvedSide = options.sideOverride || side;
+    if (isMomentumEdge2(edge)) {
+      if (!options.forceNormal) {
+        return momentumLabelPosition2(edge, sample.point, tangent, resolvedSide);
+      }
+      const momentumNormal = momentumNormalForTangent2(edge, tangent, resolvedSide);
+      return {
+        x: sample.point.x - momentumNormal.x * VISUAL_DEFAULTS.edgeLabelOffset,
+        y: sample.point.y - momentumNormal.y * VISUAL_DEFAULTS.edgeLabelOffset,
+        anchor: "middle"
+      };
+    }
+    const normalSign = resolvedSide === "right" ? 1 : -1;
+    return {
+      x: sample.point.x + tangent.px * VISUAL_DEFAULTS.edgeLabelOffset * normalSign,
+      y: sample.point.y + tangent.py * VISUAL_DEFAULTS.edgeLabelOffset * normalSign,
+      anchor: "middle"
+    };
+  }
+  function momentumArrowGeometry2(edge, from, to, options = {}) {
+    const geometry = edgeGeometry2(edge, from, to);
+    const shorten = momentumArrowShorten2(edge);
+    const reverse = edge.momentumDirection === "reverse";
+    const start = reverse ? 1 - shorten : shorten;
+    const end = reverse ? shorten : 1 - shorten;
+    const steps = geometry.kind === "cubic" ? 8 : 1;
+    const midpoint = geometrySample2(geometry, 0.5);
+    const normal = momentumNormalForTangent2(
+      edge,
+      normalizeVector2(midpoint.tangent.x, midpoint.tangent.y),
+      options.sideOverride
+    );
+    const offset = momentumArrowDistance2(edge);
+    const points = [];
+    for (let step = 0; step <= steps; step += 1) {
+      const t = start + (end - start) * step / steps;
+      const point = geometryPoint2(geometry, t);
+      points.push({
+        x: point.x + normal.x * offset,
+        y: point.y + normal.y * offset
+      });
+    }
+    const endPoint = points[points.length - 1];
+    const beforeEnd = points[points.length - 2] || points[0];
+    return {
+      path: pointsToPath(points),
+      start: points[0],
+      end: endPoint,
+      tangent: normalizeVector2(endPoint.x - beforeEnd.x, endPoint.y - beforeEnd.y),
+      points
+    };
+  }
+  function renderArrowGlyphAt(center, vector, options = {}) {
+    const length = options.length ?? VISUAL_DEFAULTS.arrowMarkerWidth + 3;
+    const width = options.width ?? VISUAL_DEFAULTS.arrowMarkerHeight;
+    const tip = {
+      x: center.x + vector.ux * (2 * length / 3),
+      y: center.y + vector.uy * (2 * length / 3)
+    };
+    const tail = {
+      x: center.x - vector.ux * (length / 3),
+      y: center.y - vector.uy * (length / 3)
+    };
+    const left = {
+      x: tail.x + vector.px * (width / 2),
+      y: tail.y + vector.py * (width / 2)
+    };
+    const right = {
+      x: tail.x - vector.px * (width / 2),
+      y: tail.y - vector.py * (width / 2)
+    };
+    return createSvg("path", {
+      class: options.className || "feynman-diagram__arrow",
+      d: `M ${round2(tip.x)} ${round2(tip.y)} L ${round2(left.x)} ${round2(left.y)} L ${round2(right.x)} ${round2(right.y)} Z`
+    });
+  }
+  function isMomentumEdge2(edge) {
+    return edge.labelPlacement === "momentum" || edge.labelPlacement === "momentum-prime";
+  }
+  function isVisibleJunctionEdge(edge) {
+    return !edge.hidden;
+  }
+  function markIncidentEdge(incident, node, edge) {
+    const current = incident.get(node) || { count: 0, hasGluon: false };
+    current.count += 1;
+    current.hasGluon = current.hasGluon || edge.type === "gluon";
+    incident.set(node, current);
+  }
+  function renderDirectedEdge(edge, from, to, className) {
+    const group = createSvg("g", {
+      class: "feynman-diagram__edge-group"
+    });
+    const geometry = edgeGeometry2(edge, from, to);
+    group.appendChild(createSvg("path", {
+      class: className,
+      d: geometryToPath(geometry)
+    }));
+    group.appendChild(renderArrowGlyphOnGeometry(geometry, edge.arrow === "reverse"));
+    return group;
+  }
+  function renderArrowGlyphOnGeometry(geometry, reverse) {
+    const sample = geometrySample2(geometry, 0.5);
+    const vector = normalizeVector2(sample.tangent.x, sample.tangent.y);
+    if (reverse) {
+      vector.ux *= -1;
+      vector.uy *= -1;
+    }
+    return renderArrowGlyphAt(sample.point, vector);
+  }
+  function renderDoubleEdge(edge, from, to) {
+    const path = createSvg("path", {
+      class: "feynman-diagram__edge feynman-diagram__edge--double",
+      d: doubleLinePathForEdge(edge, from, to, 4.6)
+    });
+    if (!edge.arrow) {
+      return path;
+    }
+    const group = createSvg("g", {
+      class: "feynman-diagram__edge-group"
+    });
+    const geometry = edgeGeometry2(edge, from, to);
+    group.appendChild(path);
+    group.appendChild(renderArrowGlyphOnGeometry(geometry, edge.arrow === "reverse"));
+    return group;
+  }
+  function momentumLabelPosition2(edge, point, tangent, sideOverride) {
+    const normal = momentumNormalForTangent2(edge, tangent, sideOverride);
+    const offset = momentumArrowDistance2(edge) + VISUAL_DEFAULTS.momentumLabelGap + momentumLabelDistance2(edge);
+    return {
+      x: point.x + normal.x * offset,
+      y: point.y + normal.y * offset,
+      anchor: "middle"
+    };
+  }
+  function momentumNormalForTangent2(edge, tangent, sideOverride) {
+    const normal = canonicalMomentumNormal2(tangent);
+    const normalSign = (sideOverride || (edge.labelPlacement === "momentum-prime" ? "right" : "left")) === "right" ? 1 : -1;
+    return {
+      x: normal.x * normalSign,
+      y: normal.y * normalSign
+    };
+  }
+  function momentumArrowDistance2(edge) {
+    return edge.momentum?.arrowDistance ?? VISUAL_DEFAULTS.momentumArrowOffset;
+  }
+  function momentumLabelDistance2(edge) {
+    return edge.momentum?.labelDistance ?? 0;
+  }
+  function momentumArrowShorten2(edge) {
+    return edge.momentum?.arrowShorten ?? VISUAL_DEFAULTS.momentumArrowShorten;
+  }
+  function canonicalMomentumNormal2(tangent) {
+    let ux = tangent.ux;
+    let uy = tangent.uy;
+    if (Math.abs(ux) >= Math.abs(uy)) {
+      if (ux < 0) {
+        ux *= -1;
+        uy *= -1;
+      }
+    } else if (uy < 0) {
+      ux *= -1;
+      uy *= -1;
+    }
+    return {
+      x: -uy,
+      y: ux
+    };
+  }
+  var init_edges2 = __esm({
+    "src/markfeyn/renderer/render/edges.js"() {
       init_paths();
+      init_dom();
+      init_visual_defaults();
+    }
+  });
+
+  // src/markfeyn/renderer/render/labels.js
+  function renderLabels(diagram, layout) {
+    const declaredLabels = Object.entries(diagram.labels).map(([target, text]) => {
+      if (target.includes("->")) {
+        return renderEdgeLabel(target, text, diagram, layout);
+      }
+      return renderNodeLabel(target, text, layout.positions[target], layout);
+    }).filter(Boolean);
+    const inlineEdgeLabels = diagram.edges.map((edge, index) => edge.label ? renderEdgeLabelForEdge(edge, edge.label, layout, {
+      placementId: edgePlacementId(edge, index)
+    }) : null).filter(Boolean);
+    return [...declaredLabels, ...inlineEdgeLabels];
+  }
+  function createDiagramLabel({ text, x, y, anchor, className }) {
+    const source = String(text ?? "");
+    if (labelNeedsMathJax(source)) {
+      const group = createSvg("g", {
+        class: `${className} feynman-diagram__label--math-pending`.trim(),
+        "data-math-tex": source,
+        "data-label-x": x,
+        "data-label-y": y,
+        "data-label-anchor": anchor
+      });
+      const fallback = createSvg("text", {
+        class: "feynman-diagram__label feynman-diagram__label--fallback",
+        x,
+        y,
+        "text-anchor": anchor,
+        "dominant-baseline": "middle"
+      });
+      appendLabelMarkup(fallback, source);
+      group.appendChild(fallback);
+      return group;
+    }
+    const label = createSvg("text", {
+      class: className,
+      x,
+      y,
+      "text-anchor": anchor,
+      "dominant-baseline": "middle"
+    });
+    appendLabelMarkup(label, source);
+    return label;
+  }
+  function renderNodeLabel(target, text, position, layout) {
+    if (!position) {
+      return null;
+    }
+    const placement = labelPlacementEntry(layout, `node:${target}`);
+    const offset = labelOffset2(position.labelSide || position.kind);
+    const x = placement?.x ?? position.x + offset.x;
+    const y = placement?.y ?? position.y + offset.y;
+    const anchor = placement?.anchor || offset.anchor;
+    return createDiagramLabel({
+      text: text || target,
+      x,
+      y,
+      anchor,
+      className: `feynman-diagram__label feynman-diagram__label--${position.kind}`
+    });
+  }
+  function renderEdgeLabel(target, text, diagram, layout) {
+    const edge = findEdgeByLabelTarget2(target, diagram.edges);
+    if (!edge) {
+      return null;
+    }
+    return renderEdgeLabelForEdge(edge, text, layout, {
+      forceNormal: true,
+      placementId: `declared-edge:${target}`
+    });
+  }
+  function renderEdgeLabelForEdge(edge, text, layout, options = {}) {
+    const from = layout.positions[edge.from];
+    const to = layout.positions[edge.to];
+    if (!from || !to) {
+      return null;
+    }
+    const placement = labelPlacementEntry(layout, options.placementId);
+    const side = placement?.side || edge.labelSide || "left";
+    const position = placement || edgeLabelPosition2(edge, from, to, side, {
+      ...options,
+      sideOverride: side
+    });
+    if (isMomentumEdge2(edge) && !options.forceNormal) {
+      return renderMomentumLabelForEdge(edge, text, from, to, position, { sideOverride: side });
+    }
+    return createDiagramLabel({
+      text,
+      x: position.x,
+      y: position.y,
+      anchor: position.anchor,
+      className: "feynman-diagram__label feynman-diagram__label--edge"
+    });
+  }
+  function renderMomentumLabelForEdge(edge, text, from, to, position, options = {}) {
+    const group = createSvg("g", {
+      class: "feynman-diagram__momentum-label"
+    });
+    const arrow = momentumArrowGeometry2(edge, from, to, options);
+    group.appendChild(createSvg("path", {
+      class: "feynman-diagram__momentum-arrow",
+      d: arrow.path
+    }));
+    group.appendChild(renderArrowGlyphAt(arrow.end, arrow.tangent, {
+      className: "feynman-diagram__arrow feynman-diagram__momentum-arrowhead",
+      length: VISUAL_DEFAULTS.momentumArrowHeadLength,
+      width: VISUAL_DEFAULTS.momentumArrowHeadWidth
+    }));
+    group.appendChild(createDiagramLabel({
+      text,
+      x: position.x,
+      y: position.y,
+      anchor: position.anchor,
+      className: "feynman-diagram__label feynman-diagram__label--edge feynman-diagram__label--momentum"
+    }));
+    return group;
+  }
+  function labelPlacementEntry(layout, id) {
+    return layout?.labelPlacement?.byId?.[id] || null;
+  }
+  function edgePlacementId(edge, index) {
+    return `edge:${edge.id || `${edge.from}->${edge.to}#${index + 1}`}`;
+  }
+  function findEdgeByLabelTarget2(target, edges) {
+    const match = String(target || "").match(/^([A-Za-z0-9_.-]+)->([A-Za-z0-9_.-]+)(?:#([0-9]+))?$/);
+    if (!match) {
+      return null;
+    }
+    const [, from, to, rawIndex] = match;
+    const matches = edges.filter((edge) => edge.from === from && edge.to === to);
+    const index = rawIndex ? Number(rawIndex) - 1 : 0;
+    return matches[index] || null;
+  }
+  function appendLabelMarkup(label, source) {
+    const segments = parseLabelMarkup(source);
+    label.setAttribute("aria-label", labelMarkupToText(source));
+    segments.forEach((segment) => {
+      if (!segment.text) {
+        return;
+      }
+      const tspan = createSvg("tspan");
+      tspan.textContent = labelSegmentText(segment);
+      if (segment.kind !== "normal") {
+        tspan.setAttribute("baseline-shift", segment.kind === "sup" ? "super" : "sub");
+        tspan.setAttribute("font-size", `${VISUAL_DEFAULTS.scriptFontSizePercent}%`);
+      }
+      if (segment.overline) {
+        tspan.setAttribute("text-decoration", "overline");
+      }
+      label.appendChild(tspan);
+    });
+  }
+  function labelOffset2(kind) {
+    if (kind === "left" || kind === "incoming") {
+      return { x: -VISUAL_DEFAULTS.labelHorizontalOffset, y: 0, anchor: "end" };
+    }
+    if (kind === "right" || kind === "outgoing") {
+      return { x: VISUAL_DEFAULTS.labelHorizontalOffset, y: 0, anchor: "start" };
+    }
+    if (kind === "bottom") {
+      return { x: 0, y: VISUAL_DEFAULTS.labelBottomOffset, anchor: "middle" };
+    }
+    return { x: 0, y: -VISUAL_DEFAULTS.labelTopOffset, anchor: "middle" };
+  }
+  var init_labels3 = __esm({
+    "src/markfeyn/renderer/render/labels.js"() {
       init_label_markup();
-      init_layout();
-      (function() {
-        "use strict";
-        const SVG_NS = "http://www.w3.org/2000/svg";
-        const GLUON_JUNCTION_CAP_RADIUS = 1.7;
-        const VISUAL_DEFAULTS = Object.freeze({
-          edgeStrokeWidth: 2.6,
-          gluonStrokeWidth: 2.1,
-          vertexStrokeWidth: 2.3,
-          blobStrokeWidth: 2.8,
-          vertexMarkStrokeWidth: 2.4,
-          labelFontSize: 32,
-          edgeLabelFontSize: 26,
-          mathLabelFontScale: 0.72,
-          labelFontFamily: '"Latin Modern Math", "Latin Modern Roman", "Computer Modern Serif", "CMU Serif", "STIX Two Text", "Times New Roman", serif',
-          labelFontStyle: "italic",
-          scriptFontSizePercent: 82,
-          labelHorizontalOffset: 20,
-          labelTopOffset: 24,
-          labelBottomOffset: 30,
-          edgeLabelOffset: 32,
-          momentumArrowOffset: 19,
-          momentumLabelGap: 20,
-          momentumArrowShorten: 0.22,
-          momentumArrowStrokeWidth: 1.4,
-          momentumArrowHeadLength: 8,
-          momentumArrowHeadWidth: 7,
-          arrowMarkerWidth: 11,
-          arrowMarkerHeight: 11,
-          arrowMarkerRefX: 7,
-          arrowMarkerRefY: 4,
-          arrowPath: "M0,0 L8,4 L0,8 Z"
+      init_edges2();
+      init_dom();
+      init_visual_defaults();
+    }
+  });
+
+  // src/markfeyn/renderer/render/braces.js
+  function renderBraces(diagram, layout) {
+    return (diagram.braces || []).map((brace) => renderBrace(brace, layout)).filter(Boolean);
+  }
+  function renderBrace(brace, layout) {
+    const from = layout.positions[brace.from];
+    const to = layout.positions[brace.to];
+    if (!from || !to) {
+      return null;
+    }
+    const group = createSvg("g", {
+      class: "feynman-diagram__brace-group"
+    });
+    const geometry = braceGeometry(from, to, brace.side);
+    if (geometry.kind === "tex-brace") {
+      geometry.pieces.forEach((piece) => {
+        group.appendChild(createSvg("path", {
+          class: "feynman-diagram__brace feynman-diagram__brace--tex",
+          d: piece.path,
+          transform: piece.transform
+        }));
+      });
+    } else {
+      group.appendChild(createSvg("path", {
+        class: "feynman-diagram__brace",
+        d: geometry.path
+      }));
+    }
+    group.appendChild(createDiagramLabel({
+      text: brace.label,
+      x: geometry.label.x,
+      y: geometry.label.y,
+      anchor: geometry.label.anchor,
+      className: "feynman-diagram__label feynman-diagram__label--brace"
+    }));
+    return group;
+  }
+  function braceGeometry(from, to, side) {
+    const gap = 42;
+    const curl = 14;
+    const labelGap = 22;
+    if (side === "left" || side === "right") {
+      const sign2 = side === "right" ? 1 : -1;
+      const x = (side === "right" ? Math.max(from.x, to.x) : Math.min(from.x, to.x)) + sign2 * BRACE_SIDE_GAP;
+      const y1 = Math.min(from.y, to.y);
+      const y2 = Math.max(from.y, to.y);
+      const mid2 = (y1 + y2) / 2;
+      const braceY1 = y1 - BRACE_LABEL_PADDING;
+      const braceY2 = y2 + BRACE_LABEL_PADDING;
+      const geometry = texBraceGeometry(x, braceY1, braceY2, side);
+      return {
+        kind: "tex-brace",
+        x: round2(x),
+        pieces: geometry.pieces,
+        scale: geometry.scale,
+        extenderRepeats: geometry.extenderRepeats,
+        bounds: {
+          y1: round2(braceY1),
+          y2: round2(braceY2)
+        },
+        label: {
+          x: round2(x + sign2 * labelGap),
+          y: mid2,
+          anchor: side === "right" ? "start" : "end"
+        }
+      };
+    }
+    const sign = side === "bottom" ? 1 : -1;
+    const x1 = Math.min(from.x, to.x);
+    const x2 = Math.max(from.x, to.x);
+    const mid = (x1 + x2) / 2;
+    const y = (side === "bottom" ? Math.max(from.y, to.y) : Math.min(from.y, to.y)) + sign * gap;
+    const notch = Math.min(10, Math.max(5, (x2 - x1) / 8));
+    const path = [
+      `M ${round2(x1)} ${round2(y)}`,
+      `C ${round2(x1)} ${round2(y + sign * curl)} ${round2(mid - notch * 2)} ${round2(y + sign * curl)} ${round2(mid - notch)} ${round2(y)}`,
+      `C ${round2(mid - notch * 0.4)} ${round2(y + sign * curl * 0.45)} ${round2(mid + notch * 0.4)} ${round2(y + sign * curl * 0.45)} ${round2(mid + notch)} ${round2(y)}`,
+      `C ${round2(mid + notch * 2)} ${round2(y + sign * curl)} ${round2(x2)} ${round2(y + sign * curl)} ${round2(x2)} ${round2(y)}`
+    ].join(" ");
+    return {
+      kind: "path",
+      path,
+      label: {
+        x: mid,
+        y: y + sign * labelGap,
+        anchor: "middle"
+      }
+    };
+  }
+  function texBraceGeometry(x, y1, y2, side) {
+    const span = Math.max(1, y2 - y1);
+    const rawRepeats = (span / TEX_BRACE_METRICS.targetScale - TEX_BRACE_METRICS.baseHeight) / (2 * TEX_BRACE_METRICS.extenderAdvance);
+    const extenderRepeats = Math.max(0, Math.round(rawRepeats));
+    const designHeight = TEX_BRACE_METRICS.baseHeight + 2 * extenderRepeats * TEX_BRACE_METRICS.extenderAdvance;
+    const scale = span / designHeight;
+    const topY = y1 - TEX_BRACE_METRICS.topMinY * scale;
+    const sidePaths = TEX_BRACE_PATHS[side];
+    const middleY = TEX_BRACE_METRICS.topAdvance + extenderRepeats * TEX_BRACE_METRICS.extenderAdvance;
+    const bottomExtensionY = middleY + TEX_BRACE_METRICS.middleAdvance;
+    const bottomY = bottomExtensionY + extenderRepeats * TEX_BRACE_METRICS.extenderAdvance;
+    const pieces = [
+      texBracePiece(sidePaths.top, x, topY, scale, 0)
+    ];
+    for (let index = 0; index < extenderRepeats; index += 1) {
+      pieces.push(texBracePiece(
+        TEX_BRACE_PATHS.extender,
+        x,
+        topY,
+        scale,
+        TEX_BRACE_METRICS.topAdvance + index * TEX_BRACE_METRICS.extenderAdvance
+      ));
+    }
+    pieces.push(texBracePiece(sidePaths.middle, x, topY, scale, middleY));
+    for (let index = 0; index < extenderRepeats; index += 1) {
+      pieces.push(texBracePiece(
+        TEX_BRACE_PATHS.extender,
+        x,
+        topY,
+        scale,
+        bottomExtensionY + index * TEX_BRACE_METRICS.extenderAdvance
+      ));
+    }
+    pieces.push(texBracePiece(sidePaths.bottom, x, topY, scale, bottomY));
+    return {
+      pieces,
+      scale: round2(scale),
+      extenderRepeats
+    };
+  }
+  function texBracePiece(path, x, y, scale, yOffset) {
+    return {
+      path,
+      transform: [
+        `matrix(${round2(scale)} 0 0 ${round2(scale)}`,
+        `${round2(x - TEX_BRACE_METRICS.centerX * scale)}`,
+        `${round2(y + yOffset * scale)})`
+      ].join(" ")
+    };
+  }
+  var init_braces2 = __esm({
+    "src/markfeyn/renderer/render/braces.js"() {
+      init_dom();
+      init_labels3();
+      init_visual_defaults();
+    }
+  });
+
+  // src/markfeyn/renderer/render/mathjax.js
+  function mathJaxTexToSvgAvailable() {
+    return typeof window !== "undefined" && window.MathJax && typeof window.MathJax.tex2svgPromise === "function";
+  }
+  function whenMathJaxReady() {
+    if (typeof window === "undefined") {
+      return Promise.resolve();
+    }
+    if (window.MathJax?.startup?.promise) {
+      return window.MathJax.startup.promise;
+    }
+    if (mathJaxTexToSvgAvailable()) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      let attempts = 0;
+      const timer = window.setInterval(() => {
+        if (mathJaxTexToSvgAvailable() || attempts++ > 200) {
+          window.clearInterval(timer);
+          resolve();
+        }
+      }, 50);
+    });
+  }
+  function mathJaxDisplayFontSize(className) {
+    const base = String(className || "").includes("edge") ? VISUAL_DEFAULTS.edgeLabelFontSize : VISUAL_DEFAULTS.labelFontSize;
+    return base * VISUAL_DEFAULTS.mathLabelFontScale;
+  }
+  function parseMathJaxSvgLength(value, emPixels) {
+    if (value == null || value === "") {
+      return 0;
+    }
+    const raw = String(value).trim();
+    const match = raw.match(/^([+-]?\d*\.?\d+(?:e[-+]?\d+)?)\s*(ex|em|px)?$/i);
+    if (!match) {
+      return Number.parseFloat(raw) || 0;
+    }
+    const amount = Number.parseFloat(match[1]);
+    const unit = (match[2] || "px").toLowerCase();
+    if (unit === "ex") {
+      return amount * emPixels * 0.431;
+    }
+    if (unit === "em") {
+      return amount * emPixels;
+    }
+    return amount;
+  }
+  async function materializePendingMathLabels(root) {
+    if (!root?.querySelectorAll) {
+      return;
+    }
+    const pending = [...root.querySelectorAll("[data-math-tex]")];
+    if (!pending.length) {
+      return;
+    }
+    await whenMathJaxReady();
+    if (!mathJaxTexToSvgAvailable()) {
+      return;
+    }
+    await Promise.all(pending.map(async (group) => {
+      const tex = group.dataset.mathTex;
+      if (!tex) {
+        return;
+      }
+      try {
+        const fontSize = mathJaxDisplayFontSize(
+          group.getAttribute("class")?.replace("feynman-diagram__label--math-pending", "").trim()
+        );
+        const mathNode = await window.MathJax.tex2svgPromise(tex, {
+          display: false,
+          em: fontSize,
+          ex: fontSize * 0.431
         });
-        const TEX_BRACE_METRICS = Object.freeze({
-          centerX: 4.4234125,
-          topMinY: 9963e-6,
-          bottomMaxY: 8.956413,
-          topAdvance: 8.966467,
-          extenderAdvance: 2.988822,
-          middleAdvance: 17.932934,
-          baseHeight: 35.855814,
-          targetScale: 1.45
+        const replacement = embedMathJaxSvgGroup(mathNode, {
+          x: Number(group.dataset.labelX),
+          y: Number(group.dataset.labelY),
+          anchor: group.dataset.labelAnchor || "middle",
+          className: group.getAttribute("class")?.replace("feynman-diagram__label--math-pending", "").trim(),
+          idPrefix: `feynman-math-${mathLabelSerial += 1}`
         });
-        const BRACE_LABEL_PADDING = VISUAL_DEFAULTS.labelFontSize * 0.68;
-        const BRACE_SIDE_GAP = VISUAL_DEFAULTS.labelHorizontalOffset + 34;
-        const TEX_BRACE_PATHS = Object.freeze({
-          left: {
-            top: "M5.021171 4.513076C5.021171 3.696139 5.240349 1.793275 7.013699 .537983C7.143213 .438356 7.153176 .428394 7.153176 .249066C7.153176 .019925 7.143213 .009963 6.894147 .009963H6.734745C4.592777 1.165629 3.825654 3.048568 3.825654 4.513076V8.797011C3.825654 9.05604 3.835616 9.066002 4.104608 9.066002H4.742217C5.011208 9.066002 5.021171 9.05604 5.021171 8.797011V4.513076Z",
-            middle: "M3.825654 17.763387C3.825654 18.022416 3.835616 18.032379 4.104608 18.032379H4.742217C5.011208 18.032379 5.021171 18.022416 5.021171 17.763387V13.559153C5.021171 12.353674 4.513076 10.321295 2.281445 8.966376C4.533001 7.601494 5.021171 5.549191 5.021171 4.373599V.169365C5.021171-.089664 5.011208-.099626 4.742217-.099626H4.104608C3.835616-.099626 3.825654-.089664 3.825654 .169365V4.383562C3.825654 5.220423 3.646326 7.292653 1.8132 8.687422C1.703611 8.777086 1.693649 8.787049 1.693649 8.966376S1.703611 9.155666 1.8132 9.24533C2.072229 9.444583 2.759651 9.972603 3.237858 10.978829C3.626401 11.775841 3.825654 12.662516 3.825654 13.549191V17.763387Z",
-            bottom: "M6.894147 8.956413C7.143213 8.956413 7.153176 8.946451 7.153176 8.71731C7.153176 8.537983 7.143213 8.52802 7.103362 8.498132C6.794521 8.268991 6.07721 7.760897 5.608966 6.844334C5.220423 6.087173 5.021171 5.32005 5.021171 4.4533V.169365C5.021171-.089664 5.011208-.099626 4.742217-.099626H4.104608C3.835616-.099626 3.825654-.089664 3.825654 .169365V4.4533C3.825654 5.927771 4.592777 7.81071 6.734745 8.956413H6.894147Z"
-          },
-          right: {
-            top: "M3.825654 8.797011C3.825654 9.05604 3.835616 9.066002 4.104608 9.066002H4.742217C5.011208 9.066002 5.021171 9.05604 5.021171 8.797011V4.513076C5.021171 3.048568 4.254047 1.165629 2.11208 .009963H1.96264C1.703611 .009963 1.693649 .019925 1.693649 .249066C1.693649 .428394 1.703611 .438356 1.743462 .468244C2.052304 .697385 2.769614 1.205479 3.237858 2.122042C3.506849 2.660025 3.825654 3.437111 3.825654 4.513076V8.797011Z",
-            middle: "M5.021171 13.549191C5.021171 12.712329 5.200498 10.6401 7.033624 9.24533C7.143213 9.155666 7.153176 9.145704 7.153176 8.966376S7.143213 8.777086 7.033624 8.687422C6.774595 8.488169 6.087173 7.960149 5.608966 6.953923C5.220423 6.156912 5.021171 5.270237 5.021171 4.383562V.169365C5.021171-.089664 5.011208-.099626 4.742217-.099626H4.104608C3.835616-.099626 3.825654-.089664 3.825654 .169365V4.373599C3.825654 5.579078 4.333748 7.611457 6.56538 8.966376C4.313823 10.331258 3.825654 12.383562 3.825654 13.559153V17.763387C3.825654 18.022416 3.835616 18.032379 4.104608 18.032379H4.742217C5.011208 18.032379 5.021171 18.022416 5.021171 17.763387V13.549191Z",
-            bottom: "M3.825654 4.4533C3.825654 5.32005 3.58655 7.193026 1.833126 8.428394C1.703611 8.52802 1.693649 8.537983 1.693649 8.71731C1.693649 8.946451 1.703611 8.956413 1.96264 8.956413H2.11208C4.26401 7.800747 5.021171 5.917808 5.021171 4.4533V.169365C5.021171-.089664 5.011208-.099626 4.742217-.099626H4.104608C3.835616-.099626 3.825654-.089664 3.825654 .169365V4.4533Z"
-          },
-          extender: "M5.021171 .169365C5.021171-.089664 5.011208-.099626 4.742217-.099626H4.104608C3.835616-.099626 3.825654-.089664 3.825654 .169365V2.819427C3.825654 3.078456 3.835616 3.088418 4.104608 3.088418H4.742217C5.011208 3.088418 5.021171 3.078456 5.021171 2.819427V.169365Z"
-        });
-        const BLOB_HATCH_PATTERNS = Object.freeze({
-          diagonal: {
-            size: 8,
-            paths: ["M -2 10 L 10 -2"]
-          },
-          "diagonal-reverse": {
-            size: 8,
-            paths: ["M -2 -2 L 10 10"]
-          },
-          cross: {
-            size: 8,
-            paths: ["M -2 10 L 10 -2", "M -2 -2 L 10 10"]
-          },
-          horizontal: {
-            size: 7,
-            paths: ["M 0 2 L 7 2"]
-          },
-          vertical: {
-            size: 7,
-            paths: ["M 2 0 L 2 7"]
-          },
-          grid: {
-            size: 8,
-            paths: ["M 0 2 L 8 2", "M 2 0 L 2 8"]
-          }
-        });
-        let diagramSerial = 0;
-        let mathLabelSerial = 0;
-        function createEmptyFeynmanDiagram() {
-          return {
-            incoming: [],
-            outgoing: [],
-            edges: [],
-            labels: {},
-            braces: [],
-            manualPositions: {},
-            vertices: {},
-            options: { ...DEFAULT_DIAGRAM_OPTIONS },
-            errors: [],
-            warnings: []
-          };
-        }
-        function parseFeynman(source) {
-          return new FeynmanParser(source, {
-            createEmptyFeynmanDiagram,
-            matchEdgeCommand,
-            parseAlignmentCommand,
-            parseBrace,
-            parseDiagramOptions,
-            parseEdges,
-            parseExplicitTikzOrientationCommand,
-            parseLabels,
-            parseManualPosition,
-            parseTikzOrientationCommand,
-            parseVertices,
-            setDiagramOption,
-            isTikzOrientationCommand
-          }).parse();
-        }
-        const layoutEngine = createLayoutEngine({
-          applyParallelPropagatorCurves,
-          finalizeLayout,
-          layoutFeynmanPreparedFallbackRaw,
-          layoutFeynmanPreparedRaw,
-          profileNow,
-          resolveLayoutOptions
-        });
-        async function layoutFeynman(diagram, options) {
-          return layoutEngine.layoutFeynman(diagram, options);
-        }
-        function layoutFeynmanFallbackSync(diagram, options) {
-          return layoutEngine.layoutFeynmanFallbackSync(diagram, options);
-        }
-        async function layoutFeynmanPreparedRaw(diagram, layoutOptions, prepared) {
-          const loopCandidateLayout = layoutLoopCandidate(diagram, layoutOptions, prepared);
-          if (loopCandidateLayout) {
-            return loopCandidateLayout;
-          }
-          const multiloopLayout = layoutMultiloopCandidate(diagram, layoutOptions, prepared);
-          if (multiloopLayout) {
-            return multiloopLayout;
-          }
-          if (shouldUseSymmetricContactLayout(prepared)) {
-            return layoutSymmetricContact(diagram, layoutOptions, prepared);
-          }
-          if (shouldUseSymmetricUnclassifiedLayout(prepared)) {
-            return layoutSymmetricUnclassifiedRefinement(diagram, layoutOptions, prepared);
-          }
-          if (shouldUseSymmetricTreeLayout(prepared)) {
-            return layoutSymmetricTree(diagram, layoutOptions, prepared);
-          }
-          if (layoutOptions.layout === "tree") {
-            return layoutTree(diagram, layoutOptions);
-          }
-          return layoutFeynmanWithElk(diagram, layoutOptions, prepared);
-        }
-        function layoutFeynmanPreparedFallbackRaw(diagram, layoutOptions, prepared) {
-          const loopCandidateLayout = layoutLoopCandidate(diagram, layoutOptions, prepared);
-          if (loopCandidateLayout) {
-            return loopCandidateLayout;
-          }
-          const multiloopLayout = layoutMultiloopCandidate(diagram, layoutOptions, prepared);
-          if (multiloopLayout) {
-            return multiloopLayout;
-          }
-          if (shouldUseSymmetricContactLayout(prepared)) {
-            return layoutSymmetricContact(diagram, layoutOptions, prepared);
-          }
-          if (shouldUseSymmetricUnclassifiedLayout(prepared)) {
-            return layoutSymmetricUnclassifiedRefinement(diagram, layoutOptions, prepared);
-          }
-          if (shouldUseSymmetricTreeLayout(prepared)) {
-            return layoutSymmetricTree(diagram, layoutOptions, prepared);
-          }
-          return layoutFeynmanFallbackRaw(diagram, layoutOptions);
-        }
-        function layoutLoopCandidate(diagram, layoutOptions, prepared) {
-          const selection = selectLoopCandidateLayout(prepared, layoutOptions);
-          if (!selection) {
-            return null;
-          }
-          prepared.loopCandidateSelection = selection.selection;
-          applyLoopCandidateCurves(diagram, selection.selection.selected);
-          return selection.layout;
-        }
-        function layoutMultiloopCandidate(diagram, layoutOptions, prepared) {
-          const selection = selectMultiloopLayout(prepared, layoutOptions);
-          if (!selection) {
-            return null;
-          }
-          prepared.multiloopCandidateSelection = selection.selection;
-          return selection.layout;
-        }
-        function layoutFeynmanFallbackRaw(diagram, layoutOptions) {
-          if (layoutOptions.layout === "spring" || layoutOptions.layout === "spring-electrical") {
-            return layoutSpring(diagram, layoutOptions, {
-              electrical: layoutOptions.layout === "spring-electrical"
-            });
-          }
-          if (layoutOptions.layout === "tree") {
-            return layoutTree(diagram, layoutOptions);
-          }
-          return layoutLayered(diagram, layoutOptions);
-        }
-        async function layoutFeynmanWithElk(diagram, layoutOptions, prepared) {
-          return layoutWithElk(diagram, layoutOptions, prepared, {
-            buildSemanticElkGraph,
-            elkNodeDimensions,
-            normalizeElkLayout
-          });
-        }
-        function applyParallelPropagatorCurves(diagram, prepared) {
-          (prepared.parallelCurvePlan || []).forEach((assignment) => {
-            const edge = diagram.edges[assignment.edgeIndex];
-            if (!edge || edge.hidden || edge.curve || Number.isFinite(Number(edge.outAngle)) || Number.isFinite(Number(edge.inAngle))) {
-              return;
-            }
-            edge.curve = {
-              side: assignment.side,
-              amount: assignment.amount
-            };
-            edge.autoParallelCurve = true;
-          });
-        }
-        function applyLoopCandidateCurves(diagram, selectedCandidate) {
-          (selectedCandidate?.curvePlan || []).forEach((assignment) => {
-            const edge = diagram.edges[assignment.edgeIndex];
-            if (!edge || edge.hidden || edge.curve || Number.isFinite(Number(edge.outAngle)) || Number.isFinite(Number(edge.inAngle))) {
-              return;
-            }
-            edge.curve = {
-              side: assignment.side,
-              amount: assignment.amount,
-              shape: assignment.shape
-            };
-            edge.autoLoopCurve = true;
-          });
-        }
-        function profileNow() {
-          return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
-        }
-        function resolveLayoutOptions(diagram, options) {
-          const merged = {
-            ...DEFAULT_DIAGRAM_OPTIONS,
-            ...diagram.options || {},
-            ...options || {}
-          };
-          const size = SIZE_PRESETS[merged.size] || SIZE_PRESETS.medium;
-          const incomingCount = Math.max(diagram.incoming.length, 1);
-          const outgoingCount = Math.max(diagram.outgoing.length, 1);
-          const orientation2 = normalizeOrientation(merged.orientation) || DEFAULT_DIAGRAM_OPTIONS.orientation;
-          const tikzOrientation = normalizeTikzOrientation(merged.tikzOrientation || merged.tikz_orientation);
-          const alignments = normalizeAlignmentConstraints(merged.alignments || merged.alignmentConstraints);
-          const portrait = orientation2.startsWith("vertical") || tikzOrientation?.axis === "vertical";
-          const width = merged.width ?? (portrait ? size.minHeight : size.width);
-          const defaultHeight = Math.max(size.minHeight, 70 + Math.max(incomingCount, outgoingCount) * size.externalGap);
-          const height = merged.height ?? (portrait ? Math.max(size.width, defaultHeight) : defaultHeight);
-          const defaultMarginX = portrait ? Math.min(size.marginX, size.marginY) : size.marginX;
-          return {
-            layout: normalizeLayoutName(merged.layout) || DEFAULT_DIAGRAM_OPTIONS.layout,
-            orientation: orientation2,
-            width,
-            height,
-            marginX: merged.margin_x ?? merged.marginX ?? defaultMarginX,
-            marginY: merged.margin_y ?? merged.marginY ?? size.marginY,
-            tikzOrientation,
-            alignments,
-            orientationMode: merged.orientationMode,
-            direction: merged.direction,
-            deterministicSeed: merged.deterministicSeed,
-            debug: Boolean(merged.debug),
-            profile: Boolean(merged.profile),
-            quality: normalizeQuality(merged.quality),
-            preservePreviousLayout: Boolean(merged.preservePreviousLayout),
-            previousLayout: merged.previousLayout
-          };
-        }
-        function resolveRequestedLayout(diagram, options) {
-          const merged = {
-            ...DEFAULT_DIAGRAM_OPTIONS,
-            ...diagram.options || {},
-            ...options || {}
-          };
-          return normalizeLayoutName(merged.layout) || DEFAULT_DIAGRAM_OPTIONS.layout;
-        }
-        function normalizeAlignmentConstraints(value) {
-          if (!Array.isArray(value)) {
-            return [];
-          }
-          return value.map((constraint) => {
-            const axis = constraint?.axis === "vertical" ? "vertical" : constraint?.axis === "horizontal" ? "horizontal" : null;
-            const nodes = Array.isArray(constraint?.nodes) ? constraint.nodes.map((node) => String(node || "").trim()).filter(isNodeIdentifier) : [];
-            if (!axis || nodes.length < 2) {
-              return null;
-            }
-            return { axis, nodes };
-          }).filter(Boolean);
-        }
-        function diagramWithInferredTerminals(diagram, layout) {
-          if (layout === "tree") {
-            return diagram;
-          }
-          const inferred = inferExternalTerminals(diagram);
-          const incoming = mergeTerminalClassifications(diagram.incoming, inferred.incoming, diagram.outgoing);
-          const outgoing = mergeTerminalClassifications(diagram.outgoing, inferred.outgoing, incoming);
-          if (arraysEqual(incoming, diagram.incoming) && arraysEqual(outgoing, diagram.outgoing)) {
-            return diagram;
-          }
-          return {
-            ...diagram,
-            incoming,
-            outgoing,
-            inferredIncoming: incoming.filter((node) => !diagram.incoming.includes(node)),
-            inferredOutgoing: outgoing.filter((node) => !diagram.outgoing.includes(node))
-          };
-        }
-        function mergeTerminalClassifications(explicitNodes, inferredNodes, blockedNodes) {
-          const blocked = new Set(blockedNodes);
-          const merged = [];
-          explicitNodes.forEach((node) => {
-            if (!merged.includes(node)) {
-              merged.push(node);
-            }
-          });
-          inferredNodes.forEach((node) => {
-            if (!blocked.has(node) && !merged.includes(node)) {
-              merged.push(node);
-            }
-          });
-          return merged;
-        }
-        function inferExternalTerminals(diagram) {
-          const terminalByNode = /* @__PURE__ */ new Map();
-          const degrees = /* @__PURE__ */ new Map();
-          const visibleEdges = diagram.edges.filter((edge) => !edge.hidden && edge.from !== edge.to);
-          visibleEdges.forEach((edge, index) => {
-            degrees.set(edge.from, (degrees.get(edge.from) || 0) + 1);
-            degrees.set(edge.to, (degrees.get(edge.to) || 0) + 1);
-            terminalByNode.set(edge.from, {
-              node: edge.from,
-              kind: "incoming",
-              order: Math.min(terminalByNode.get(edge.from)?.order ?? index, index)
-            });
-            terminalByNode.set(edge.to, {
-              node: edge.to,
-              kind: "outgoing",
-              order: Math.min(terminalByNode.get(edge.to)?.order ?? index, index)
-            });
-          });
-          const incoming = [];
-          const outgoing = [];
-          terminalByNode.forEach((terminal, node) => {
-            if ((degrees.get(node) || 0) !== 1) {
-              return;
-            }
-            if (terminal.kind === "incoming") {
-              incoming.push(terminal);
-            } else {
-              outgoing.push(terminal);
-            }
-          });
-          return {
-            incoming: sortInferredTerminals(incoming),
-            outgoing: sortInferredTerminals(outgoing)
-          };
-        }
-        function sortInferredTerminals(terminals) {
-          return terminals.sort((a, b) => a.order - b.order || a.node.localeCompare(b.node)).map((terminal) => terminal.node);
-        }
-        function arraysEqual(left, right) {
-          return left.length === right.length && left.every((value, index) => value === right[index]);
-        }
-        function buildElkGraph(diagram, layoutOptions) {
-          const allNodes = Array.from(collectNodes(diagram));
-          return {
-            id: "markfeyn-root",
-            layoutOptions: elkGraphLayoutOptions(layoutOptions),
-            children: allNodes.map((node) => ({
-              id: node,
-              ...elkNodeDimensions(node, diagram),
-              layoutOptions: elkNodeLayoutOptions(node, diagram, layoutOptions)
-            })),
-            edges: diagram.edges.filter((edge) => edge.from !== edge.to).map((edge, index) => ({
-              id: `edge-${index}`,
-              sources: [edge.from],
-              targets: [edge.to],
-              layoutOptions: elkEdgeLayoutOptions(edge, layoutOptions)
-            }))
-          };
-        }
-        function elkGraphLayoutOptions(layoutOptions) {
-          const options = {
-            "elk.algorithm": elkAlgorithmForLayout2(layoutOptions.layout),
-            "elk.direction": "RIGHT",
-            "elk.randomSeed": "1",
-            "elk.separateConnectedComponents": "true",
-            "elk.spacing.nodeNode": String(layoutOptions.layout === "spring-electrical" ? 96 : 64),
-            "elk.padding": `[top=${layoutOptions.marginY},left=${layoutOptions.marginX},bottom=${layoutOptions.marginY},right=${layoutOptions.marginX}]`
-          };
-          if (layoutOptions.layout === "layered") {
-            options["elk.layered.spacing.nodeNodeBetweenLayers"] = "96";
-            options["elk.layered.spacing.edgeNodeBetweenLayers"] = "42";
-            options["elk.layered.nodePlacement.favorStraightEdges"] = "true";
-          }
-          if (layoutOptions.layout === "tree") {
-            options["elk.mrtree.searchOrder"] = "DFS";
-            options["elk.mrtree.weighting"] = "DESCENDANTS";
-          }
-          if (layoutOptions.layout === "spring" || layoutOptions.layout === "spring-electrical") {
-            options["elk.force.iterations"] = layoutOptions.layout === "spring-electrical" ? "160" : "100";
-            options["elk.force.repulsion"] = layoutOptions.layout === "spring-electrical" ? "1.2" : "0.6";
-          }
-          return options;
-        }
-        function elkAlgorithmForLayout2(layout) {
-          if (layout === "tree") {
-            return "mrtree";
-          }
-          if (layout === "spring" || layout === "spring-electrical") {
-            return "force";
-          }
-          return "layered";
-        }
-        function elkNodeDimensions(node, diagram) {
-          const definition = diagram.vertices?.[node] ?? null;
-          const shape = vertexDefinitionShape(definition);
-          if (shape === "blob" || shape === "disk") {
-            const radii = blobVertexRadii(shape, definition);
-            return {
-              width: Math.max(12, radii.rx * 2),
-              height: Math.max(12, radii.ry * 2)
-            };
-          }
-          return { width: 8, height: 8 };
-        }
-        function elkNodeLayoutOptions(node, diagram, layoutOptions) {
-          const options = {};
-          if (layoutOptions.layout === "layered") {
-            if (diagram.incoming.includes(node)) {
-              options["elk.layered.layering.layerConstraint"] = "FIRST";
-            }
-            if (diagram.outgoing.includes(node)) {
-              options["elk.layered.layering.layerConstraint"] = "LAST";
-            }
-          }
-          return options;
-        }
-        function elkEdgeLayoutOptions(edge, layoutOptions) {
-          if (layoutOptions.layout === "spring-electrical") {
-            return {
-              "elk.force.repulsivePower": "2"
-            };
-          }
-          return {};
-        }
-        function normalizeElkLayout(diagram, layoutOptions, elkGraph) {
-          const { width, height } = layoutOptions;
-          const axes = diagramAxes(layoutOptions);
-          const positions = {};
-          const allNodes = Array.from(collectNodes(diagram));
-          const rawPositions = elkRawPositions(elkGraph);
-          const incoming = new Set(diagram.incoming);
-          const outgoing = new Set(diagram.outgoing);
-          const unclassified = new Set(diagram.unclassified || []);
-          const manual = new Set(Object.keys(diagram.manualPositions || {}));
-          const internalNodes = allNodes.filter((node) => !incoming.has(node) && !outgoing.has(node) && !unclassified.has(node));
-          const sourceNodes = internalNodes.length && !unclassified.size ? internalNodes : allNodes;
-          const sourceBounds = boundsForNodes(sourceNodes, rawPositions);
-          const crossBounds = boundsForAxis(allNodes, rawPositions, "y");
-          const layerRange = elkInternalLayerRange(diagram, axes);
-          placeExternalNodes(diagram.incoming, axes.layerStart, axes.crossStart, axes.crossEnd, "incoming", axes, positions);
-          placeExternalNodes(diagram.outgoing, axes.layerEnd, axes.crossStart, axes.crossEnd, "outgoing", axes, positions);
-          internalNodes.forEach((node) => {
-            const raw = rawPositions.get(node) || fallbackRawPosition(rawPositions, sourceBounds);
-            const layer = scaleCoordinate(raw.x, sourceBounds.minX, sourceBounds.maxX, layerRange.start, layerRange.end);
-            const cross = scaleCoordinate(raw.y, crossBounds.min, crossBounds.max, axes.crossStart, axes.crossEnd);
-            positions[node] = axes.point(layer, cross, "internal");
-          });
-          allNodes.forEach((node) => {
-            if (positions[node] || manual.has(node)) {
-              return;
-            }
-            const raw = rawPositions.get(node) || fallbackRawPosition(rawPositions, sourceBounds);
-            const layer = scaleCoordinate(raw.x, sourceBounds.minX, sourceBounds.maxX, layerRange.start, layerRange.end);
-            const cross = scaleCoordinate(raw.y, crossBounds.min, crossBounds.max, axes.crossStart, axes.crossEnd);
-            const kind = nodeKind(node, diagram);
-            positions[node] = axes.point(layer, cross, kind);
-          });
-          applyManualPositions(positions, diagram, layoutOptions);
-          applyLayoutNormalizations(diagram, positions, axes, layoutOptions);
-          return { width, height, positions, options: layoutOptions };
-        }
-        function usesSpringStyleNormalization(layoutOptions) {
-          return layoutOptions.layout === "spring" || layoutOptions.layout === "spring-electrical";
-        }
-        function applyLayoutNormalizations(diagram, positions, axes, layoutOptions) {
-          centerDefaultSpringExchangeFans(diagram, positions, axes, layoutOptions);
-          centerTikzOrientationEndpointFans(diagram, positions, axes, layoutOptions);
-          if (usesSpringStyleNormalization(layoutOptions)) {
-            alignHorizontalBackboneInternals(diagram, positions, axes, layoutOptions);
-            orientHorizontalBackboneInternals(diagram, positions, axes, layoutOptions);
-            fitCurvedInternalEdgeGroupsToViewBox(diagram, positions, axes, layoutOptions);
-          }
-          straightenSingleTerminalLegs(diagram, positions, axes);
-          if (!layoutOptions.tikzOrientation) {
-            alignVerticalProcessTerminalStacks(diagram, positions, axes, layoutOptions);
-          }
-          straightenSingleTerminalLegs(diagram, positions, axes);
-          alignInternalsAcrossInvisibleTerminalPairs(diagram, positions, axes);
-          enforceDeclaredExternalOrder(diagram, positions, axes);
-          if (!layoutOptions.tikzOrientation) {
-            alignInternalsToDeclaredTerminalRows(diagram, positions, axes, layoutOptions);
-          }
-          applyAlignmentConstraints(diagram, positions, layoutOptions);
-          fitLayoutTranslationToEdgeBounds(diagram, positions, layoutOptions);
-        }
-        function elkRawPositions(elkGraph) {
-          const positions = /* @__PURE__ */ new Map();
-          (elkGraph.children || []).forEach((child) => {
-            positions.set(child.id, {
-              x: (child.x || 0) + (child.width || 0) / 2,
-              y: (child.y || 0) + (child.height || 0) / 2
-            });
-          });
-          return positions;
-        }
-        function boundsForNodes(nodes, rawPositions) {
-          const xs = [];
-          const ys = [];
-          nodes.forEach((node) => {
-            const raw = rawPositions.get(node);
-            if (raw) {
-              xs.push(raw.x);
-              ys.push(raw.y);
-            }
-          });
-          return {
-            minX: xs.length ? Math.min(...xs) : 0,
-            maxX: xs.length ? Math.max(...xs) : 0,
-            minY: ys.length ? Math.min(...ys) : 0,
-            maxY: ys.length ? Math.max(...ys) : 0
-          };
-        }
-        function boundsForAxis(nodes, rawPositions, axis) {
-          const values = [];
-          nodes.forEach((node) => {
-            const raw = rawPositions.get(node);
-            if (raw) {
-              values.push(raw[axis]);
-            }
-          });
-          return {
-            min: values.length ? Math.min(...values) : 0,
-            max: values.length ? Math.max(...values) : 0
-          };
-        }
-        function fallbackRawPosition(rawPositions, bounds) {
-          if (rawPositions.size) {
-            return {
-              x: (bounds.minX + bounds.maxX) / 2,
-              y: (bounds.minY + bounds.maxY) / 2
-            };
-          }
-          return { x: 0, y: 0 };
-        }
-        function scaleCoordinate(value, sourceMin, sourceMax, targetStart, targetEnd) {
-          if (Math.abs(sourceMax - sourceMin) < 1e-3) {
-            return (targetStart + targetEnd) / 2;
-          }
-          return targetStart + (value - sourceMin) * (targetEnd - targetStart) / (sourceMax - sourceMin);
-        }
-        function elkInternalLayerRange(diagram, axes) {
-          if (!diagram.incoming.length && !diagram.outgoing.length) {
-            return { start: axes.layerStart, end: axes.layerEnd };
-          }
-          const layerSpan = axes.layerEnd - axes.layerStart;
-          const terminalGap = Math.min(84, Math.max(48, Math.abs(layerSpan) * 0.24));
-          const direction = Math.sign(layerSpan) || 1;
-          return {
-            start: axes.layerStart + direction * terminalGap,
-            end: axes.layerEnd - direction * terminalGap
-          };
-        }
-        function centerDefaultSpringExchangeFans(diagram, positions, axes, layoutOptions) {
-          if (layoutOptions.layout !== "spring" && layoutOptions.layout !== "spring-electrical" || !layoutOptions.orientation.startsWith("horizontal") || diagram.incoming.length !== 2 || diagram.outgoing.length !== 2) {
-            return;
-          }
-          const incomingInternals = internalsConnectedToTerminalSet(diagram, "incoming", diagram.incoming);
-          const outgoingInternals = internalsConnectedToTerminalSet(diagram, "outgoing", diagram.outgoing);
-          if (incomingInternals.length !== 1 || outgoingInternals.length !== 1) {
-            return;
-          }
-          const incomingInternal = incomingInternals[0];
-          const outgoingInternal = outgoingInternals[0];
-          if (incomingInternal === outgoingInternal || !visibleInternalEdgeConnects(diagram, incomingInternal, outgoingInternal)) {
-            return;
-          }
-          centerMultiTerminalFanJunctions(
-            diagram,
-            positions,
-            axes,
-            /* @__PURE__ */ new Set([incomingInternal, outgoingInternal])
-          );
-        }
-        function internalsConnectedToTerminalSet(diagram, kind, terminals) {
-          const terminalSet = new Set(terminals);
-          const terminalsByInternal = terminalNeighborsByInternal(diagram, kind);
-          return Array.from(terminalsByInternal.entries()).filter(([, connectedTerminals]) => connectedTerminals.size === terminalSet.size && Array.from(connectedTerminals).every((terminal) => terminalSet.has(terminal))).map(([internal]) => internal);
-        }
-        function visibleInternalEdgeConnects(diagram, first, second) {
-          return diagram.edges.some((edge) => {
-            if (edge.hidden) {
-              return false;
-            }
-            return edge.from === first && edge.to === second || edge.from === second && edge.to === first;
-          });
-        }
-        function centerTikzOrientationEndpointFans(diagram, positions, axes, layoutOptions) {
-          const orientation2 = layoutOptions.tikzOrientation;
-          if (!orientation2) {
-            return;
-          }
-          centerMultiTerminalFanJunctions(
-            diagram,
-            positions,
-            axes,
-            /* @__PURE__ */ new Set([orientation2.from, orientation2.to])
-          );
-        }
-        function centerMultiTerminalFanJunctions(diagram, positions, axes, eligibleInternals) {
-          const manual = new Set(Object.keys(diagram.manualPositions || {}));
-          const targetCrossesByInternal = /* @__PURE__ */ new Map();
-          const terminalKinds = ["incoming", "outgoing"];
-          terminalKinds.forEach((kind) => {
-            const terminalsByInternal = terminalNeighborsByInternal(diagram, kind);
-            terminalsByInternal.forEach((terminals, internal) => {
-              if (terminals.size < 2 || !eligibleInternals.has(internal) || manual.has(internal) || !positions[internal]) {
-                return;
-              }
-              const crosses = Array.from(terminals).map((terminal) => positions[terminal]).filter(Boolean).map((position) => axes.crossOf(position));
-              if (crosses.length < 2) {
-                return;
-              }
-              if (!targetCrossesByInternal.has(internal)) {
-                targetCrossesByInternal.set(internal, []);
-              }
-              targetCrossesByInternal.get(internal).push(
-                crosses.reduce((sum, cross) => sum + cross, 0) / crosses.length
-              );
-            });
-          });
-          targetCrossesByInternal.forEach((crosses, internal) => {
-            if (positions[internal]) {
-              axes.setCross(
-                positions[internal],
-                crosses.reduce((sum, cross) => sum + cross, 0) / crosses.length
-              );
-            }
-          });
-        }
-        function internalAdjacency(diagram) {
-          const adjacency = /* @__PURE__ */ new Map();
-          const addNeighbor = (first, second) => {
-            if (!adjacency.has(first)) {
-              adjacency.set(first, /* @__PURE__ */ new Set());
-            }
-            adjacency.get(first).add(second);
-          };
-          diagram.edges.forEach((edge) => {
-            if (edge.hidden) {
-              return;
-            }
-            const fromKind = nodeKind(edge.from, diagram);
-            const toKind = nodeKind(edge.to, diagram);
-            if (fromKind === "internal" && toKind === "internal") {
-              addNeighbor(edge.from, edge.to);
-              addNeighbor(edge.to, edge.from);
-            }
-          });
-          return adjacency;
-        }
-        function internalsAdjacentToTerminals(diagram, kind) {
-          const internals = /* @__PURE__ */ new Set();
-          const terminalsByInternal = terminalNeighborsByInternal(diagram, kind);
-          terminalsByInternal.forEach((terminals, internal) => {
-            if (terminals.size > 0) {
-              internals.add(internal);
-            }
-          });
-          return internals;
-        }
-        function shortestInternalPath(adjacency, start, end) {
-          if (start === end) {
-            return [start];
-          }
-          const queue = [[start]];
-          const visited = /* @__PURE__ */ new Set([start]);
-          while (queue.length) {
-            const path = queue.shift();
-            const node = path[path.length - 1];
-            const neighbors = adjacency.get(node) || /* @__PURE__ */ new Set();
-            for (const neighbor of neighbors) {
-              if (visited.has(neighbor)) {
-                continue;
-              }
-              const nextPath = [...path, neighbor];
-              if (neighbor === end) {
-                return nextPath;
-              }
-              visited.add(neighbor);
-              queue.push(nextPath);
-            }
-          }
-          return null;
-        }
-        function mainHorizontalBackboneNodes(diagram) {
-          if (!diagram.incoming.length && !diagram.outgoing.length) {
-            return null;
-          }
-          const leftInternals = internalsAdjacentToTerminals(diagram, "incoming");
-          const rightInternals = internalsAdjacentToTerminals(diagram, "outgoing");
-          if (!leftInternals.size || !rightInternals.size) {
-            return null;
-          }
-          const adjacency = internalAdjacency(diagram);
-          let bestPath = null;
-          leftInternals.forEach((start) => {
-            rightInternals.forEach((end) => {
-              if (start === end) {
-                return;
-              }
-              const path = shortestInternalPath(adjacency, start, end);
-              if (!path) {
-                return;
-              }
-              if (!bestPath || path.length < bestPath.length) {
-                bestPath = path;
-              }
-            });
-          });
-          return bestPath;
-        }
-        function alignHorizontalBackboneInternals(diagram, positions, axes, layoutOptions) {
-          if (!layoutOptions.orientation.startsWith("horizontal")) {
-            return;
-          }
-          const backbone = mainHorizontalBackboneNodes(diagram);
-          if (!backbone || backbone.length < 1) {
-            return;
-          }
-          const manual = new Set(Object.keys(diagram.manualPositions || {}));
-          const positioned = backbone.map((node) => ({ node, position: positions[node] })).filter((entry) => entry.position);
-          if (!positioned.length) {
-            return;
-          }
-          const targetCross = positioned.reduce(
-            (sum, entry) => sum + axes.crossOf(entry.position),
-            0
-          ) / positioned.length;
-          positioned.forEach((entry) => {
-            if (!manual.has(entry.node)) {
-              axes.setCross(entry.position, targetCross);
-            }
-          });
-        }
-        function orientHorizontalBackboneInternals(diagram, positions, axes, layoutOptions) {
-          if (!layoutOptions.orientation.startsWith("horizontal")) {
-            return;
-          }
-          const backbone = mainHorizontalBackboneNodes(diagram);
-          const manual = new Set(Object.keys(diagram.manualPositions || {}));
-          if (!backbone || backbone.length < 2 || backbone.some((node) => !positions[node] || manual.has(node))) {
-            return;
-          }
-          const direction = Math.sign(axes.layerEnd - axes.layerStart) || 1;
-          const orderedLayers = backbone.map((node) => positions[node].x).sort((left, right) => direction * (left - right));
-          backbone.forEach((node, index) => {
-            positions[node].x = orderedLayers[index];
-          });
-        }
-        function curvedInternalEdgeGroups(diagram) {
-          const groups = /* @__PURE__ */ new Map();
-          diagram.edges.forEach((edge) => {
-            if (edge.hidden || !edge.curve) {
-              return;
-            }
-            const fromKind = nodeKind(edge.from, diagram);
-            const toKind = nodeKind(edge.to, diagram);
-            if (fromKind !== "internal" || toKind !== "internal") {
-              return;
-            }
-            const key = [edge.from, edge.to].sort().join("|");
-            if (!groups.has(key)) {
-              groups.set(key, {
-                nodes: [edge.from, edge.to].sort(),
-                edges: []
-              });
-            }
-            groups.get(key).edges.push(edge);
-          });
-          return groups;
-        }
-        function curveArcAmount(edge) {
-          if (!edge.curve) {
-            return 0;
-          }
-          return edge.curve.amount * (edge.looseness ?? 1);
-        }
-        function maxChordForCurvedEdgeGroup(edges, availableCross) {
-          const maxAmount = Math.max(...edges.map((edge) => curveArcAmount(edge)), 0);
-          if (maxAmount <= 0 || availableCross <= 0) {
-            return null;
-          }
-          const bilateral = edges.length >= 2;
-          if (bilateral) {
-            return availableCross / (2 * maxAmount) * 0.95;
-          }
-          return availableCross / 2 / maxAmount * 0.95;
-        }
-        function fitCurvedInternalEdgeGroupsToViewBox(diagram, positions, axes, layoutOptions) {
-          if (!layoutOptions.orientation.startsWith("horizontal")) {
-            return;
-          }
-          const manual = new Set(Object.keys(diagram.manualPositions || {}));
-          const availableCross = axes.crossEnd - axes.crossStart;
-          curvedInternalEdgeGroups(diagram).forEach(({ nodes, edges }) => {
-            const [firstNode, secondNode] = nodes;
-            const first = positions[firstNode];
-            const second = positions[secondNode];
-            if (!first || !second || nodes.some((node) => manual.has(node))) {
-              return;
-            }
-            const maxChord = maxChordForCurvedEdgeGroup(edges, availableCross);
-            const currentChord = Math.abs(first.x - second.x);
-            if (maxChord && currentChord > maxChord) {
-              const midLayer = (first.x + second.x) / 2;
-              const halfChord = maxChord / 2;
-              first.x = midLayer - halfChord;
-              second.x = midLayer + halfChord;
-            }
-            const targetCross = (axes.crossStart + axes.crossEnd) / 2;
-            axes.setCross(first, targetCross);
-            axes.setCross(second, targetCross);
-          });
-        }
-        function layoutEdgePathBounds(diagram, positions) {
-          const bounds = {
-            minX: Infinity,
-            maxX: -Infinity,
-            minY: Infinity,
-            maxY: -Infinity
-          };
-          let hasGeometry = false;
-          diagram.edges.forEach((edge) => {
-            if (edge.hidden) {
-              return;
-            }
-            const from = positions[edge.from];
-            const to = positions[edge.to];
-            if (!from || !to) {
-              return;
-            }
-            const numbers = edgePath(edge, from, to).match(/-?\d+(?:\.\d+)?/g);
-            if (!numbers) {
-              return;
-            }
-            numbers.map(Number).forEach((value, index) => {
-              if (index % 2 === 0) {
-                hasGeometry = true;
-                bounds.minX = Math.min(bounds.minX, value);
-                bounds.maxX = Math.max(bounds.maxX, value);
-                return;
-              }
-              bounds.minY = Math.min(bounds.minY, value);
-              bounds.maxY = Math.max(bounds.maxY, value);
-            });
-          });
-          return hasGeometry ? bounds : null;
-        }
-        function fitLayoutTranslationToEdgeBounds(diagram, positions, layoutOptions) {
-          const bounds = layoutEdgePathBounds(diagram, positions);
-          if (!bounds) {
-            return;
-          }
-          const minX = layoutOptions.marginX;
-          const maxX = layoutOptions.width - layoutOptions.marginX;
-          const minY = layoutOptions.marginY;
-          const maxY = layoutOptions.height - layoutOptions.marginY;
-          let offsetX = 0;
-          let offsetY = 0;
-          if (bounds.minX < minX) {
-            offsetX = minX - bounds.minX;
-          } else if (bounds.maxX > maxX) {
-            offsetX = maxX - bounds.maxX;
-          }
-          if (bounds.minY < minY) {
-            offsetY = minY - bounds.minY;
-          } else if (bounds.maxY > maxY) {
-            offsetY = maxY - bounds.maxY;
-          }
-          if (!offsetX && !offsetY) {
-            return;
-          }
-          Object.values(positions).forEach((position) => {
-            position.x += offsetX;
-            position.y += offsetY;
-          });
-        }
-        function straightenSingleTerminalLegs(diagram, positions, axes) {
-          const manual = new Set(Object.keys(diagram.manualPositions || {}));
-          const terminalKinds = ["incoming", "outgoing"];
-          terminalKinds.forEach((kind) => {
-            const terminalsByInternal = terminalNeighborsByInternal(diagram, kind, manual);
-            terminalsByInternal.forEach((terminals, internal) => {
-              if (terminals.size !== 1 || !positions[internal]) {
-                return;
-              }
-              const terminal = Array.from(terminals)[0];
-              if (!positions[terminal]) {
-                return;
-              }
-              if (canMoveTerminalCross(terminal, axes.crossOf(positions[internal]), positions, axes, kind)) {
-                axes.setCross(positions[terminal], axes.crossOf(positions[internal]));
-              }
-            });
-          });
-        }
-        function alignVerticalProcessTerminalStacks(diagram, positions, axes, layoutOptions) {
-          if (!layoutOptions.orientation.startsWith("vertical")) {
-            return;
-          }
-          const manual = new Set(Object.keys(diagram.manualPositions || {}));
-          const orderedInternals = [];
-          const terminalsByInternal = /* @__PURE__ */ new Map();
-          diagram.incoming.forEach((terminal) => {
-            const internals = visibleInternalNeighborsForTerminal(diagram, terminal, manual);
-            if (internals.length !== 1) {
-              return;
-            }
-            const internal = internals[0];
-            if (!orderedInternals.includes(internal)) {
-              orderedInternals.push(internal);
-            }
-            addTerminalForInternal(terminalsByInternal, internal, terminal);
-          });
-          diagram.outgoing.forEach((terminal) => {
-            const internals = visibleInternalNeighborsForTerminal(diagram, terminal, manual);
-            if (internals.length !== 1) {
-              return;
-            }
-            const internal = internals[0];
-            if (!orderedInternals.includes(internal)) {
-              orderedInternals.push(internal);
-            }
-            addTerminalForInternal(terminalsByInternal, internal, terminal);
-          });
-          if (orderedInternals.length < 2) {
-            return;
-          }
-          orderedInternals.forEach((internal, index) => {
-            const cross = crossCoordinateAt(index, orderedInternals.length, axes.crossStart, axes.crossEnd);
-            if (positions[internal] && !manual.has(internal)) {
-              axes.setCross(positions[internal], cross);
-            }
-            (terminalsByInternal.get(internal) || []).forEach((terminal) => {
-              if (positions[terminal] && !manual.has(terminal)) {
-                axes.setCross(positions[terminal], cross);
-              }
-            });
-          });
-        }
-        function addTerminalForInternal(terminalsByInternal, internal, terminal) {
-          if (!terminalsByInternal.has(internal)) {
-            terminalsByInternal.set(internal, []);
-          }
-          if (!terminalsByInternal.get(internal).includes(terminal)) {
-            terminalsByInternal.get(internal).push(terminal);
-          }
-        }
-        function alignInternalsAcrossInvisibleTerminalPairs(diagram, positions, axes) {
-          const manual = new Set(Object.keys(diagram.manualPositions || {}));
-          const terminalKinds = /* @__PURE__ */ new Set(["incoming", "outgoing"]);
-          diagram.edges.forEach((edge) => {
-            if (!edge.hidden) {
-              return;
-            }
-            const fromKind = nodeKind(edge.from, diagram);
-            const toKind = nodeKind(edge.to, diagram);
-            if (!terminalKinds.has(fromKind) || fromKind !== toKind) {
-              return;
-            }
-            const internalsFrom = visibleInternalNeighborsForTerminal(diagram, edge.from, manual);
-            const internalsTo = visibleInternalNeighborsForTerminal(diagram, edge.to, manual);
-            if (internalsFrom.length !== 1 || internalsTo.length !== 1) {
-              return;
-            }
-            const firstInternal = internalsFrom[0];
-            const secondInternal = internalsTo[0];
-            if (firstInternal === secondInternal || !positions[firstInternal] || !positions[secondInternal] || manual.has(firstInternal) || manual.has(secondInternal)) {
-              return;
-            }
-            const sharedLayer = (positions[firstInternal].x + positions[secondInternal].x) / 2;
-            positions[firstInternal].x = sharedLayer;
-            positions[secondInternal].x = sharedLayer;
-          });
-        }
-        function visibleInternalNeighborsForTerminal(diagram, terminal, excludedInternals = /* @__PURE__ */ new Set()) {
-          const neighbors = [];
-          diagram.edges.forEach((edge) => {
-            if (edge.hidden) {
-              return;
-            }
-            if (edge.from === terminal && nodeKind(edge.to, diagram) === "internal" && !excludedInternals.has(edge.to)) {
-              neighbors.push(edge.to);
-            }
-            if (edge.to === terminal && nodeKind(edge.from, diagram) === "internal" && !excludedInternals.has(edge.from)) {
-              neighbors.push(edge.from);
-            }
-          });
-          return neighbors;
-        }
-        function terminalNeighborsByInternal(diagram, kind, excludedTerminals = /* @__PURE__ */ new Set()) {
-          const terminalsByInternal = /* @__PURE__ */ new Map();
-          diagram.edges.forEach((edge) => {
-            if (edge.hidden) {
-              return;
-            }
-            const fromKind = nodeKind(edge.from, diagram);
-            const toKind = nodeKind(edge.to, diagram);
-            let terminal = null;
-            let internal = null;
-            if (fromKind === kind && toKind === "internal") {
-              terminal = edge.from;
-              internal = edge.to;
-            }
-            if (toKind === kind && fromKind === "internal") {
-              terminal = edge.to;
-              internal = edge.from;
-            }
-            if (!terminal || !internal || excludedTerminals.has(terminal)) {
-              return;
-            }
-            if (!terminalsByInternal.has(internal)) {
-              terminalsByInternal.set(internal, /* @__PURE__ */ new Set());
-            }
-            terminalsByInternal.get(internal).add(terminal);
-          });
-          return terminalsByInternal;
-        }
-        function canMoveTerminalCross(node, cross, positions, axes, kind) {
-          const minGap = 28;
-          return Object.entries(positions).every(([otherNode, position]) => otherNode === node || position.kind === "internal" || position.kind !== kind || Math.abs(axes.crossOf(position) - cross) >= minGap);
-        }
-        function finalizeLayout(diagram, layout, layoutOptions) {
-          applyTikzPostLayoutOrientation(diagram, layout, layoutOptions);
-          applyManualPositions(layout.positions, diagram, layoutOptions);
-          layout.options = layoutOptions;
-          return layout;
-        }
-        function applyManualPositions(positions, diagram, layoutOptions) {
-          Object.entries(diagram.manualPositions || {}).forEach(([node, position]) => {
-            const kind = nodeKind(node, diagram);
-            positions[node] = {
-              x: position.x,
-              y: position.y,
-              kind,
-              labelSide: labelSideForKind2(kind, layoutOptions.orientation)
-            };
-          });
-        }
-        function applyTikzPostLayoutOrientation(diagram, layout, layoutOptions) {
-          const orientation2 = layoutOptions.tikzOrientation;
-          if (!orientation2) {
-            return;
-          }
-          const from = layout.positions[orientation2.from];
-          const to = layout.positions[orientation2.to];
-          if (!from || !to) {
-            return;
-          }
-          const currentAngle = Math.atan2(to.y - from.y, to.x - from.x);
-          const targetAngle = degreesToRadians(orientation2.angle);
-          const rotation = targetAngle - currentAngle;
-          const pivot = { x: from.x, y: from.y };
-          Object.values(layout.positions).forEach((position) => {
-            rotatePositionAround(position, pivot, rotation);
-          });
-          if (orientation2.flip) {
-            Object.values(layout.positions).forEach((position) => {
-              reflectPositionAcrossLine(position, pivot, targetAngle);
-            });
-          }
-          fanTikzOrientationMixedTerminalPairs(diagram, layout, orientation2);
-          fanTikzOrientationProcessTerminalGroups(diagram, layout, orientation2);
-          enforceDeclaredExternalOrder(diagram, layout.positions, diagramAxes(layoutOptions));
-          fitLayoutPositions(layout, layoutOptions);
-        }
-        function fanTikzOrientationMixedTerminalPairs(diagram, layout, orientation2) {
-          const from = layout.positions[orientation2.from];
-          const to = layout.positions[orientation2.to];
-          if (!from || !to) {
-            return;
-          }
-          const axis = lineVector2(from, to);
-          const axisGap = clamp5(Math.min(layout.width, layout.height) * 0.24, 72, 104);
-          const fanGap = orientation2.axis === "vertical" ? clamp5(Math.min(layout.width, layout.height) * 0.45, 126, 150) : clamp5(Math.min(layout.width, layout.height) * 0.33, 84, 126);
-          [
-            { internal: orientation2.from, outward: -1 },
-            { internal: orientation2.to, outward: 1 }
-          ].forEach(({ internal, outward }) => {
-            const endpoint = layout.positions[internal];
-            const terminals = mixedTerminalPairForInternal(diagram, internal);
-            if (!endpoint || !terminals) {
-              return;
-            }
-            moveTerminalIntoOrientationFan(
-              layout.positions[terminals.incoming],
-              endpoint,
-              axis,
-              outward,
-              1,
-              axisGap,
-              fanGap
-            );
-            moveTerminalIntoOrientationFan(
-              layout.positions[terminals.outgoing],
-              endpoint,
-              axis,
-              outward,
-              -1,
-              axisGap,
-              fanGap
-            );
-          });
-        }
-        function mixedTerminalPairForInternal(diagram, internal) {
-          const terminals = { incoming: [], outgoing: [] };
-          const terminalKinds = /* @__PURE__ */ new Set(["incoming", "outgoing"]);
-          diagram.edges.forEach((edge) => {
-            if (edge.hidden) {
-              return;
-            }
-            let terminal = null;
-            if (edge.from === internal && terminalKinds.has(nodeKind(edge.to, diagram))) {
-              terminal = edge.to;
-            }
-            if (edge.to === internal && terminalKinds.has(nodeKind(edge.from, diagram))) {
-              terminal = edge.from;
-            }
-            if (!terminal) {
-              return;
-            }
-            terminals[nodeKind(terminal, diagram)].push(terminal);
-          });
-          if (terminals.incoming.length !== 1 || terminals.outgoing.length !== 1) {
-            return null;
-          }
-          return {
-            incoming: terminals.incoming[0],
-            outgoing: terminals.outgoing[0]
-          };
-        }
-        function fanTikzOrientationProcessTerminalGroups(diagram, layout, orientation2) {
-          const from = layout.positions[orientation2.from];
-          const to = layout.positions[orientation2.to];
-          if (!from || !to) {
-            return;
-          }
-          const axis = lineVector2(from, to);
-          const axisGap = clamp5(Math.min(layout.width, layout.height) * 0.24, 72, 104);
-          const fanGap = clamp5(Math.min(layout.width, layout.height) * 0.33, 84, 126);
-          [
-            { internal: orientation2.from, kind: "incoming", outward: -1 },
-            { internal: orientation2.to, kind: "outgoing", outward: 1 }
-          ].forEach(({ internal, kind, outward }) => {
-            const endpoint = layout.positions[internal];
-            const terminals = Array.from(terminalNeighborsByInternal(diagram, kind).get(internal) || []).filter((terminal) => layout.positions[terminal]).sort((left, right) => terminalDeclarationOrder(diagram, kind, left) - terminalDeclarationOrder(diagram, kind, right) || left.localeCompare(right));
-            if (!endpoint || terminals.length < 2) {
-              return;
-            }
-            terminals.forEach((terminal, index) => {
-              const side = terminals.length === 1 ? 0 : -1 + 2 * index / (terminals.length - 1);
-              const position = layout.positions[terminal];
-              position.x = endpoint.x + axis.ux * axisGap * outward + axis.px * fanGap * side;
-              position.y = endpoint.y + axis.uy * axisGap * outward + axis.py * fanGap * side;
-            });
-          });
-        }
-        function terminalDeclarationOrder(diagram, kind, terminal) {
-          const list = kind === "incoming" ? diagram.incoming : diagram.outgoing;
-          const index = list.indexOf(terminal);
-          return index === -1 ? Number.MAX_SAFE_INTEGER : index;
-        }
-        function moveTerminalIntoOrientationFan(position, endpoint, axis, outward, side, axisGap, fanGap) {
-          if (!position) {
-            return;
-          }
-          position.x = endpoint.x + axis.ux * axisGap * outward + axis.px * fanGap * side;
-          position.y = endpoint.y + axis.uy * axisGap * outward + axis.py * fanGap * side;
-        }
-        function rotatePositionAround(position, pivot, angle) {
-          const dx = position.x - pivot.x;
-          const dy = position.y - pivot.y;
-          const cos = Math.cos(angle);
-          const sin = Math.sin(angle);
-          position.x = pivot.x + dx * cos - dy * sin;
-          position.y = pivot.y + dx * sin + dy * cos;
-        }
-        function reflectPositionAcrossLine(position, pivot, angle) {
-          const ux = Math.cos(angle);
-          const uy = Math.sin(angle);
-          const dx = position.x - pivot.x;
-          const dy = position.y - pivot.y;
-          const parallel = dx * ux + dy * uy;
-          const projection = {
-            x: pivot.x + parallel * ux,
-            y: pivot.y + parallel * uy
-          };
-          position.x = 2 * projection.x - position.x;
-          position.y = 2 * projection.y - position.y;
-        }
-        function fitLayoutPositions(layout, layoutOptions) {
-          const positions = Object.values(layout.positions);
-          if (!positions.length) {
-            return;
-          }
-          const bounds = positionBounds(positions);
-          const availableWidth = Math.max(1, layoutOptions.width - 2 * layoutOptions.marginX);
-          const availableHeight = Math.max(1, layoutOptions.height - 2 * layoutOptions.marginY);
-          const scale = Math.min(
-            1,
-            availableWidth / Math.max(1, bounds.maxX - bounds.minX),
-            availableHeight / Math.max(1, bounds.maxY - bounds.minY)
-          );
-          const scaledWidth = (bounds.maxX - bounds.minX) * scale;
-          const scaledHeight = (bounds.maxY - bounds.minY) * scale;
-          const offsetX = layoutOptions.marginX + (availableWidth - scaledWidth) / 2 - bounds.minX * scale;
-          const offsetY = layoutOptions.marginY + (availableHeight - scaledHeight) / 2 - bounds.minY * scale;
-          positions.forEach((position) => {
-            position.x = position.x * scale + offsetX;
-            position.y = position.y * scale + offsetY;
-          });
-        }
-        function positionBounds(positions) {
-          return {
-            minX: Math.min(...positions.map((position) => position.x)),
-            maxX: Math.max(...positions.map((position) => position.x)),
-            minY: Math.min(...positions.map((position) => position.y)),
-            maxY: Math.max(...positions.map((position) => position.y))
-          };
-        }
-        function degreesToRadians(degrees) {
-          return degrees * Math.PI / 180;
-        }
-        function layoutSymmetricContact(diagram, layoutOptions, prepared) {
-          const { width, height, marginX, marginY } = layoutOptions;
-          const positions = initialFixedPositions(diagram, diagramAxes(layoutOptions));
-          const structuralCenter = {
-            x: width / 2,
-            y: height / 2
-          };
-          const centerNode = prepared.topology.internalVertices[0] || prepared.topology.graphCenters[0];
-          const externalNodes = orderedSemanticExternalNodes(prepared);
-          const radius = Math.max(
-            54,
-            Math.min(width - 2 * marginX, height - 2 * marginY) * 0.38
-          );
-          if (centerNode && !positions[centerNode]) {
-            positions[centerNode] = {
-              ...structuralCenter,
-              kind: nodeKind(centerNode, diagram),
-              labelSide: labelSideForKind2(nodeKind(centerNode, diagram), layoutOptions.orientation)
-            };
-          }
-          const contactCenter = centerNode && positions[centerNode] ? positions[centerNode] : structuralCenter;
-          placeNodesOnRing(
-            externalNodes,
-            contactCenter,
-            radius,
-            positions,
-            diagram,
-            layoutOptions,
-            contactStarStartAngle(externalNodes.length)
-          );
-          Array.from(collectNodes(diagram)).sort().forEach((node) => {
-            if (!positions[node]) {
-              positions[node] = {
-                ...contactCenter,
-                kind: nodeKind(node, diagram),
-                labelSide: labelSideForKind2(nodeKind(node, diagram), layoutOptions.orientation)
-              };
-            }
-          });
-          return { width, height, positions, options: layoutOptions };
-        }
-        function contactStarStartAngle(count) {
-          if (count % 2 === 1) {
-            const medianIndex = Math.floor(count / 2);
-            return -Math.PI / 2 - 2 * Math.PI * medianIndex / count;
-          }
-          return -Math.PI / 2 - Math.PI / Math.max(count, 1);
-        }
-        function layoutSymmetricUnclassifiedRefinement(diagram, layoutOptions, prepared) {
-          const refinement = prepared.symmetricUnclassified;
-          const { width, height, marginX, marginY } = layoutOptions;
-          const positions = initialFixedPositions(diagram, diagramAxes(layoutOptions));
-          const center = { x: width / 2, y: height / 2 };
-          const axes = diagramAxes(layoutOptions);
-          const vertical = axes.orientation === "vertical" || axes.orientation === "vertical-reverse";
-          if (refinement.kind === "twoCenterTree") {
-            const leftCenter = refinement.leftCenter;
-            const rightCenter = refinement.rightCenter;
-            const leftLeaves = orderedLeafNodes(prepared, refinement.leftLeaves);
-            const rightLeaves = orderedLeafNodes(prepared, refinement.rightLeaves);
-            if (vertical) {
-              placeSymmetricTwoCenterTreeVertical(
-                positions,
-                diagram,
-                layoutOptions,
-                axes,
-                leftCenter,
-                rightCenter,
-                leftLeaves,
-                rightLeaves,
-                refinement
-              );
-            } else {
-              placeSymmetricTwoCenterTreeHorizontal(
-                positions,
-                diagram,
-                layoutOptions,
-                axes,
-                leftCenter,
-                rightCenter,
-                leftLeaves,
-                rightLeaves,
-                refinement
-              );
-            }
-          } else if (refinement.kind === "twoPointLoop") {
-            const [endpointA, endpointB] = refinement.loopEndpoints;
-            const legA = refinement.externalLegs.find((leg) => leg.internal === endpointA);
-            const legB = refinement.externalLegs.find((leg) => leg.internal === endpointB);
-            if (vertical) {
-              placeSymmetricTwoPointLoopVertical(
-                positions,
-                diagram,
-                layoutOptions,
-                axes,
-                endpointA,
-                endpointB,
-                legA,
-                legB
-              );
-            } else {
-              placeSymmetricTwoPointLoopHorizontal(
-                positions,
-                diagram,
-                layoutOptions,
-                axes,
-                endpointA,
-                endpointB,
-                legA,
-                legB
-              );
-            }
-          }
-          Array.from(collectNodes(diagram)).sort().forEach((node) => {
-            if (!positions[node]) {
-              positions[node] = {
-                ...center,
-                kind: nodeKind(node, diagram),
-                labelSide: labelSideForKind2(nodeKind(node, diagram), layoutOptions.orientation)
-              };
-            }
-          });
-          return { width, height, positions, options: layoutOptions };
-        }
-        function orderedLeafNodes(prepared, leaves) {
-          return leaves.slice().sort((left, right) => compareExternalOrdering(prepared.externalOrdering, left, right));
-        }
-        function placeSymmetricTwoCenterTreeHorizontal(positions, diagram, layoutOptions, axes, leftCenter, rightCenter, leftLeaves, rightLeaves, refinement = {}) {
-          const { width, height, marginY } = layoutOptions;
-          if (refinement.centerExternal) {
-            placeSymmetricCenterExternalHorizontal(
-              positions,
-              diagram,
-              layoutOptions,
-              width,
-              height,
-              marginY,
-              refinement.centerExternal,
-              refinement.centerAttachedCenter === leftCenter
-            );
-          }
-          placeExternalNodes(leftLeaves, axes.layerStart, axes.crossStart, axes.crossEnd, "unclassified", axes, positions);
-          placeExternalNodes(rightLeaves, axes.layerEnd, axes.crossStart, axes.crossEnd, "unclassified", axes, positions);
-          const layerSpan = axes.layerEnd - axes.layerStart;
-          const terminalGap = Math.min(84, Math.max(48, Math.abs(layerSpan) * 0.24));
-          const direction = Math.sign(layerSpan) || 1;
-          const leftLayer = axes.layerStart + direction * terminalGap;
-          const rightLayer = axes.layerEnd - direction * terminalGap;
-          const leftCrossLeaves = refinement.centerExternal && refinement.centerAttachedCenter === leftCenter ? [...leftLeaves, refinement.centerExternal] : leftLeaves;
-          const rightCrossLeaves = refinement.centerExternal && refinement.centerAttachedCenter === rightCenter ? [...rightLeaves, refinement.centerExternal] : rightLeaves;
-          placeSymmetricInternalOnLayer(positions, diagram, layoutOptions, axes, leftCenter, leftLayer, leftCrossLeaves);
-          placeSymmetricInternalOnLayer(positions, diagram, layoutOptions, axes, rightCenter, rightLayer, rightCrossLeaves);
-        }
-        function placeSymmetricTwoCenterTreeVertical(positions, diagram, layoutOptions, axes, leftCenter, rightCenter, leftLeaves, rightLeaves, refinement = {}) {
-          const { width, marginX } = layoutOptions;
-          const sideAxes = {
-            ...axes,
-            crossOf: (position) => position.x,
-            setCross: (position, cross) => {
-              position.x = cross;
-            },
-            point: (cross, layer, kind) => ({
-              x: cross,
-              y: layer,
-              kind,
-              labelSide: labelSideForKind2(kind, layoutOptions.orientation)
-            })
-          };
-          if (refinement.centerExternal) {
-            placeSymmetricCenterExternalVertical(
-              positions,
-              diagram,
-              layoutOptions,
-              width,
-              marginX,
-              refinement.centerExternal,
-              refinement.centerAttachedCenter === leftCenter
-            );
-          }
-          placeExternalNodes(leftLeaves, axes.crossStart, axes.layerStart, axes.layerEnd, "unclassified", sideAxes, positions);
-          placeExternalNodes(rightLeaves, axes.crossEnd, axes.layerStart, axes.layerEnd, "unclassified", sideAxes, positions);
-          const layerSpan = axes.layerEnd - axes.layerStart;
-          const terminalGap = Math.min(84, Math.max(48, Math.abs(layerSpan) * 0.24));
-          const direction = Math.sign(layerSpan) || 1;
-          const leftLayer = axes.layerStart + direction * terminalGap;
-          const rightLayer = axes.layerEnd - direction * terminalGap;
-          const verticalAxes = {
-            crossOf: (position) => position.x,
-            point: (cross, layer, kind) => ({
-              x: cross,
-              y: layer,
-              kind,
-              labelSide: labelSideForKind2(kind, layoutOptions.orientation)
-            })
-          };
-          const leftCrossLeaves = refinement.centerExternal && refinement.centerAttachedCenter === leftCenter ? [...leftLeaves, refinement.centerExternal] : leftLeaves;
-          const rightCrossLeaves = refinement.centerExternal && refinement.centerAttachedCenter === rightCenter ? [...rightLeaves, refinement.centerExternal] : rightLeaves;
-          placeSymmetricInternalOnLayer(positions, diagram, layoutOptions, verticalAxes, leftCenter, leftLayer, leftCrossLeaves, "y");
-          placeSymmetricInternalOnLayer(positions, diagram, layoutOptions, verticalAxes, rightCenter, rightLayer, rightCrossLeaves, "y");
-        }
-        function placeSymmetricCenterExternalHorizontal(positions, diagram, layoutOptions, width, height, marginY, node, useTopMiddle) {
-          if (!node || positions[node]) {
-            return;
-          }
-          positions[node] = {
-            x: width / 2,
-            y: useTopMiddle ? marginY : height - marginY,
-            kind: nodeKind(node, diagram),
-            labelSide: labelSideForKind2(nodeKind(node, diagram), layoutOptions.orientation)
-          };
-        }
-        function placeSymmetricCenterExternalVertical(positions, diagram, layoutOptions, width, marginX, node, useStartMiddle) {
-          if (!node || positions[node]) {
-            return;
-          }
-          positions[node] = {
-            x: useStartMiddle ? marginX : width - marginX,
-            y: layoutOptions.height / 2,
-            kind: nodeKind(node, diagram),
-            labelSide: labelSideForKind2(nodeKind(node, diagram), layoutOptions.orientation)
-          };
-        }
-        function symmetricTwoPointLoopLayers(axes) {
-          const span = Math.abs(axes.layerEnd - axes.layerStart);
-          const minLeg = 48;
-          const loopChord = Math.min(span - 2 * minLeg, Math.max(120, span * 0.452));
-          const legLength = (span - loopChord) / 2;
-          const direction = Math.sign(axes.layerEnd - axes.layerStart) || 1;
-          return {
-            centerCross: (axes.crossStart + axes.crossEnd) / 2,
-            externalStart: axes.layerStart,
-            externalEnd: axes.layerEnd,
-            internalStart: axes.layerStart + direction * legLength,
-            internalEnd: axes.layerEnd - direction * legLength
-          };
-        }
-        function placeSymmetricTwoPointLoopHorizontal(positions, diagram, layoutOptions, axes, endpointA, endpointB, legA, legB) {
-          const layers = symmetricTwoPointLoopLayers(axes);
-          if (legA && !positions[legA.external]) {
-            positions[legA.external] = axes.point(layers.externalStart, layers.centerCross, "unclassified");
-          }
-          if (legB && !positions[legB.external]) {
-            positions[legB.external] = axes.point(layers.externalEnd, layers.centerCross, "unclassified");
-          }
-          if (!positions[endpointA]) {
-            positions[endpointA] = axes.point(layers.internalStart, layers.centerCross, "internal");
-          }
-          if (!positions[endpointB]) {
-            positions[endpointB] = axes.point(layers.internalEnd, layers.centerCross, "internal");
-          }
-        }
-        function placeSymmetricTwoPointLoopVertical(positions, diagram, layoutOptions, axes, endpointA, endpointB, legA, legB) {
-          const verticalAxes = {
-            orientation: axes.orientation,
-            layerStart: axes.crossStart,
-            layerEnd: axes.crossEnd,
-            crossStart: axes.layerStart,
-            crossEnd: axes.layerEnd,
-            crossOf: (position) => position.x,
-            setCross: (position, cross) => {
-              position.x = cross;
-            },
-            point: (cross, layer, kind) => ({
-              x: cross,
-              y: layer,
-              kind,
-              labelSide: labelSideForKind2(kind, layoutOptions.orientation)
-            })
-          };
-          const layers = symmetricTwoPointLoopLayers(verticalAxes);
-          if (legA && !positions[legA.external]) {
-            positions[legA.external] = verticalAxes.point(layers.centerCross, layers.externalStart, "unclassified");
-          }
-          if (legB && !positions[legB.external]) {
-            positions[legB.external] = verticalAxes.point(layers.centerCross, layers.externalEnd, "unclassified");
-          }
-          if (!positions[endpointA]) {
-            positions[endpointA] = verticalAxes.point(layers.centerCross, layers.internalStart, "internal");
-          }
-          if (!positions[endpointB]) {
-            positions[endpointB] = verticalAxes.point(layers.centerCross, layers.internalEnd, "internal");
-          }
-        }
-        function placeSymmetricInternalOnLayer(positions, diagram, layoutOptions, axes, centerNode, layer, leaves, layerAxis = "x") {
-          if (positions[centerNode]) {
-            return;
-          }
-          const crosses = leaves.map((leaf) => positions[leaf]).filter(Boolean).map((position) => axes.crossOf(position));
-          const cross = crosses.length ? crosses.reduce((sum, value) => sum + value, 0) / crosses.length : (layoutOptions.marginY + (layoutOptions.height - layoutOptions.marginY)) / 2;
-          positions[centerNode] = layerAxis === "y" ? axes.point(cross, layer, "internal") : axes.point(layer, cross, "internal");
-        }
-        function layoutSymmetricTree(diagram, layoutOptions, prepared) {
-          const { width, height, marginX, marginY } = layoutOptions;
-          const positions = initialFixedPositions(diagram, diagramAxes(layoutOptions));
-          const allNodes = Array.from(collectNodes(diagram)).sort();
-          const centerNode = prepared.topology.graphCenters[0] || allNodes[0];
-          const center = { x: width / 2, y: height / 2 };
-          const adjacency = visibleAdjacencyForLayout(diagram, allNodes);
-          const depths = breadthFirstLayoutDepths(adjacency, centerNode);
-          const maxDepth = Math.max(1, ...Array.from(depths.values()));
-          const maxRadius = Math.max(60, Math.min(width - 2 * marginX, height - 2 * marginY) * 0.42);
-          const nodesByDepth = /* @__PURE__ */ new Map();
-          allNodes.forEach((node) => {
-            const depth = depths.get(node) ?? maxDepth;
-            if (!nodesByDepth.has(depth)) {
-              nodesByDepth.set(depth, []);
-            }
-            nodesByDepth.get(depth).push(node);
-          });
-          nodesByDepth.forEach((nodes, depth) => {
-            const sortedNodes = nodes.sort((left, right) => semanticOrder(prepared, left, right));
-            if (depth === 0) {
-              sortedNodes.forEach((node) => {
-                if (!positions[node]) {
-                  positions[node] = {
-                    ...center,
-                    kind: nodeKind(node, diagram),
-                    labelSide: labelSideForKind2(nodeKind(node, diagram), layoutOptions.orientation)
-                  };
-                }
-              });
-              return;
-            }
-            const radius = maxRadius * depth / maxDepth;
-            const startAngle = sortedNodes.length === 1 ? 0 : -Math.PI / 2;
-            placeNodesOnRing(sortedNodes, center, radius, positions, diagram, layoutOptions, startAngle);
-          });
-          return { width, height, positions, options: layoutOptions };
-        }
-        function orderedSemanticExternalNodes(prepared) {
-          return prepared.externalOrdering.all.map((entry) => entry.id);
-        }
-        function semanticOrder(prepared, left, right) {
-          const leftExternal = prepared.semantic.externalVertices.includes(left);
-          const rightExternal = prepared.semantic.externalVertices.includes(right);
-          if (leftExternal || rightExternal) {
-            return compareExternalOrdering(prepared.externalOrdering, left, right);
-          }
-          const vertexById = new Map(prepared.semantic.vertices.map((vertex) => [vertex.id, vertex]));
-          const leftIndex = vertexById.get(left)?.metadata?.declarationIndex ?? Number.MAX_SAFE_INTEGER;
-          const rightIndex = vertexById.get(right)?.metadata?.declarationIndex ?? Number.MAX_SAFE_INTEGER;
-          return leftIndex - rightIndex || left.localeCompare(right);
-        }
-        function placeNodesOnRing(nodes, center, radius, positions, diagram, layoutOptions, startAngle) {
-          const count = Math.max(nodes.length, 1);
-          nodes.forEach((node, index) => {
-            if (positions[node]) {
-              return;
-            }
-            const angle = startAngle + 2 * Math.PI * index / count;
-            const kind = nodeKind(node, diagram);
-            positions[node] = {
-              x: center.x + Math.cos(angle) * radius,
-              y: center.y + Math.sin(angle) * radius,
-              kind,
-              labelSide: labelSideForKind2(kind, layoutOptions.orientation)
-            };
-          });
-        }
-        function visibleAdjacencyForLayout(diagram, nodes) {
-          const adjacency = new Map(nodes.map((node) => [node, /* @__PURE__ */ new Set()]));
-          diagram.edges.forEach((edge) => {
-            if (edge.hidden || edge.from === edge.to) {
-              return;
-            }
-            if (!adjacency.has(edge.from)) {
-              adjacency.set(edge.from, /* @__PURE__ */ new Set());
-            }
-            if (!adjacency.has(edge.to)) {
-              adjacency.set(edge.to, /* @__PURE__ */ new Set());
-            }
-            adjacency.get(edge.from).add(edge.to);
-            adjacency.get(edge.to).add(edge.from);
-          });
-          return adjacency;
-        }
-        function breadthFirstLayoutDepths(adjacency, start) {
-          const depths = /* @__PURE__ */ new Map();
-          if (!start) {
-            return depths;
-          }
-          const queue = [start];
-          depths.set(start, 0);
-          while (queue.length) {
-            const node = queue.shift();
-            const nextDepth = depths.get(node) + 1;
-            Array.from(adjacency.get(node) || []).sort().forEach((neighbor) => {
-              if (!depths.has(neighbor)) {
-                depths.set(neighbor, nextDepth);
-                queue.push(neighbor);
-              }
-            });
-          }
-          return depths;
-        }
-        function layoutLayered(diagram, layoutOptions) {
-          const { width, height } = layoutOptions;
-          const axes = diagramAxes(layoutOptions);
-          const positions = initialFixedPositions(diagram, axes);
-          const incoming = new Set(diagram.incoming);
-          const outgoing = new Set(diagram.outgoing);
-          const unclassified = new Set(diagram.unclassified || []);
-          const allNodes = collectNodes(diagram);
-          placeExternalNodes(diagram.incoming, axes.layerStart, axes.crossStart, axes.crossEnd, "incoming", axes, positions);
-          placeExternalNodes(diagram.outgoing, axes.layerEnd, axes.crossStart, axes.crossEnd, "outgoing", axes, positions);
-          const internalNodes = Array.from(allNodes).filter((node) => !incoming.has(node) && !outgoing.has(node) && !unclassified.has(node) && !positions[node]);
-          const layerByNode = computeInternalLayers(diagram, internalNodes, incoming);
-          const maxLayer = Math.max(1, ...Array.from(layerByNode.values()));
-          const layers = /* @__PURE__ */ new Map();
-          internalNodes.forEach((node) => {
-            const layer = layerByNode.get(node) || 1;
-            const layerPosition = axes.layerStart + (axes.layerEnd - axes.layerStart) * layer / (maxLayer + 1);
-            const cross = estimateInternalCross(node, diagram, positions, axes);
-            if (!layers.has(layer)) {
-              layers.set(layer, []);
-            }
-            layers.get(layer).push({ node, layer: layerPosition, cross });
-          });
-          layers.forEach((nodes) => {
-            distributeLayer(nodes, axes.crossStart, axes.crossEnd).forEach(({ node, layer, cross }) => {
-              positions[node] = axes.point(layer, cross, "internal");
-            });
-          });
-          placeNodesOnRing(
-            Array.from(unclassified).filter((node) => !positions[node]),
-            { x: width / 2, y: height / 2 },
-            Math.max(52, Math.min(width - 2 * layoutOptions.marginX, height - 2 * layoutOptions.marginY) * 0.38),
-            positions,
-            diagram,
-            layoutOptions,
-            -3 * Math.PI / 4
-          );
-          return { width, height, positions, options: layoutOptions };
-        }
-        function layoutTree(diagram, layoutOptions) {
-          const { width, height } = layoutOptions;
-          const axes = diagramAxes(layoutOptions);
-          const positions = initialFixedPositions(diagram, axes);
-          const allNodes = Array.from(collectNodes(diagram)).filter((node) => !positions[node]);
-          const nodeSet = new Set(allNodes);
-          const childrenByNode = treeChildrenByNode(diagram, nodeSet);
-          const roots = treeRoots(diagram, allNodes, nodeSet);
-          const depthByNode = /* @__PURE__ */ new Map();
-          const slotByNode = /* @__PURE__ */ new Map();
-          const visited = /* @__PURE__ */ new Set();
-          const visiting = /* @__PURE__ */ new Set();
-          let nextSlot = 0;
-          const assignSubtree = (node, depth) => {
-            if (!nodeSet.has(node)) {
-              return null;
-            }
-            depthByNode.set(node, Math.max(depthByNode.get(node) ?? 0, depth));
-            if (slotByNode.has(node)) {
-              return slotByNode.get(node);
-            }
-            if (visiting.has(node)) {
-              return null;
-            }
-            visiting.add(node);
-            const childSlots = (childrenByNode.get(node) || []).map((child) => assignSubtree(child, depth + 1)).filter((slot2) => slot2 !== null);
-            let slot;
-            if (childSlots.length) {
-              slot = childSlots.reduce((sum, childSlot) => sum + childSlot, 0) / childSlots.length;
-            } else {
-              slot = nextSlot;
-              nextSlot += 1;
-            }
-            slotByNode.set(node, slot);
-            visiting.delete(node);
-            visited.add(node);
-            return slot;
-          };
-          roots.forEach((root) => {
-            assignSubtree(root, 0);
-          });
-          allNodes.forEach((node) => {
-            if (!visited.has(node)) {
-              assignSubtree(node, 0);
-            }
-          });
-          allNodes.forEach((node) => {
-            const maxDepth = Math.max(1, ...Array.from(depthByNode.values()));
-            const depth = depthByNode.get(node) ?? 0;
-            const slotCount = Math.max(nextSlot, 1);
-            const kind = nodeKind(node, diagram);
-            const layer = treeLayerForNode(kind, depth, maxDepth, axes);
-            const cross = slotCoordinateAt(slotByNode.get(node) ?? 0, slotCount, axes.crossStart, axes.crossEnd);
-            positions[node] = axes.point(layer, cross, kind);
-          });
-          return { width, height, positions, options: layoutOptions };
-        }
-        function treeLayerForNode(kind, depth, maxDepth, axes) {
-          if (kind === "incoming") {
-            return axes.layerStart;
-          }
-          if (kind === "outgoing") {
-            return axes.layerEnd;
-          }
-          return axes.layerStart + (axes.layerEnd - axes.layerStart) * depth / maxDepth;
-        }
-        function treeChildrenByNode(diagram, nodeSet) {
-          const childrenByNode = /* @__PURE__ */ new Map();
-          const addChild = (parent, child) => {
-            if (!childrenByNode.has(parent)) {
-              childrenByNode.set(parent, []);
-            }
-            const children = childrenByNode.get(parent);
-            if (!children.includes(child)) {
-              children.push(child);
-            }
-          };
-          diagram.edges.forEach((edge) => {
-            if (!nodeSet.has(edge.from) || !nodeSet.has(edge.to) || edge.from === edge.to) {
-              return;
-            }
-            const direction = treeLayoutEdgeDirection(edge, diagram);
-            if (direction) {
-              addChild(direction.parent, direction.child);
-            }
-          });
-          return childrenByNode;
-        }
-        function treeLayoutEdgeDirection(edge, diagram) {
-          const fromKind = nodeKind(edge.from, diagram);
-          const toKind = nodeKind(edge.to, diagram);
-          if (fromKind === "incoming" && toKind !== "incoming") {
-            return { parent: edge.from, child: edge.to };
-          }
-          if (toKind === "incoming" && fromKind !== "incoming") {
-            return { parent: edge.to, child: edge.from };
-          }
-          if (fromKind !== "outgoing" && toKind === "outgoing") {
-            return { parent: edge.from, child: edge.to };
-          }
-          if (toKind !== "outgoing" && fromKind === "outgoing") {
-            return { parent: edge.to, child: edge.from };
-          }
-          return { parent: edge.from, child: edge.to };
-        }
-        function treeRoots(diagram, allNodes, nodeSet) {
-          const declaredRoots = diagram.incoming.filter((node) => nodeSet.has(node));
-          if (declaredRoots.length) {
-            return declaredRoots;
-          }
-          return nodesWithoutIncomingEdges(diagram, allNodes);
-        }
-        function slotCoordinateAt(slot, count, crossStart, crossEnd) {
-          if (count <= 1) {
-            return (crossStart + crossEnd) / 2;
-          }
-          return crossStart + (crossEnd - crossStart) * slot / (count - 1);
-        }
-        function layoutSpring(diagram, layoutOptions, springOptions = {}) {
-          const { width, height, marginX, marginY } = layoutOptions;
-          const axes = diagramAxes(layoutOptions);
-          const base = layoutLayered(diagram, { ...layoutOptions, layout: "layered" });
-          const positions = { ...base.positions };
-          const allNodes = Array.from(collectNodes(diagram));
-          const pinned = /* @__PURE__ */ new Set([
-            ...diagram.incoming,
-            ...diagram.outgoing,
-            ...Object.keys(diagram.manualPositions || {})
-          ]);
-          const crossLocks = axes.stackInternals ? /* @__PURE__ */ new Map() : terminalCrossLocks(diagram, positions, axes, pinned);
-          const targetLength = Math.max(70, Math.min(width, height) / 3);
-          const repulsion = targetLength * targetLength * (springOptions.electrical ? 0.16 : 0.08);
-          const stiffness = 0.025;
-          allNodes.forEach((node, index) => {
-            if (positions[node]) {
-              return;
-            }
-            const angle = Math.PI * 2 * index / Math.max(allNodes.length, 1);
-            positions[node] = {
-              x: width / 2 + Math.cos(angle) * Math.min(width, height) * 0.25,
-              y: height / 2 + Math.sin(angle) * Math.min(width, height) * 0.25,
-              kind: nodeKind(node, diagram),
-              labelSide: labelSideForKind2(nodeKind(node, diagram), layoutOptions.orientation)
-            };
-          });
-          applyCrossLocks(positions, crossLocks, axes);
-          for (let iteration = 0; iteration < 90; iteration += 1) {
-            const forces = new Map(allNodes.map((node) => [node, { x: 0, y: 0 }]));
-            for (let first = 0; first < allNodes.length; first += 1) {
-              for (let second = first + 1; second < allNodes.length; second += 1) {
-                const a = allNodes[first];
-                const b = allNodes[second];
-                const delta = safeDelta(positions[a], positions[b]);
-                const force = repulsion / Math.max(delta.distance * delta.distance, 1);
-                const fx = delta.ux * force;
-                const fy = delta.uy * force;
-                forces.get(a).x -= fx;
-                forces.get(a).y -= fy;
-                forces.get(b).x += fx;
-                forces.get(b).y += fy;
-              }
-            }
-            diagram.edges.forEach((edge) => {
-              const from = positions[edge.from];
-              const to = positions[edge.to];
-              if (!from || !to) {
-                return;
-              }
-              const delta = safeDelta(from, to);
-              const force = (delta.distance - targetLength) * stiffness;
-              const fx = delta.ux * force;
-              const fy = delta.uy * force;
-              forces.get(edge.from).x += fx;
-              forces.get(edge.from).y += fy;
-              forces.get(edge.to).x -= fx;
-              forces.get(edge.to).y -= fy;
-            });
-            allNodes.forEach((node) => {
-              if (pinned.has(node)) {
-                return;
-              }
-              const force = forces.get(node);
-              positions[node] = clampSpringPosition(
-                positions[node],
-                force,
-                layoutOptions,
-                axes,
-                diagram
-              );
-              applyCrossLock(positions[node], crossLocks.get(node), axes);
-            });
-          }
-          applyLayoutNormalizations(diagram, positions, axes, layoutOptions);
-          return { width, height, positions, options: layoutOptions };
-        }
-        function clampSpringPosition(position, force, layoutOptions, axes, diagram) {
-          const { width, height, marginX, marginY } = layoutOptions;
-          const next = {
-            ...position,
-            x: clamp5(position.x + force.x, marginX, width - marginX),
-            y: clamp5(position.y + force.y, marginY, height - marginY)
-          };
-          if (position.kind !== "internal" || !diagram.incoming.length && !diagram.outgoing.length) {
-            return next;
-          }
-          const layerMin = Math.min(axes.layerStart, axes.layerEnd);
-          const layerMax = Math.max(axes.layerStart, axes.layerEnd);
-          const terminalGap = Math.min(72, Math.max(42, (layerMax - layerMin) * 0.24));
-          if (layerMax - layerMin > 2 * terminalGap) {
-            next.x = clamp5(next.x, layerMin + terminalGap, layerMax - terminalGap);
-          }
-          return next;
-        }
-        function terminalCrossLocks(diagram, positions, axes, pinned) {
-          const externalKinds = /* @__PURE__ */ new Set(["incoming", "outgoing"]);
-          const constraints = /* @__PURE__ */ new Map();
-          const addConstraint = (node, cross) => {
-            if (pinned.has(node)) {
-              return;
-            }
-            if (!constraints.has(node)) {
-              constraints.set(node, []);
-            }
-            constraints.get(node).push(cross);
-          };
-          diagram.edges.forEach((edge) => {
-            if (edge.hidden) {
-              return;
-            }
-            const from = positions[edge.from];
-            const to = positions[edge.to];
-            if (!from || !to) {
-              return;
-            }
-            const fromExternal = externalKinds.has(from.kind);
-            const toExternal = externalKinds.has(to.kind);
-            if (fromExternal && !toExternal) {
-              addConstraint(edge.to, axes.crossOf(from));
-            }
-            if (toExternal && !fromExternal) {
-              addConstraint(edge.from, axes.crossOf(to));
-            }
-          });
-          const locks = /* @__PURE__ */ new Map();
-          constraints.forEach((crosses, node) => {
-            const min = Math.min(...crosses);
-            const max = Math.max(...crosses);
-            if (max - min <= 1) {
-              locks.set(node, crosses.reduce((sum, cross) => sum + cross, 0) / crosses.length);
-            }
-          });
-          return locks;
-        }
-        function alignInternalsToDeclaredTerminalRows(diagram, positions, axes, layoutOptions) {
-          if (!diagram.incoming.length && !diagram.outgoing.length) {
-            return;
-          }
-          const pinned = /* @__PURE__ */ new Set([
-            ...diagram.incoming,
-            ...diagram.outgoing,
-            ...Object.keys(diagram.manualPositions || {})
-          ]);
-          terminalCrossLocks(diagram, positions, axes, pinned).forEach((cross, node) => {
-            if (positions[node]?.kind === "internal") {
-              axes.setCross(positions[node], cross);
-            }
-          });
-          if (layoutOptions.layout === "spring") {
-            alignJunctionsToTerminalRowCorridors(diagram, positions, axes, pinned);
-          }
-          alignTerminalLaneInternals(diagram, positions, axes, pinned);
-        }
-        function alignJunctionsToTerminalRowCorridors(diagram, positions, axes, pinned) {
-          if (axes.stackInternals) {
-            return;
-          }
-          const externalKinds = /* @__PURE__ */ new Set(["incoming", "outgoing"]);
-          const directLocks = terminalCrossLocks(diagram, positions, axes, pinned);
-          const adjacency = visibleAdjacencyForLayout(diagram, Object.keys(positions));
-          const tolerance = 1;
-          adjacency.forEach((neighbors, node) => {
-            const position = positions[node];
-            if (!position || position.kind !== "internal" || pinned.has(node) || directLocks.has(node)) {
-              return;
-            }
-            const crosses = [];
-            neighbors.forEach((neighbor) => {
-              const neighborPosition = positions[neighbor];
-              if (!neighborPosition) {
-                return;
-              }
-              if (externalKinds.has(neighborPosition.kind)) {
-                crosses.push(axes.crossOf(neighborPosition));
-                return;
-              }
-              if (directLocks.has(neighbor)) {
-                crosses.push(directLocks.get(neighbor));
-              }
-            });
-            if (crosses.length < 2) {
-              return;
-            }
-            const groups = groupNearbyCrosses(crosses, tolerance);
-            if (groups.length < 2) {
-              return;
-            }
-            const largest = Math.max(...groups.map((group) => group.count));
-            const dominantGroups = groups.filter((group) => group.count === largest);
-            const target = dominantGroups.length === 1 && largest > 1 ? dominantGroups[0].sum / dominantGroups[0].count : crosses.reduce((sum, cross) => sum + cross, 0) / crosses.length;
-            axes.setCross(position, target);
-          });
-        }
-        function groupNearbyCrosses(crosses, tolerance) {
-          const groups = [];
-          crosses.filter(Number.isFinite).sort((left, right) => left - right).forEach((cross) => {
-            const last = groups[groups.length - 1];
-            if (!last || Math.abs(cross - last.center) > tolerance) {
-              groups.push({ center: cross, sum: cross, count: 1 });
-              return;
-            }
-            last.sum += cross;
-            last.count += 1;
-            last.center = last.sum / last.count;
-          });
-          return groups;
-        }
-        function alignTerminalLaneInternals(diagram, positions, axes, pinned) {
-          if (diagram.incoming.length <= 1 && diagram.outgoing.length <= 1) {
-            return;
-          }
-          const tolerance = 1;
-          const moved = /* @__PURE__ */ new Set();
-          diagram.incoming.forEach((incoming) => {
-            const incomingPosition = positions[incoming];
-            if (!incomingPosition) {
-              return;
-            }
-            diagram.outgoing.forEach((outgoing) => {
-              const outgoingPosition = positions[outgoing];
-              if (!outgoingPosition || Math.abs(axes.crossOf(incomingPosition) - axes.crossOf(outgoingPosition)) > tolerance) {
-                return;
-              }
-              const path = terminalLanePath(diagram, positions, axes, incoming, outgoing, axes.crossOf(incomingPosition), tolerance);
-              if (!path) {
-                return;
-              }
-              const internals = path.filter((node) => positions[node]?.kind === "internal" && !pinned.has(node) && !moved.has(node));
-              if (!internals.length) {
-                return;
-              }
-              internals.forEach((node, index) => {
-                positions[node].x = axes.layerStart + (axes.layerEnd - axes.layerStart) * (index + 1) / (internals.length + 1);
-                moved.add(node);
-              });
-            });
-          });
-        }
-        function terminalLanePath(diagram, positions, axes, incoming, outgoing, cross, tolerance) {
-          const allowed = /* @__PURE__ */ new Set([incoming, outgoing]);
-          Object.entries(positions).forEach(([node, position]) => {
-            if (position.kind === "internal" && Math.abs(axes.crossOf(position) - cross) <= tolerance) {
-              allowed.add(node);
-            }
-          });
-          const adjacency = new Map(Array.from(allowed).map((node) => [node, []]));
-          diagram.edges.forEach((edge) => {
-            if (edge.hidden || !allowed.has(edge.from) || !allowed.has(edge.to)) {
-              return;
-            }
-            adjacency.get(edge.from).push(edge.to);
-            adjacency.get(edge.to).push(edge.from);
-          });
-          adjacency.forEach((neighbors) => {
-            neighbors.sort((left, right) => left.localeCompare(right));
-          });
-          const queue = [[incoming]];
-          const visited = /* @__PURE__ */ new Set([incoming]);
-          while (queue.length) {
-            const path = queue.shift();
-            const node = path[path.length - 1];
-            if (node === outgoing) {
-              return path;
-            }
-            (adjacency.get(node) || []).forEach((neighbor) => {
-              if (visited.has(neighbor)) {
-                return;
-              }
-              visited.add(neighbor);
-              queue.push([...path, neighbor]);
-            });
-          }
-          return null;
-        }
-        function applyAlignmentConstraints(diagram, positions, layoutOptions) {
-          const alignments = layoutOptions.alignments || [];
-          if (!alignments.length) {
-            return;
-          }
-          const manual = new Set(Object.keys(diagram.manualPositions || {}));
-          alignments.forEach((alignment) => {
-            const coordinate = alignment.axis === "vertical" ? "x" : "y";
-            const crossCoordinate = alignment.axis === "vertical" ? "y" : "x";
-            const positioned = alignment.nodes.map((node) => ({ node, position: positions[node] })).filter((entry) => entry.position && Number.isFinite(entry.position[coordinate]));
-            if (positioned.length < 2) {
-              return;
-            }
-            const anchors = positioned.filter((entry) => manual.has(entry.node));
-            const source = anchors.length ? anchors : positioned;
-            const target = source.reduce((sum, entry) => sum + entry.position[coordinate], 0) / source.length;
-            positioned.forEach(({ node, position }) => {
-              if (!manual.has(node)) {
-                position[coordinate] = target;
-              }
-            });
-            orderAlignedNodesAlongCrossAxis(positioned, crossCoordinate, manual);
-          });
-        }
-        function orderAlignedNodesAlongCrossAxis(positioned, crossCoordinate, manual) {
-          if (positioned.length < 2 || positioned.some((entry) => manual.has(entry.node))) {
-            return;
-          }
-          const slots = positioned.map((entry) => entry.position[crossCoordinate]).filter((value) => Number.isFinite(value)).sort((left, right) => left - right);
-          if (slots.length !== positioned.length) {
-            return;
-          }
-          positioned.forEach((entry, index) => {
-            entry.position[crossCoordinate] = slots[index];
-          });
-        }
-        function applyCrossLocks(positions, crossLocks, axes) {
-          crossLocks.forEach((cross, node) => {
-            if (positions[node]) {
-              applyCrossLock(positions[node], cross, axes);
-            }
-          });
-        }
-        function applyCrossLock(position, cross, axes) {
-          if (cross === void 0) {
-            return;
-          }
-          axes.setCross(position, cross);
-        }
-        function diagramAxes({ width, height, marginX, marginY, orientation: orientation2, tikzOrientation }) {
-          const reverse = orientation2.endsWith("reverse");
-          return {
-            orientation: orientation2,
-            clockwiseBoundaryOrder: !tikzOrientation,
-            stackInternals: orientation2.startsWith("vertical"),
-            layerStart: reverse ? width - marginX : marginX,
-            layerEnd: reverse ? marginX : width - marginX,
-            crossStart: marginY,
-            crossEnd: height - marginY,
-            crossOf: (position) => position.y,
-            setCross: (position, cross) => {
-              position.y = cross;
-            },
-            point: (layer, cross, kind) => ({
-              x: layer,
-              y: cross,
-              kind,
-              labelSide: labelSideForKind2(kind, orientation2)
-            })
-          };
-        }
-        function initialFixedPositions(diagram, axes) {
-          const positions = {};
-          Object.entries(diagram.manualPositions || {}).forEach(([node, position]) => {
-            const kind = nodeKind(node, diagram);
-            positions[node] = {
-              x: position.x,
-              y: position.y,
-              kind,
-              labelSide: labelSideForKind2(kind, axes.orientation || "horizontal")
-            };
-          });
-          return positions;
-        }
-        function nodeKind(node, diagram) {
-          if (diagram.incoming.includes(node)) {
-            return "incoming";
-          }
-          if (diagram.outgoing.includes(node)) {
-            return "outgoing";
-          }
-          if ((diagram.unclassified || []).includes(node)) {
-            return "unclassified";
-          }
-          return "internal";
-        }
-        function labelSideForKind2(kind, orientation2) {
-          const reverse = orientation2.endsWith("reverse");
-          if (kind === "incoming") {
-            return reverse ? "right" : "left";
-          }
-          if (kind === "outgoing") {
-            return reverse ? "left" : "right";
-          }
-          return "top";
-        }
-        function nodesWithoutIncomingEdges(diagram, nodes) {
-          const targets = new Set(diagram.edges.map((edge) => edge.to));
-          const roots = nodes.filter((node) => !targets.has(node));
-          return roots.length ? roots : nodes.slice(0, 1);
-        }
-        function computeTreeDepths(diagram, nodes, roots) {
-          const nodeSet = new Set(nodes);
-          const depthByNode = /* @__PURE__ */ new Map();
-          roots.forEach((root) => {
-            depthByNode.set(root, 0);
-          });
-          for (let pass = 0; pass < nodes.length + diagram.edges.length + 1; pass += 1) {
-            let changed = false;
-            diagram.edges.forEach((edge) => {
-              if (!depthByNode.has(edge.from) || !nodeSet.has(edge.to)) {
-                return;
-              }
-              const depth = depthByNode.get(edge.from) + 1;
-              if (!depthByNode.has(edge.to) || depth < depthByNode.get(edge.to)) {
-                depthByNode.set(edge.to, depth);
-                changed = true;
-              }
-            });
-            if (!changed) {
-              break;
-            }
-          }
-          nodes.forEach((node) => {
-            if (!depthByNode.has(node)) {
-              depthByNode.set(node, 0);
-            }
-          });
-          return depthByNode;
-        }
-        function safeDelta(from, to) {
-          const dx = to.x - from.x || 0.01;
-          const dy = to.y - from.y || 0.01;
-          const distance2 = Math.hypot(dx, dy) || 1;
-          return {
-            dx,
-            dy,
-            distance: distance2,
-            ux: dx / distance2,
-            uy: dy / distance2
-          };
-        }
-        function clamp5(value, min, max) {
-          return Math.max(min, Math.min(max, value));
-        }
-        function collectNodes(diagram) {
-          const nodes = /* @__PURE__ */ new Set([...diagram.incoming, ...diagram.outgoing, ...diagram.unclassified || []]);
-          diagram.edges.forEach((edge) => {
-            nodes.add(edge.from);
-            nodes.add(edge.to);
-          });
-          Object.keys(diagram.labels).forEach((labelTarget) => {
-            if (!labelTarget.includes("->")) {
-              nodes.add(labelTarget);
-            }
-          });
-          (diagram.braces || []).forEach((brace) => {
-            nodes.add(brace.from);
-            nodes.add(brace.to);
-          });
-          Object.keys(diagram.manualPositions || {}).forEach((node) => {
-            nodes.add(node);
-          });
-          Object.keys(diagram.vertices || {}).forEach((node) => {
-            nodes.add(node);
-          });
-          return nodes;
-        }
-        function placeExternalNodes(nodes, layer, crossStart, crossEnd, kind, axes, positions) {
-          const count = Math.max(nodes.length, 1);
-          nodes.forEach((node, index) => {
-            if (!positions[node]) {
-              positions[node] = axes.point(
-                layer,
-                externalCrossCoordinateAt(index, count, crossStart, crossEnd, layer, axes, kind),
-                kind
-              );
-            }
-          });
-        }
-        function enforceDeclaredExternalOrder(diagram, positions, axes) {
-          const manual = new Set(Object.keys(diagram.manualPositions || {}));
-          [
-            { nodes: diagram.incoming, kind: "incoming" },
-            { nodes: diagram.outgoing, kind: "outgoing" }
-          ].forEach(({ nodes, kind }) => {
-            if (nodes.length <= 1) {
-              return;
-            }
-            const count = Math.max(nodes.length, 1);
-            nodes.forEach((node, index) => {
-              if (!positions[node] || manual.has(node)) {
-                return;
-              }
-              axes.setCross(
-                positions[node],
-                externalCrossCoordinateAt(
-                  index,
-                  count,
-                  axes.crossStart,
-                  axes.crossEnd,
-                  kind === "incoming" ? axes.layerStart : axes.layerEnd,
-                  axes,
-                  kind
-                )
-              );
-              positions[node].kind = kind;
-            });
-          });
-        }
-        function externalCrossCoordinateAt(index, count, crossStart, crossEnd, layer, axes, kind) {
-          if (!axes.clockwiseBoundaryOrder || kind !== "incoming" && kind !== "outgoing") {
-            return crossCoordinateAt(index, count, crossStart, crossEnd);
-          }
-          const midpoint = (axes.layerStart + axes.layerEnd) / 2;
-          const isLeftBoundary = layer <= midpoint;
-          return isLeftBoundary ? crossCoordinateAt(index, count, crossEnd, crossStart) : crossCoordinateAt(index, count, crossStart, crossEnd);
-        }
-        function crossCoordinateAt(index, count, crossStart, crossEnd) {
-          if (count <= 1) {
-            return (crossStart + crossEnd) / 2;
-          }
-          return crossStart + (crossEnd - crossStart) * index / (count - 1);
-        }
-        function computeInternalLayers(diagram, internalNodes, incoming) {
-          const layers = new Map(internalNodes.map((node) => [node, 1]));
-          const knownSources = new Set(incoming);
-          const maxUsefulLayer = Math.max(1, internalNodes.length);
-          for (let pass = 0; pass < internalNodes.length + diagram.edges.length + 1; pass += 1) {
-            let changed = false;
-            diagram.edges.forEach((edge) => {
-              if (!layers.has(edge.to)) {
-                return;
-              }
-              const sourceLayer = layers.get(edge.from) ?? (knownSources.has(edge.from) ? 0 : 1);
-              const nextLayer = Math.max(layers.get(edge.to), Math.min(sourceLayer + 1, maxUsefulLayer));
-              if (nextLayer !== layers.get(edge.to)) {
-                layers.set(edge.to, nextLayer);
-                changed = true;
-              }
-            });
-            if (!changed) {
-              break;
-            }
-          }
-          return layers;
-        }
-        function estimateInternalCross(node, diagram, fixedPositions, axes) {
-          const singleIncomingCross = axes.stackInternals ? null : directSingleIncomingCross(node, diagram, fixedPositions, axes);
-          if (singleIncomingCross !== null) {
-            return singleIncomingCross;
-          }
-          const neighborCrosses = [];
-          diagram.edges.forEach((edge) => {
-            if (edge.from === node && fixedPositions[edge.to]) {
-              neighborCrosses.push(axes.crossOf(fixedPositions[edge.to]));
-            }
-            if (edge.to === node && fixedPositions[edge.from]) {
-              neighborCrosses.push(axes.crossOf(fixedPositions[edge.from]));
-            }
-          });
-          if (!neighborCrosses.length) {
-            return (axes.crossStart + axes.crossEnd) / 2;
-          }
-          const average2 = neighborCrosses.reduce((sum, cross) => sum + cross, 0) / neighborCrosses.length;
-          if (axes.stackInternals) {
-            return pullCrossTowardCenter(average2, axes);
-          }
-          return average2;
-        }
-        function pullCrossTowardCenter(cross, axes) {
-          const center = (axes.crossStart + axes.crossEnd) / 2;
-          return center + (cross - center) * 0.5;
-        }
-        function directSingleIncomingCross(node, diagram, fixedPositions, axes) {
-          if (diagram.incoming.length !== 1) {
-            return null;
-          }
-          const incoming = diagram.incoming[0];
-          if (!fixedPositions[incoming]) {
-            return null;
-          }
-          const connected = diagram.edges.some((edge) => !edge.hidden && (edge.from === incoming && edge.to === node || edge.to === incoming && edge.from === node));
-          return connected ? axes.crossOf(fixedPositions[incoming]) : null;
-        }
-        function distributeLayer(nodes, minCross, maxCross) {
-          const minGap = 42;
-          const sorted = [...nodes].sort((a, b) => a.cross - b.cross || a.node.localeCompare(b.node));
-          for (let index = 1; index < sorted.length; index += 1) {
-            if (sorted[index].cross - sorted[index - 1].cross < minGap) {
-              sorted[index].cross = sorted[index - 1].cross + minGap;
-            }
-          }
-          const overflow = sorted.length ? sorted[sorted.length - 1].cross - maxCross : 0;
-          if (overflow > 0) {
-            sorted.forEach((item) => {
-              item.cross -= overflow;
-            });
-          }
-          for (let index = sorted.length - 2; index >= 0; index -= 1) {
-            if (sorted[index + 1].cross - sorted[index].cross < minGap) {
-              sorted[index].cross = sorted[index + 1].cross - minGap;
-            }
-          }
-          const underflow = sorted.length ? minCross - sorted[0].cross : 0;
-          if (underflow > 0) {
-            sorted.forEach((item) => {
-              item.cross += underflow;
-            });
-          }
-          return sorted.map((item) => ({
-            ...item,
-            cross: Math.max(minCross, Math.min(maxCross, item.cross))
-          }));
-        }
-        async function renderFeynmanElement(source, index) {
-          const diagram = parseFeynman(source);
-          const layout = await layoutFeynman(diagram);
-          const figure = document.createElement("figure");
-          const svg = createSvg("svg", {
-            class: "feynman-diagram__svg",
-            role: "img",
-            width: layout.width,
-            height: layout.height,
-            viewBox: `0 0 ${layout.width} ${layout.height}`,
-            "aria-labelledby": `feynman-title-${index}`,
-            style: `--feynman-diagram-width: ${layout.width}px;`
-          });
-          const title = createSvg("title", { id: `feynman-title-${index}` });
-          title.textContent = "Feynman diagram";
-          figure.className = "feynman-diagram";
-          figure.dataset.feynmanDiagram = "true";
-          svg.appendChild(title);
-          svg.appendChild(createDefinitions(index));
-          renderEdges(diagram, layout, index, (edge) => !isOverlayEdge(edge)).forEach((edge) => {
-            svg.appendChild(edge);
-          });
-          renderJunctionCaps(diagram, layout).forEach((cap) => {
-            svg.appendChild(cap);
-          });
-          Object.entries(layout.positions).forEach(([node, position]) => {
-            const vertex = renderVertex(node, position, diagram, index);
-            if (vertex) {
-              svg.appendChild(vertex);
-            }
-          });
-          renderEdges(diagram, layout, index, isOverlayEdge).forEach((edge) => {
-            svg.appendChild(edge);
-          });
-          renderBraces(diagram, layout).forEach((brace) => {
-            svg.appendChild(brace);
-          });
-          renderLabels(diagram, layout).forEach((label) => {
-            svg.appendChild(label);
-          });
-          await materializePendingMathLabels(svg);
-          figure.appendChild(svg);
-          if (diagram.errors.length) {
-            const errors = document.createElement("figcaption");
-            errors.className = "feynman-diagram__errors";
-            errors.textContent = diagram.errors.join("; ");
-            figure.appendChild(errors);
-          }
-          return figure;
-        }
-        function renderLoadingFigure(index) {
-          const figure = document.createElement("figure");
-          figure.className = "feynman-diagram feynman-diagram--loading";
-          figure.dataset.feynmanDiagram = "true";
-          figure.setAttribute("aria-busy", "true");
-          figure.setAttribute("aria-label", `Rendering Feynman diagram ${index + 1}`);
-          return figure;
-        }
-        function renderErrorFigure(error2, index) {
-          const figure = document.createElement("figure");
-          const errors = document.createElement("figcaption");
-          figure.className = "feynman-diagram";
-          figure.dataset.feynmanDiagram = "true";
-          figure.setAttribute("role", "img");
-          figure.setAttribute("aria-labelledby", `feynman-error-${index}`);
-          errors.id = `feynman-error-${index}`;
-          errors.className = "feynman-diagram__errors";
-          errors.textContent = error2?.message || String(error2 || "Unable to render Feynman diagram");
-          figure.appendChild(errors);
-          return figure;
-        }
-        function renderEdges(diagram, layout, index, includeEdge) {
-          return diagram.edges.filter(includeEdge).map((edge) => {
-            const from = layout.positions[edge.from];
-            const to = layout.positions[edge.to];
-            if (!from || !to) {
-              return null;
-            }
-            return renderEdge(edge, from, to, index);
-          }).filter(Boolean);
-        }
-        function isOverlayEdge(edge) {
-          return edge.type === "ghost" || edge.overlay;
-        }
-        function renderJunctionCaps(diagram, layout) {
-          return junctionCapNodes(diagram, layout).map((cap) => createSvg("circle", {
-            class: "feynman-diagram__junction-cap",
-            cx: cap.position.x,
-            cy: cap.position.y,
-            r: GLUON_JUNCTION_CAP_RADIUS,
-            "aria-hidden": "true"
-          }));
-        }
-        function junctionCapNodes(diagram, layout) {
-          const incident = /* @__PURE__ */ new Map();
-          diagram.edges.filter(isVisibleJunctionEdge).forEach((edge) => {
-            markIncidentEdge(incident, edge.from, edge);
-            markIncidentEdge(incident, edge.to, edge);
-          });
-          return Object.entries(layout.positions).filter(([node, position]) => position.kind === "internal" && !diagram.vertices?.[node] && (incident.get(node)?.count ?? 0) > 1 && incident.get(node)?.hasGluon).map(([node, position]) => ({ node, position }));
-        }
-        function isVisibleJunctionEdge(edge) {
-          return !edge.hidden;
-        }
-        function markIncidentEdge(incident, node, edge) {
-          const current = incident.get(node) || { count: 0, hasGluon: false };
-          current.count += 1;
-          current.hasGluon = current.hasGluon || edge.type === "gluon";
-          incident.set(node, current);
-        }
-        function createDefinitions(index) {
-          const defs = createSvg("defs");
-          const marker = createSvg("marker", {
-            id: `feynman-arrow-${index}`,
-            markerWidth: VISUAL_DEFAULTS.arrowMarkerWidth,
-            markerHeight: VISUAL_DEFAULTS.arrowMarkerHeight,
-            refX: VISUAL_DEFAULTS.arrowMarkerRefX,
-            refY: VISUAL_DEFAULTS.arrowMarkerRefY,
-            orient: "auto",
-            markerUnits: "strokeWidth"
-          });
-          marker.appendChild(createSvg("path", {
-            d: VISUAL_DEFAULTS.arrowPath,
-            class: "feynman-diagram__arrow"
-          }));
-          defs.appendChild(marker);
-          Object.entries(BLOB_HATCH_PATTERNS).forEach(([hatch, pattern]) => {
-            defs.appendChild(createBlobHatchPattern(index, hatch, pattern));
-          });
-          return defs;
-        }
-        function createBlobHatchPattern(index, hatch, pattern) {
-          const patternElement = createSvg("pattern", {
-            id: blobHatchPatternId(index, hatch),
-            patternUnits: "userSpaceOnUse",
-            width: pattern.size,
-            height: pattern.size
-          });
-          patternElement.appendChild(createSvg("rect", {
-            class: "feynman-diagram__hatch-fill",
-            x: 0,
-            y: 0,
-            width: pattern.size,
-            height: pattern.size
-          }));
-          pattern.paths.forEach((path) => {
-            patternElement.appendChild(createSvg("path", {
-              class: "feynman-diagram__hatch-line",
-              d: path
-            }));
-          });
-          return patternElement;
-        }
-        function renderEdge(edge, from, to, index) {
-          if (edge.hidden) {
-            return null;
-          }
-          if (edge.type === "fermion") {
-            return renderDirectedEdge(edge, from, to, "feynman-diagram__edge feynman-diagram__edge--fermion");
-          }
-          if (edge.type === "plain") {
-            return createSvg("path", {
-              class: "feynman-diagram__edge feynman-diagram__edge--plain",
-              d: edgePath(edge, from, to)
-            });
-          }
-          if (edge.type === "photon") {
-            return createSvg("path", {
-              class: "feynman-diagram__edge feynman-diagram__edge--photon",
-              d: wavePathForEdge(edge, from, to, 7, 18)
-            });
-          }
-          if (edge.type === "gluon") {
-            return createSvg("path", {
-              class: "feynman-diagram__edge feynman-diagram__edge--gluon",
-              d: gluonPathForEdge(edge, from, to, 5.5, 13)
-            });
-          }
-          if (edge.type === "ghost") {
-            return createSvg("path", {
-              class: "feynman-diagram__edge feynman-diagram__edge--ghost",
-              d: edgePath(edge, from, to)
-            });
-          }
-          if (edge.type === "dashed") {
-            return createSvg("path", {
-              class: "feynman-diagram__edge feynman-diagram__edge--dashed",
-              d: edgePath(edge, from, to)
-            });
-          }
-          if (edge.type === "dashdot") {
-            return createSvg("path", {
-              class: "feynman-diagram__edge feynman-diagram__edge--dashdot",
-              d: edgePath(edge, from, to)
-            });
-          }
-          if (edge.type === "triangle") {
-            return createSvg("path", {
-              class: "feynman-diagram__edge feynman-diagram__edge--triangle",
-              d: trianglePathForEdge(edge, from, to, 7, 16)
-            });
-          }
-          if (edge.type === "square") {
-            return createSvg("path", {
-              class: "feynman-diagram__edge feynman-diagram__edge--square",
-              d: squarePathForEdge(edge, from, to, 6, 18)
-            });
-          }
-          if (edge.type === "double") {
-            return renderDoubleEdge(edge, from, to);
-          }
-          if (edge.arrow) {
-            return renderDirectedEdge(edge, from, to, "feynman-diagram__edge feynman-diagram__edge--scalar");
-          }
-          return createSvg("path", {
-            class: "feynman-diagram__edge feynman-diagram__edge--scalar",
-            d: edgePath(edge, from, to)
-          });
-        }
-        function renderDirectedEdge(edge, from, to, className) {
-          const group = createSvg("g", {
-            class: "feynman-diagram__edge-group"
-          });
-          const geometry = edgeGeometry2(edge, from, to);
-          group.appendChild(createSvg("path", {
-            class: className,
-            d: geometryToPath(geometry)
-          }));
-          group.appendChild(renderArrowGlyphOnGeometry(geometry, edge.arrow === "reverse"));
-          return group;
-        }
-        function renderArrowGlyphOnGeometry(geometry, reverse) {
-          const sample = geometrySample2(geometry, 0.5);
-          const vector = normalizeVector2(sample.tangent.x, sample.tangent.y);
-          if (reverse) {
-            vector.ux *= -1;
-            vector.uy *= -1;
-          }
-          return renderArrowGlyphAt(sample.point, vector);
-        }
-        function renderArrowGlyph(from, to) {
-          const vector = lineVector2(from, to);
-          const center = {
-            x: (from.x + to.x) / 2,
-            y: (from.y + to.y) / 2
-          };
-          return renderArrowGlyphAt(center, vector);
-        }
-        function renderArrowGlyphAt(center, vector, options = {}) {
-          const length = options.length ?? VISUAL_DEFAULTS.arrowMarkerWidth + 3;
-          const width = options.width ?? VISUAL_DEFAULTS.arrowMarkerHeight;
-          const tip = {
-            x: center.x + vector.ux * (2 * length / 3),
-            y: center.y + vector.uy * (2 * length / 3)
-          };
-          const tail = {
-            x: center.x - vector.ux * (length / 3),
-            y: center.y - vector.uy * (length / 3)
-          };
-          const left = {
-            x: tail.x + vector.px * (width / 2),
-            y: tail.y + vector.py * (width / 2)
-          };
-          const right = {
-            x: tail.x - vector.px * (width / 2),
-            y: tail.y - vector.py * (width / 2)
-          };
-          return createSvg("path", {
-            class: options.className || "feynman-diagram__arrow",
-            d: `M ${round2(tip.x)} ${round2(tip.y)} L ${round2(left.x)} ${round2(left.y)} L ${round2(right.x)} ${round2(right.y)} Z`
-          });
-        }
-        function renderVertex(node, position, diagram, index = 0) {
-          const definition = diagram.vertices?.[node] ?? null;
-          const shape = vertexDefinitionShape(definition);
-          if (!shape) {
-            return null;
-          }
-          if (shape === "dot") {
-            return createSvg("circle", {
-              class: "feynman-diagram__vertex feynman-diagram__vertex--dot",
-              cx: position.x,
-              cy: position.y,
-              r: 3.5
-            });
-          }
-          if (shape === "square-dot") {
-            return createSvg("rect", {
-              class: "feynman-diagram__vertex feynman-diagram__vertex--square-dot",
-              x: position.x - 4,
-              y: position.y - 4,
-              width: 8,
-              height: 8
-            });
-          }
-          if (shape === "empty-dot") {
-            return createSvg("circle", {
-              class: "feynman-diagram__vertex feynman-diagram__vertex--empty-dot",
-              cx: position.x,
-              cy: position.y,
-              r: 5
-            });
-          }
-          if (shape === "cross" || shape === "crossed-dot") {
-            const group = createSvg("g", {
-              class: `feynman-diagram__vertex-group feynman-diagram__vertex-group--${shape}`
-            });
-            const radius = shape === "crossed-dot" ? 6 : 7;
-            if (shape === "crossed-dot") {
-              group.appendChild(createSvg("circle", {
-                class: "feynman-diagram__vertex feynman-diagram__vertex--empty-dot",
-                cx: position.x,
-                cy: position.y,
-                r: radius
-              }));
-            }
-            group.appendChild(createSvg("line", {
-              class: "feynman-diagram__vertex-mark",
-              x1: position.x - radius,
-              y1: position.y - radius,
-              x2: position.x + radius,
-              y2: position.y + radius
-            }));
-            group.appendChild(createSvg("line", {
-              class: "feynman-diagram__vertex-mark",
-              x1: position.x - radius,
-              y1: position.y + radius,
-              x2: position.x + radius,
-              y2: position.y - radius
-            }));
-            return group;
-          }
-          if (shape === "blob" || shape === "disk") {
-            const options = vertexDefinitionOptions(definition);
-            const group = createSvg("g", {
-              class: `feynman-diagram__vertex-group feynman-diagram__vertex-group--${shape}`
-            });
-            const radii = blobVertexRadii(shape, definition);
-            const circular = Math.abs(radii.rx - radii.ry) < 1e-3;
-            const hatch = options.hatch;
-            const shapeAttributes = {
-              class: [
-                "feynman-diagram__vertex",
-                "feynman-diagram__vertex--blob",
-                `feynman-diagram__vertex--${shape}`,
-                hatch ? "feynman-diagram__vertex--blob-hatched" : "feynman-diagram__vertex--blob-shaded"
-              ].join(" "),
-              cx: position.x,
-              cy: position.y
-            };
-            const backdropAttributes = {
-              class: "feynman-diagram__vertex-backdrop",
-              cx: position.x,
-              cy: position.y
-            };
-            if (circular) {
-              shapeAttributes.r = radii.rx;
-              backdropAttributes.r = radii.rx + 1;
-            } else {
-              shapeAttributes.rx = radii.rx;
-              shapeAttributes.ry = radii.ry;
-              backdropAttributes.rx = radii.rx + 1;
-              backdropAttributes.ry = radii.ry + 1;
-            }
-            if (hatch) {
-              shapeAttributes.fill = `url(#${blobHatchPatternId(index, hatch)})`;
-            }
-            group.appendChild(createSvg(circular ? "circle" : "ellipse", backdropAttributes));
-            group.appendChild(createSvg(circular ? "circle" : "ellipse", shapeAttributes));
-            return group;
-          }
-          return null;
-        }
-        function vertexDefinitionShape(definition) {
-          if (!definition) {
-            return null;
-          }
-          if (typeof definition === "string") {
-            return definition;
-          }
-          return definition.shape ?? null;
-        }
-        function vertexDefinitionOptions(definition) {
-          if (!definition || typeof definition === "string") {
-            return {};
-          }
-          return definition;
-        }
-        function blobVertexRadii(shape, definition) {
-          const options = vertexDefinitionOptions(definition);
-          const radius = options.size ?? BLOB_VERTEX_DEFAULT_RADII[shape];
-          return {
-            rx: options.rx ?? radius,
-            ry: options.ry ?? radius
-          };
-        }
-        function blobHatchPatternId(index, hatch) {
-          return `feynman-hatch-${hatch}-${index}`;
-        }
-        function renderDoubleEdge(edge, from, to) {
-          const path = createSvg("path", {
-            class: "feynman-diagram__edge feynman-diagram__edge--double",
-            d: doubleLinePathForEdge(edge, from, to, 4.6)
-          });
-          if (!edge.arrow) {
-            return path;
-          }
-          const group = createSvg("g", {
-            class: "feynman-diagram__edge-group"
-          });
-          const geometry = edgeGeometry2(edge, from, to);
-          group.appendChild(path);
-          group.appendChild(renderArrowGlyphOnGeometry(geometry, edge.arrow === "reverse"));
-          return group;
-        }
-        function renderLabels(diagram, layout) {
-          const declaredLabels = Object.entries(diagram.labels).map(([target, text]) => {
-            if (target.includes("->")) {
-              return renderEdgeLabel(target, text, diagram, layout);
-            }
-            return renderNodeLabel(target, text, layout.positions[target], layout);
-          }).filter(Boolean);
-          const inlineEdgeLabels = diagram.edges.map((edge, index) => edge.label ? renderEdgeLabelForEdge(edge, edge.label, layout, {
-            placementId: edgePlacementId(edge, index)
-          }) : null).filter(Boolean);
-          return [...declaredLabels, ...inlineEdgeLabels];
-        }
-        function renderNodeLabel(target, text, position, layout) {
-          if (!position) {
-            return null;
-          }
-          const placement = labelPlacementEntry(layout, `node:${target}`);
-          const offset = labelOffset2(position.labelSide || position.kind);
-          const x = placement?.x ?? position.x + offset.x;
-          const y = placement?.y ?? position.y + offset.y;
-          const anchor = placement?.anchor || offset.anchor;
-          return createDiagramLabel({
-            text: text || target,
-            x,
-            y,
-            anchor,
-            className: `feynman-diagram__label feynman-diagram__label--${position.kind}`
-          });
-        }
-        function renderEdgeLabel(target, text, diagram, layout) {
-          const edge = findEdgeByLabelTarget2(target, diagram.edges);
-          if (!edge) {
-            return null;
-          }
-          return renderEdgeLabelForEdge(edge, text, layout, {
-            forceNormal: true,
-            placementId: `declared-edge:${target}`
-          });
-        }
-        function renderEdgeLabelForEdge(edge, text, layout, options = {}) {
-          const from = layout.positions[edge.from];
-          const to = layout.positions[edge.to];
-          if (!from || !to) {
-            return null;
-          }
-          const placement = labelPlacementEntry(layout, options.placementId);
-          const side = placement?.side || edge.labelSide || "left";
-          const position = placement || edgeLabelPosition2(edge, from, to, side, {
-            ...options,
-            sideOverride: side
-          });
-          if (isMomentumEdge2(edge) && !options.forceNormal) {
-            return renderMomentumLabelForEdge(edge, text, from, to, position, { sideOverride: side });
-          }
-          return createDiagramLabel({
-            text,
-            x: position.x,
-            y: position.y,
-            anchor: position.anchor,
-            className: "feynman-diagram__label feynman-diagram__label--edge"
-          });
-        }
-        function renderMomentumLabelForEdge(edge, text, from, to, position, options = {}) {
-          const group = createSvg("g", {
-            class: "feynman-diagram__momentum-label"
-          });
-          const arrow = momentumArrowGeometry2(edge, from, to, options);
-          group.appendChild(createSvg("path", {
-            class: "feynman-diagram__momentum-arrow",
-            d: arrow.path
-          }));
-          group.appendChild(renderArrowGlyphAt(arrow.end, arrow.tangent, {
-            className: "feynman-diagram__arrow feynman-diagram__momentum-arrowhead",
-            length: VISUAL_DEFAULTS.momentumArrowHeadLength,
-            width: VISUAL_DEFAULTS.momentumArrowHeadWidth
-          }));
-          group.appendChild(createDiagramLabel({
-            text,
-            x: position.x,
-            y: position.y,
-            anchor: position.anchor,
-            className: "feynman-diagram__label feynman-diagram__label--edge feynman-diagram__label--momentum"
-          }));
-          return group;
-        }
-        function labelPlacementEntry(layout, id) {
-          return layout?.labelPlacement?.byId?.[id] || null;
-        }
-        function edgePlacementId(edge, index) {
-          return `edge:${edge.id || `${edge.from}->${edge.to}#${index + 1}`}`;
-        }
-        function findEdgeByLabelTarget2(target, edges) {
-          const match = String(target || "").match(/^([A-Za-z0-9_.-]+)->([A-Za-z0-9_.-]+)(?:#([0-9]+))?$/);
-          if (!match) {
-            return null;
-          }
-          const [, from, to, rawIndex] = match;
-          const matches = edges.filter((edge) => edge.from === from && edge.to === to);
-          const index = rawIndex ? Number(rawIndex) - 1 : 0;
-          return matches[index] || null;
-        }
-        function edgeLabelPosition2(edge, from, to, side, options = {}) {
-          const sample = geometrySample2(edgeGeometry2(edge, from, to), 0.5);
-          const tangent = normalizeVector2(sample.tangent.x, sample.tangent.y);
-          const resolvedSide = options.sideOverride || side;
-          if (isMomentumEdge2(edge)) {
-            if (!options.forceNormal) {
-              return momentumLabelPosition2(edge, sample.point, tangent, resolvedSide);
-            }
-            const momentumNormal = momentumNormalForTangent2(edge, tangent, resolvedSide);
-            return {
-              x: sample.point.x - momentumNormal.x * VISUAL_DEFAULTS.edgeLabelOffset,
-              y: sample.point.y - momentumNormal.y * VISUAL_DEFAULTS.edgeLabelOffset,
-              anchor: "middle"
-            };
-          }
-          const normalSign = resolvedSide === "right" ? 1 : -1;
-          return {
-            x: sample.point.x + tangent.px * VISUAL_DEFAULTS.edgeLabelOffset * normalSign,
-            y: sample.point.y + tangent.py * VISUAL_DEFAULTS.edgeLabelOffset * normalSign,
-            anchor: "middle"
-          };
-        }
-        function momentumLabelPosition2(edge, point, tangent, sideOverride) {
-          const normal = momentumNormalForTangent2(edge, tangent, sideOverride);
-          const offset = momentumArrowDistance2(edge) + VISUAL_DEFAULTS.momentumLabelGap + momentumLabelDistance2(edge);
-          return {
-            x: point.x + normal.x * offset,
-            y: point.y + normal.y * offset,
-            anchor: "middle"
-          };
-        }
-        function momentumArrowGeometry2(edge, from, to, options = {}) {
-          const geometry = edgeGeometry2(edge, from, to);
-          const shorten = momentumArrowShorten2(edge);
-          const reverse = edge.momentumDirection === "reverse";
-          const start = reverse ? 1 - shorten : shorten;
-          const end = reverse ? shorten : 1 - shorten;
-          const steps = geometry.kind === "cubic" ? 8 : 1;
-          const midpoint = geometrySample2(geometry, 0.5);
-          const normal = momentumNormalForTangent2(
-            edge,
-            normalizeVector2(midpoint.tangent.x, midpoint.tangent.y),
-            options.sideOverride
-          );
-          const offset = momentumArrowDistance2(edge);
-          const points = [];
-          for (let step = 0; step <= steps; step += 1) {
-            const t = start + (end - start) * step / steps;
-            const point = geometryPoint2(geometry, t);
-            points.push({
-              x: point.x + normal.x * offset,
-              y: point.y + normal.y * offset
-            });
-          }
-          const endPoint = points[points.length - 1];
-          const beforeEnd = points[points.length - 2] || points[0];
-          return {
-            path: pointsToPath(points),
-            start: points[0],
-            end: endPoint,
-            tangent: normalizeVector2(endPoint.x - beforeEnd.x, endPoint.y - beforeEnd.y),
-            points
-          };
-        }
-        function isMomentumEdge2(edge) {
-          return edge.labelPlacement === "momentum" || edge.labelPlacement === "momentum-prime";
-        }
-        function momentumNormalForTangent2(edge, tangent, sideOverride) {
-          const normal = canonicalMomentumNormal2(tangent);
-          const normalSign = (sideOverride || (edge.labelPlacement === "momentum-prime" ? "right" : "left")) === "right" ? 1 : -1;
-          return {
-            x: normal.x * normalSign,
-            y: normal.y * normalSign
-          };
-        }
-        function momentumArrowDistance2(edge) {
-          return edge.momentum?.arrowDistance ?? VISUAL_DEFAULTS.momentumArrowOffset;
-        }
-        function momentumLabelDistance2(edge) {
-          return edge.momentum?.labelDistance ?? 0;
-        }
-        function momentumArrowShorten2(edge) {
-          return edge.momentum?.arrowShorten ?? VISUAL_DEFAULTS.momentumArrowShorten;
-        }
-        function canonicalMomentumNormal2(tangent) {
-          let ux = tangent.ux;
-          let uy = tangent.uy;
-          if (Math.abs(ux) >= Math.abs(uy)) {
-            if (ux < 0) {
-              ux *= -1;
-              uy *= -1;
-            }
-          } else if (uy < 0) {
-            ux *= -1;
-            uy *= -1;
-          }
-          return {
-            x: -uy,
-            y: ux
-          };
-        }
-        function renderBraces(diagram, layout) {
-          return (diagram.braces || []).map((brace) => renderBrace(brace, layout)).filter(Boolean);
-        }
-        function renderBrace(brace, layout) {
-          const from = layout.positions[brace.from];
-          const to = layout.positions[brace.to];
-          if (!from || !to) {
-            return null;
-          }
-          const group = createSvg("g", {
-            class: "feynman-diagram__brace-group"
-          });
-          const geometry = braceGeometry(from, to, brace.side);
-          if (geometry.kind === "tex-brace") {
-            geometry.pieces.forEach((piece) => {
-              group.appendChild(createSvg("path", {
-                class: "feynman-diagram__brace feynman-diagram__brace--tex",
-                d: piece.path,
-                transform: piece.transform
-              }));
-            });
-          } else {
-            group.appendChild(createSvg("path", {
-              class: "feynman-diagram__brace",
-              d: geometry.path
-            }));
-          }
-          group.appendChild(createDiagramLabel({
-            text: brace.label,
-            x: geometry.label.x,
-            y: geometry.label.y,
-            anchor: geometry.label.anchor,
-            className: "feynman-diagram__label feynman-diagram__label--brace"
-          }));
-          return group;
-        }
-        function braceGeometry(from, to, side) {
-          const gap = 42;
-          const curl = 14;
-          const labelGap = 22;
-          if (side === "left" || side === "right") {
-            const sign2 = side === "right" ? 1 : -1;
-            const x = (side === "right" ? Math.max(from.x, to.x) : Math.min(from.x, to.x)) + sign2 * BRACE_SIDE_GAP;
-            const y1 = Math.min(from.y, to.y);
-            const y2 = Math.max(from.y, to.y);
-            const mid2 = (y1 + y2) / 2;
-            const braceY1 = y1 - BRACE_LABEL_PADDING;
-            const braceY2 = y2 + BRACE_LABEL_PADDING;
-            const geometry = texBraceGeometry(x, braceY1, braceY2, side);
-            return {
-              kind: "tex-brace",
-              x: round2(x),
-              pieces: geometry.pieces,
-              scale: geometry.scale,
-              extenderRepeats: geometry.extenderRepeats,
-              bounds: {
-                y1: round2(braceY1),
-                y2: round2(braceY2)
-              },
-              label: {
-                x: round2(x + sign2 * labelGap),
-                y: mid2,
-                anchor: side === "right" ? "start" : "end"
-              }
-            };
-          }
-          const sign = side === "bottom" ? 1 : -1;
-          const x1 = Math.min(from.x, to.x);
-          const x2 = Math.max(from.x, to.x);
-          const mid = (x1 + x2) / 2;
-          const y = (side === "bottom" ? Math.max(from.y, to.y) : Math.min(from.y, to.y)) + sign * gap;
-          const notch = Math.min(10, Math.max(5, (x2 - x1) / 8));
-          const path = [
-            `M ${round2(x1)} ${round2(y)}`,
-            `C ${round2(x1)} ${round2(y + sign * curl)} ${round2(mid - notch * 2)} ${round2(y + sign * curl)} ${round2(mid - notch)} ${round2(y)}`,
-            `C ${round2(mid - notch * 0.4)} ${round2(y + sign * curl * 0.45)} ${round2(mid + notch * 0.4)} ${round2(y + sign * curl * 0.45)} ${round2(mid + notch)} ${round2(y)}`,
-            `C ${round2(mid + notch * 2)} ${round2(y + sign * curl)} ${round2(x2)} ${round2(y + sign * curl)} ${round2(x2)} ${round2(y)}`
-          ].join(" ");
-          return {
-            kind: "path",
-            path,
-            label: {
-              x: mid,
-              y: y + sign * labelGap,
-              anchor: "middle"
-            }
-          };
-        }
-        function texBraceGeometry(x, y1, y2, side) {
-          const span = Math.max(1, y2 - y1);
-          const rawRepeats = (span / TEX_BRACE_METRICS.targetScale - TEX_BRACE_METRICS.baseHeight) / (2 * TEX_BRACE_METRICS.extenderAdvance);
-          const extenderRepeats = Math.max(0, Math.round(rawRepeats));
-          const designHeight = TEX_BRACE_METRICS.baseHeight + 2 * extenderRepeats * TEX_BRACE_METRICS.extenderAdvance;
-          const scale = span / designHeight;
-          const topY = y1 - TEX_BRACE_METRICS.topMinY * scale;
-          const sidePaths = TEX_BRACE_PATHS[side];
-          const middleY = TEX_BRACE_METRICS.topAdvance + extenderRepeats * TEX_BRACE_METRICS.extenderAdvance;
-          const bottomExtensionY = middleY + TEX_BRACE_METRICS.middleAdvance;
-          const bottomY = bottomExtensionY + extenderRepeats * TEX_BRACE_METRICS.extenderAdvance;
-          const pieces = [
-            texBracePiece(sidePaths.top, x, topY, scale, 0)
-          ];
-          for (let index = 0; index < extenderRepeats; index += 1) {
-            pieces.push(texBracePiece(
-              TEX_BRACE_PATHS.extender,
-              x,
-              topY,
-              scale,
-              TEX_BRACE_METRICS.topAdvance + index * TEX_BRACE_METRICS.extenderAdvance
-            ));
-          }
-          pieces.push(texBracePiece(sidePaths.middle, x, topY, scale, middleY));
-          for (let index = 0; index < extenderRepeats; index += 1) {
-            pieces.push(texBracePiece(
-              TEX_BRACE_PATHS.extender,
-              x,
-              topY,
-              scale,
-              bottomExtensionY + index * TEX_BRACE_METRICS.extenderAdvance
-            ));
-          }
-          pieces.push(texBracePiece(sidePaths.bottom, x, topY, scale, bottomY));
-          return {
-            pieces,
-            scale: round2(scale),
-            extenderRepeats
-          };
-        }
-        function texBracePiece(path, x, y, scale, yOffset) {
-          return {
-            path,
-            transform: [
-              `matrix(${round2(scale)} 0 0 ${round2(scale)}`,
-              `${round2(x - TEX_BRACE_METRICS.centerX * scale)}`,
-              `${round2(y + yOffset * scale)})`
-            ].join(" ")
-          };
-        }
-        function mathJaxTexToSvgAvailable() {
-          return typeof window !== "undefined" && window.MathJax && typeof window.MathJax.tex2svgPromise === "function";
-        }
-        function whenMathJaxReady() {
-          if (typeof window === "undefined") {
-            return Promise.resolve();
-          }
-          if (window.MathJax?.startup?.promise) {
-            return window.MathJax.startup.promise;
-          }
-          if (mathJaxTexToSvgAvailable()) {
-            return Promise.resolve();
-          }
-          return new Promise((resolve) => {
-            let attempts = 0;
-            const timer = window.setInterval(() => {
-              if (mathJaxTexToSvgAvailable() || attempts++ > 200) {
-                window.clearInterval(timer);
-                resolve();
-              }
-            }, 50);
-          });
-        }
-        function createDiagramLabel({ text, x, y, anchor, className }) {
-          const source = String(text ?? "");
-          if (labelNeedsMathJax(source)) {
-            const group = createSvg("g", {
-              class: `${className} feynman-diagram__label--math-pending`.trim(),
-              "data-math-tex": source,
-              "data-label-x": x,
-              "data-label-y": y,
-              "data-label-anchor": anchor
-            });
-            const fallback = createSvg("text", {
-              class: "feynman-diagram__label feynman-diagram__label--fallback",
-              x,
-              y,
-              "text-anchor": anchor,
-              "dominant-baseline": "middle"
-            });
-            appendLabelMarkup(fallback, source);
-            group.appendChild(fallback);
-            return group;
-          }
-          const label = createSvg("text", {
-            class: className,
-            x,
-            y,
-            "text-anchor": anchor,
-            "dominant-baseline": "middle"
-          });
-          appendLabelMarkup(label, source);
-          return label;
-        }
-        function mathJaxDisplayFontSize(className) {
-          const base = String(className || "").includes("edge") ? VISUAL_DEFAULTS.edgeLabelFontSize : VISUAL_DEFAULTS.labelFontSize;
-          return base * VISUAL_DEFAULTS.mathLabelFontScale;
-        }
-        function parseMathJaxSvgLength(value, emPixels) {
-          if (value == null || value === "") {
-            return 0;
-          }
-          const raw = String(value).trim();
-          const match = raw.match(/^([+-]?\d*\.?\d+(?:e[-+]?\d+)?)\s*(ex|em|px)?$/i);
-          if (!match) {
-            return Number.parseFloat(raw) || 0;
-          }
-          const amount = Number.parseFloat(match[1]);
-          const unit = (match[2] || "px").toLowerCase();
-          if (unit === "ex") {
-            return amount * emPixels * 0.431;
-          }
-          if (unit === "em") {
-            return amount * emPixels;
-          }
-          return amount;
-        }
-        function prefixSvgIds(root, prefix) {
-          const idMap = /* @__PURE__ */ new Map();
-          root.querySelectorAll("[id]").forEach((element) => {
-            const oldId = element.id;
-            const newId = `${prefix}__${oldId}`;
-            idMap.set(oldId, newId);
-            element.id = newId;
-          });
-          root.querySelectorAll("[href]").forEach((element) => {
-            const href = element.getAttribute("href");
-            if (href?.startsWith("#")) {
-              const mapped = idMap.get(href.slice(1));
-              if (mapped) {
-                element.setAttribute("href", `#${mapped}`);
-              }
-            }
-          });
-          root.querySelectorAll("*").forEach((element) => {
-            const xlinkHref = element.getAttributeNS("http://www.w3.org/1999/xlink", "href");
-            if (xlinkHref?.startsWith("#")) {
-              const mapped = idMap.get(xlinkHref.slice(1));
-              if (mapped) {
-                element.setAttributeNS("http://www.w3.org/1999/xlink", "href", `#${mapped}`);
-              }
-            }
-          });
-        }
-        function embedMathJaxSvgGroup(container, { x, y, anchor, className, idPrefix }) {
-          const sourceSvg = container?.querySelector?.("svg");
-          if (!sourceSvg) {
-            return createSvg("g");
-          }
-          const emPixels = mathJaxDisplayFontSize(className);
-          let width = parseMathJaxSvgLength(sourceSvg.getAttribute("width"), emPixels);
-          let height = parseMathJaxSvgLength(sourceSvg.getAttribute("height"), emPixels);
-          if (!(width > 0 && height > 0)) {
-            width = emPixels * 2.4;
-            height = emPixels * 1.05;
-          }
-          const group = createSvg("g", {
-            class: `${className || ""} feynman-diagram__label--mathjax`.trim(),
-            transform: `translate(${round2(foreignObjectX(x, width, anchor))} ${round2(y - height / 2)})`
-          });
-          const nested = document.importNode(sourceSvg, true);
-          nested.setAttribute("width", width);
-          nested.setAttribute("height", height);
-          nested.setAttribute("overflow", "visible");
-          nested.setAttribute("class", "feynman-diagram__label-math-svg");
-          prefixSvgIds(nested, idPrefix);
-          group.appendChild(nested);
-          return group;
-        }
-        async function materializePendingMathLabels(root) {
-          if (!root?.querySelectorAll) {
-            return;
-          }
-          const pending = [...root.querySelectorAll("[data-math-tex]")];
-          if (!pending.length) {
-            return;
-          }
-          await whenMathJaxReady();
-          if (!mathJaxTexToSvgAvailable()) {
-            return;
-          }
-          await Promise.all(pending.map(async (group) => {
-            const tex = group.dataset.mathTex;
-            if (!tex) {
-              return;
-            }
-            try {
-              const fontSize = mathJaxDisplayFontSize(
-                group.getAttribute("class")?.replace("feynman-diagram__label--math-pending", "").trim()
-              );
-              const mathNode = await window.MathJax.tex2svgPromise(tex, {
-                display: false,
-                em: fontSize,
-                ex: fontSize * 0.431
-              });
-              const replacement = embedMathJaxSvgGroup(mathNode, {
-                x: Number(group.dataset.labelX),
-                y: Number(group.dataset.labelY),
-                anchor: group.dataset.labelAnchor || "middle",
-                className: group.getAttribute("class")?.replace("feynman-diagram__label--math-pending", "").trim(),
-                idPrefix: `feynman-math-${mathLabelSerial += 1}`
-              });
-              group.replaceWith(replacement);
-            } catch {
-              group.removeAttribute("data-math-tex");
-              group.classList.remove("feynman-diagram__label--math-pending");
-            }
-          }));
-        }
-        function foreignObjectX(x, width, anchor) {
-          if (anchor === "start") {
-            return x;
-          }
-          if (anchor === "end") {
-            return x - width;
-          }
-          return x - width / 2;
-        }
-        function appendLabelMarkup(label, source) {
-          const segments = parseLabelMarkup(source);
-          label.setAttribute("aria-label", labelMarkupToText(source));
-          segments.forEach((segment) => {
-            if (!segment.text) {
-              return;
-            }
-            const tspan = createSvg("tspan");
-            tspan.textContent = labelSegmentText(segment);
-            if (segment.kind !== "normal") {
-              tspan.setAttribute("baseline-shift", segment.kind === "sup" ? "super" : "sub");
-              tspan.setAttribute("font-size", `${VISUAL_DEFAULTS.scriptFontSizePercent}%`);
-            }
-            if (segment.overline) {
-              tspan.setAttribute("text-decoration", "overline");
-            }
-            label.appendChild(tspan);
-          });
-        }
-        function labelOffset2(kind) {
-          if (kind === "left" || kind === "incoming") {
-            return { x: -VISUAL_DEFAULTS.labelHorizontalOffset, y: 0, anchor: "end" };
-          }
-          if (kind === "right" || kind === "outgoing") {
-            return { x: VISUAL_DEFAULTS.labelHorizontalOffset, y: 0, anchor: "start" };
-          }
-          if (kind === "bottom") {
-            return { x: 0, y: VISUAL_DEFAULTS.labelBottomOffset, anchor: "middle" };
-          }
-          return { x: 0, y: -VISUAL_DEFAULTS.labelTopOffset, anchor: "middle" };
-        }
-        function createSvg(tagName, attributes) {
-          const element = document.createElementNS(SVG_NS, tagName);
-          Object.entries(attributes || {}).forEach(([name, value]) => {
-            element.setAttribute(name, String(value));
-          });
-          return element;
-        }
-        function round2(value) {
-          return Math.round(value * 100) / 100;
-        }
-        function injectStyles() {
-          if (document.getElementById("feynman-diagram-styles")) {
-            return;
-          }
-          const style = document.createElement("style");
-          style.id = "feynman-diagram-styles";
-          style.textContent = `
+        group.replaceWith(replacement);
+      } catch {
+        group.removeAttribute("data-math-tex");
+        group.classList.remove("feynman-diagram__label--math-pending");
+      }
+    }));
+  }
+  function prefixSvgIds(root, prefix) {
+    const idMap = /* @__PURE__ */ new Map();
+    root.querySelectorAll("[id]").forEach((element) => {
+      const oldId = element.id;
+      const newId = `${prefix}__${oldId}`;
+      idMap.set(oldId, newId);
+      element.id = newId;
+    });
+    root.querySelectorAll("[href]").forEach((element) => {
+      const href = element.getAttribute("href");
+      if (href?.startsWith("#")) {
+        const mapped = idMap.get(href.slice(1));
+        if (mapped) {
+          element.setAttribute("href", `#${mapped}`);
+        }
+      }
+    });
+    root.querySelectorAll("*").forEach((element) => {
+      const xlinkHref = element.getAttributeNS("http://www.w3.org/1999/xlink", "href");
+      if (xlinkHref?.startsWith("#")) {
+        const mapped = idMap.get(xlinkHref.slice(1));
+        if (mapped) {
+          element.setAttributeNS("http://www.w3.org/1999/xlink", "href", `#${mapped}`);
+        }
+      }
+    });
+  }
+  function embedMathJaxSvgGroup(container, { x, y, anchor, className, idPrefix }) {
+    const sourceSvg = container?.querySelector?.("svg");
+    if (!sourceSvg) {
+      return createSvg("g");
+    }
+    const emPixels = mathJaxDisplayFontSize(className);
+    let width = parseMathJaxSvgLength(sourceSvg.getAttribute("width"), emPixels);
+    let height = parseMathJaxSvgLength(sourceSvg.getAttribute("height"), emPixels);
+    if (!(width > 0 && height > 0)) {
+      width = emPixels * 2.4;
+      height = emPixels * 1.05;
+    }
+    const group = createSvg("g", {
+      class: `${className || ""} feynman-diagram__label--mathjax`.trim(),
+      transform: `translate(${round2(foreignObjectX(x, width, anchor))} ${round2(y - height / 2)})`
+    });
+    const nested = document.importNode(sourceSvg, true);
+    nested.setAttribute("width", width);
+    nested.setAttribute("height", height);
+    nested.setAttribute("overflow", "visible");
+    nested.setAttribute("class", "feynman-diagram__label-math-svg");
+    prefixSvgIds(nested, idPrefix);
+    group.appendChild(nested);
+    return group;
+  }
+  function foreignObjectX(x, width, anchor) {
+    if (anchor === "start") {
+      return x;
+    }
+    if (anchor === "end") {
+      return x - width;
+    }
+    return x - width / 2;
+  }
+  var mathLabelSerial;
+  var init_mathjax = __esm({
+    "src/markfeyn/renderer/render/mathjax.js"() {
+      init_dom();
+      init_visual_defaults();
+      mathLabelSerial = 0;
+    }
+  });
+
+  // src/markfeyn/renderer/render/definitions.js
+  function createDefinitions(index) {
+    const defs = createSvg("defs");
+    const marker = createSvg("marker", {
+      id: `feynman-arrow-${index}`,
+      markerWidth: VISUAL_DEFAULTS.arrowMarkerWidth,
+      markerHeight: VISUAL_DEFAULTS.arrowMarkerHeight,
+      refX: VISUAL_DEFAULTS.arrowMarkerRefX,
+      refY: VISUAL_DEFAULTS.arrowMarkerRefY,
+      orient: "auto",
+      markerUnits: "strokeWidth"
+    });
+    marker.appendChild(createSvg("path", {
+      d: VISUAL_DEFAULTS.arrowPath,
+      class: "feynman-diagram__arrow"
+    }));
+    defs.appendChild(marker);
+    Object.entries(BLOB_HATCH_PATTERNS).forEach(([hatch, pattern]) => {
+      defs.appendChild(createBlobHatchPattern(index, hatch, pattern));
+    });
+    return defs;
+  }
+  function createBlobHatchPattern(index, hatch, pattern) {
+    const patternElement = createSvg("pattern", {
+      id: blobHatchPatternId(index, hatch),
+      patternUnits: "userSpaceOnUse",
+      width: pattern.size,
+      height: pattern.size
+    });
+    patternElement.appendChild(createSvg("rect", {
+      class: "feynman-diagram__hatch-fill",
+      x: 0,
+      y: 0,
+      width: pattern.size,
+      height: pattern.size
+    }));
+    pattern.paths.forEach((path) => {
+      patternElement.appendChild(createSvg("path", {
+        class: "feynman-diagram__hatch-line",
+        d: path
+      }));
+    });
+    return patternElement;
+  }
+  var init_definitions = __esm({
+    "src/markfeyn/renderer/render/definitions.js"() {
+      init_dom();
+      init_vertex_shapes();
+      init_visual_defaults();
+    }
+  });
+
+  // src/markfeyn/renderer/render/styles.js
+  function injectStyles() {
+    if (document.getElementById("feynman-diagram-styles")) {
+      return;
+    }
+    const style = document.createElement("style");
+    style.id = "feynman-diagram-styles";
+    style.textContent = `
       .feynman-diagram {
         margin: 1.25rem 0;
         overflow-x: auto;
@@ -102700,9 +102473,213 @@
         min-height: 9rem;
       }
     `;
-          document.head.appendChild(style);
+    document.head.appendChild(style);
+  }
+  var init_styles = __esm({
+    "src/markfeyn/renderer/render/styles.js"() {
+      init_visual_defaults();
+    }
+  });
+
+  // src/markfeyn/renderer/render/vertices.js
+  function renderVertex(node, position, diagram, index = 0) {
+    const definition = diagram.vertices?.[node] ?? null;
+    const shape = vertexDefinitionShape(definition);
+    if (!shape) {
+      return null;
+    }
+    if (shape === "dot") {
+      return createSvg("circle", {
+        class: "feynman-diagram__vertex feynman-diagram__vertex--dot",
+        cx: position.x,
+        cy: position.y,
+        r: 3.5
+      });
+    }
+    if (shape === "square-dot") {
+      return createSvg("rect", {
+        class: "feynman-diagram__vertex feynman-diagram__vertex--square-dot",
+        x: position.x - 4,
+        y: position.y - 4,
+        width: 8,
+        height: 8
+      });
+    }
+    if (shape === "empty-dot") {
+      return createSvg("circle", {
+        class: "feynman-diagram__vertex feynman-diagram__vertex--empty-dot",
+        cx: position.x,
+        cy: position.y,
+        r: 5
+      });
+    }
+    if (shape === "cross" || shape === "crossed-dot") {
+      const group = createSvg("g", {
+        class: `feynman-diagram__vertex-group feynman-diagram__vertex-group--${shape}`
+      });
+      const radius = shape === "crossed-dot" ? 6 : 7;
+      if (shape === "crossed-dot") {
+        group.appendChild(createSvg("circle", {
+          class: "feynman-diagram__vertex feynman-diagram__vertex--empty-dot",
+          cx: position.x,
+          cy: position.y,
+          r: radius
+        }));
+      }
+      group.appendChild(createSvg("line", {
+        class: "feynman-diagram__vertex-mark",
+        x1: position.x - radius,
+        y1: position.y - radius,
+        x2: position.x + radius,
+        y2: position.y + radius
+      }));
+      group.appendChild(createSvg("line", {
+        class: "feynman-diagram__vertex-mark",
+        x1: position.x - radius,
+        y1: position.y + radius,
+        x2: position.x + radius,
+        y2: position.y - radius
+      }));
+      return group;
+    }
+    if (shape === "blob" || shape === "disk") {
+      const options = vertexDefinitionOptions(definition);
+      const group = createSvg("g", {
+        class: `feynman-diagram__vertex-group feynman-diagram__vertex-group--${shape}`
+      });
+      const radii = blobVertexRadii(shape, definition);
+      const circular = Math.abs(radii.rx - radii.ry) < 1e-3;
+      const hatch = options.hatch;
+      const shapeAttributes = {
+        class: [
+          "feynman-diagram__vertex",
+          "feynman-diagram__vertex--blob",
+          `feynman-diagram__vertex--${shape}`,
+          hatch ? "feynman-diagram__vertex--blob-hatched" : "feynman-diagram__vertex--blob-shaded"
+        ].join(" "),
+        cx: position.x,
+        cy: position.y
+      };
+      const backdropAttributes = {
+        class: "feynman-diagram__vertex-backdrop",
+        cx: position.x,
+        cy: position.y
+      };
+      if (circular) {
+        shapeAttributes.r = radii.rx;
+        backdropAttributes.r = radii.rx + 1;
+      } else {
+        shapeAttributes.rx = radii.rx;
+        shapeAttributes.ry = radii.ry;
+        backdropAttributes.rx = radii.rx + 1;
+        backdropAttributes.ry = radii.ry + 1;
+      }
+      if (hatch) {
+        shapeAttributes.fill = `url(#${blobHatchPatternId(index, hatch)})`;
+      }
+      group.appendChild(createSvg(circular ? "circle" : "ellipse", backdropAttributes));
+      group.appendChild(createSvg(circular ? "circle" : "ellipse", shapeAttributes));
+      return group;
+    }
+    return null;
+  }
+  var init_vertices2 = __esm({
+    "src/markfeyn/renderer/render/vertices.js"() {
+      init_dom();
+      init_vertex_shapes();
+    }
+  });
+
+  // src/markfeyn/renderer/render/svg-renderer.js
+  var SvgRenderer;
+  var init_svg_renderer = __esm({
+    "src/markfeyn/renderer/render/svg-renderer.js"() {
+      init_braces2();
+      init_definitions();
+      init_dom();
+      init_edges2();
+      init_labels3();
+      init_mathjax();
+      init_styles();
+      init_vertices2();
+      SvgRenderer = class {
+        constructor({ parseFeynman: parseFeynman2, layoutFeynman }) {
+          this.parseFeynman = parseFeynman2;
+          this.layoutFeynman = layoutFeynman;
+          this.diagramSerial = 0;
         }
-        function renderAll(root) {
+        async renderFeynmanElement(source, index) {
+          const diagram = this.parseFeynman(source);
+          const layout = await this.layoutFeynman(diagram);
+          const figure = document.createElement("figure");
+          const svg = createSvg("svg", {
+            class: "feynman-diagram__svg",
+            role: "img",
+            width: layout.width,
+            height: layout.height,
+            viewBox: `0 0 ${layout.width} ${layout.height}`,
+            "aria-labelledby": `feynman-title-${index}`,
+            style: `--feynman-diagram-width: ${layout.width}px;`
+          });
+          const title = createSvg("title", { id: `feynman-title-${index}` });
+          title.textContent = "Feynman diagram";
+          figure.className = "feynman-diagram";
+          figure.dataset.feynmanDiagram = "true";
+          svg.appendChild(title);
+          svg.appendChild(createDefinitions(index));
+          renderEdges(diagram, layout, index, (edge) => !isOverlayEdge(edge)).forEach((edge) => {
+            svg.appendChild(edge);
+          });
+          renderJunctionCaps(diagram, layout).forEach((cap) => {
+            svg.appendChild(cap);
+          });
+          Object.entries(layout.positions).forEach(([node, position]) => {
+            const vertex = renderVertex(node, position, diagram, index);
+            if (vertex) {
+              svg.appendChild(vertex);
+            }
+          });
+          renderEdges(diagram, layout, index, isOverlayEdge).forEach((edge) => {
+            svg.appendChild(edge);
+          });
+          renderBraces(diagram, layout).forEach((brace) => {
+            svg.appendChild(brace);
+          });
+          renderLabels(diagram, layout).forEach((label) => {
+            svg.appendChild(label);
+          });
+          await materializePendingMathLabels(svg);
+          figure.appendChild(svg);
+          if (diagram.errors.length) {
+            const errors = document.createElement("figcaption");
+            errors.className = "feynman-diagram__errors";
+            errors.textContent = diagram.errors.join("; ");
+            figure.appendChild(errors);
+          }
+          return figure;
+        }
+        renderLoadingFigure(index) {
+          const figure = document.createElement("figure");
+          figure.className = "feynman-diagram feynman-diagram--loading";
+          figure.dataset.feynmanDiagram = "true";
+          figure.setAttribute("aria-busy", "true");
+          figure.setAttribute("aria-label", `Rendering Feynman diagram ${index + 1}`);
+          return figure;
+        }
+        renderErrorFigure(error2, index) {
+          const figure = document.createElement("figure");
+          const errors = document.createElement("figcaption");
+          figure.className = "feynman-diagram";
+          figure.dataset.feynmanDiagram = "true";
+          figure.setAttribute("role", "img");
+          figure.setAttribute("aria-labelledby", `feynman-error-${index}`);
+          errors.id = `feynman-error-${index}`;
+          errors.className = "feynman-diagram__errors";
+          errors.textContent = error2?.message || String(error2 || "Unable to render Feynman diagram");
+          figure.appendChild(errors);
+          return figure;
+        }
+        renderAll(root) {
           if (typeof document === "undefined") {
             return;
           }
@@ -102717,30 +102694,62 @@
               return;
             }
             pre.dataset.feynmanProcessed = "true";
-            const renderIndex = diagramSerial + index;
-            const placeholder = renderLoadingFigure(renderIndex);
+            const renderIndex = this.diagramSerial + index;
+            const placeholder = this.renderLoadingFigure(renderIndex);
             pre.replaceWith(placeholder);
-            renderFeynmanElement(code.textContent, renderIndex).then((figure) => {
+            this.renderFeynmanElement(code.textContent, renderIndex).then((figure) => {
               placeholder.replaceWith(figure);
             }).catch((error2) => {
-              placeholder.replaceWith(renderErrorFigure(error2, renderIndex));
+              placeholder.replaceWith(this.renderErrorFigure(error2, renderIndex));
             });
           });
-          diagramSerial += blocks.length;
+          this.diagramSerial += blocks.length;
         }
-        function boot() {
+        boot() {
           if (typeof document === "undefined") {
             return;
           }
           if (window.document$ && typeof window.document$.subscribe === "function") {
-            window.document$.subscribe((root) => renderAll(root));
+            window.document$.subscribe((root) => this.renderAll(root));
             return;
           }
           if (document.readyState === "loading") {
-            document.addEventListener("DOMContentLoaded", () => renderAll(document));
+            document.addEventListener("DOMContentLoaded", () => this.renderAll(document));
             return;
           }
-          renderAll(document);
+          this.renderAll(document);
+        }
+      };
+    }
+  });
+
+  // src/markfeyn/renderer/feynman-diagrams.js
+  var require_feynman_diagrams = __commonJS({
+    "src/markfeyn/renderer/feynman-diagrams.js"(exports, module) {
+      init_layout_engine();
+      init_parser();
+      init_braces2();
+      init_edges2();
+      init_label_markup();
+      init_mathjax();
+      init_paths();
+      init_svg_renderer();
+      init_visual_defaults();
+      (function() {
+        "use strict";
+        const layoutEngine = createLayoutEngine();
+        async function layoutFeynman(diagram, options) {
+          return layoutEngine.layoutFeynman(diagram, options);
+        }
+        function layoutFeynmanFallbackSync(diagram, options) {
+          return layoutEngine.layoutFeynmanFallbackSync(diagram, options);
+        }
+        const renderer = new SvgRenderer({
+          parseFeynman,
+          layoutFeynman
+        });
+        function renderAll(root) {
+          return renderer.renderAll(root);
         }
         const api = {
           parseFeynman,
@@ -102779,7 +102788,7 @@
         if (typeof module !== "undefined" && module.exports) {
           module.exports = api;
         }
-        boot();
+        renderer.boot();
       })();
     }
   });
