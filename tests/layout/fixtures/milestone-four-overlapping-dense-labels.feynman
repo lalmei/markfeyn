@@ -1,0 +1,7 @@
+incoming i1 i2
+outgoing o1 o2
+scalar i1->a i2->b
+scalar a->b b->c c->a
+scalar b->d d->c
+scalar a->o1 d->o2
+label i1:i_1 i2:i_2 o1:o_1 o2:o_2 a:A b:B c:C d:D a->b:k_1 b->c:k_2 c->a:k_3 b->d:q_1 d->c:q_2
