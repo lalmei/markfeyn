@@ -1,0 +1,7 @@
+incoming i
+outgoing o
+scalar i->a
+scalar a->b b->c c->d d->a
+scalar b->e e->f f->c
+scalar d->o
+label i:i o:o a:a b:b c:c d:d e:e f:f
