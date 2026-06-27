@@ -172,7 +172,7 @@ function scoreParallelEdgeOverlap(prepared) {
 function scoreExternalAlignment(layout, prepared) {
   const ordering = prepared.externalOrdering;
 
-  if (!ordering || prepared.orientation.mode !== "process") {
+  if (!ordering || prepared.orientation.mode !== "process" || layout.options?.tikzOrientation) {
     return 0;
   }
 
@@ -181,21 +181,56 @@ function scoreExternalAlignment(layout, prepared) {
 }
 
 function scoreOrderedCross(layout, entries) {
+  const positions = entries
+    .map((entry) => layout.positions?.[entry.id])
+    .filter((position) => (
+      position
+      && Number.isFinite(position.x)
+      && Number.isFinite(position.y)
+    ));
+
+  if (positions.length <= 1) {
+    return 0;
+  }
+
+  const centerX = Number.isFinite(layout.width)
+    ? layout.width / 2
+    : positions.reduce((sum, position) => sum + position.x, 0) / positions.length;
+  const averageX = positions.reduce((sum, position) => sum + position.x, 0) / positions.length;
+  const bottomToTop = averageX <= centerX;
+
+  return bottomToTop
+    ? scoreDescendingCross(positions)
+    : scoreAscendingCross(positions);
+}
+
+function scoreAscendingCross(positions) {
   let penalty = 0;
   let previous = -Infinity;
 
-  entries.forEach((entry) => {
-    const position = layout.positions?.[entry.id];
-
-    if (!position || !Number.isFinite(position.y)) {
-      return;
-    }
-
+  positions.forEach((position) => {
     if (position.y + 0.001 < previous) {
       penalty += previous - position.y;
     }
 
     previous = Math.max(previous, position.y);
+  });
+
+  return penalty;
+}
+
+function scoreDescendingCross(positions) {
+  let penalty = 0;
+  let previous = Infinity;
+
+  positions.forEach((position) => {
+    if (position.y + 0.001 < previous) {
+      previous = Math.min(previous, position.y);
+      return;
+    }
+
+    penalty += position.y - previous;
+    previous = Math.min(previous, position.y);
   });
 
   return penalty;
@@ -394,7 +429,7 @@ function scoreSymmetricUnclassifiedExternalLegBalance(layout, prepared) {
 }
 
 function scoreMultiloopRegionOverlap(layout, prepared) {
-  const regions = prepared.topology.loopRegions || [];
+  const regions = scoredMultiloopRegions(layout, prepared);
 
   if (prepared.topology.detectedTopology !== "multiLoop" || regions.length < 2) {
     return 0;
@@ -479,7 +514,7 @@ function scoreTopologyRecognizability(layout, prepared) {
     return 0;
   }
 
-  return (prepared.topology.loopRegions || []).reduce((penalty, region) => {
+  return scoredMultiloopRegions(layout, prepared).reduce((penalty, region) => {
     const points = region.nodes.map((node) => layout.positions?.[node]).filter(Boolean);
 
     if (region.nodes.length >= 3 && Math.abs(polygonArea(points)) < 200) {
@@ -954,6 +989,19 @@ function isConvexPolygon(points) {
   }
 
   return true;
+}
+
+function scoredMultiloopRegions(layout, prepared) {
+  const regions = prepared.topology.loopRegions || [];
+  const selectedIds = new Set(layout.multiloopCandidate?.regions || []);
+  const selected = selectedIds.size
+    ? regions.filter((region) => selectedIds.has(region.id))
+    : [];
+  const primitive = regions.filter((region) => (
+    region.loopOrder === 1 && !(region.contains || []).length
+  ));
+
+  return selected.length ? selected : primitive.length ? primitive : regions;
 }
 
 function centerOfPositions(positions) {

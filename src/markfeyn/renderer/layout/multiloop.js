@@ -93,11 +93,8 @@ function buildCandidate(prepared, layoutOptions, variant) {
   const regions = primaryRegions(prepared.multiloop.regions);
   const sharedNodes = sharedCycleNodes(regions);
   const center = { x: layoutOptions.width / 2, y: layoutOptions.height / 2 };
-  const radius = {
-    x: Math.max(46, Math.min(86, layoutOptions.width / 6)),
-    y: Math.max(42, Math.min(72, layoutOptions.height / 4)),
-  };
-  const regionGap = Math.max(radius.x * 1.2, layoutOptions.width / Math.max(4, regions.length + 2));
+  const radius = regionRadius(layoutOptions, regions);
+  const regionGap = regionGapFor(prepared, layoutOptions, regions, radius);
 
   sharedNodes.forEach((node) => {
     if (prepared.multiloop.kind !== "overlapping" || sharedNodes.length === 1) {
@@ -108,11 +105,16 @@ function buildCandidate(prepared, layoutOptions, variant) {
   placeOverlappingSharedPointRegions(prepared, positions, regions, sharedNodes, center, layoutOptions);
 
   regions.forEach((region, index) => {
-    const offset = index - (regions.length - 1) / 2;
-    const regionCenter = {
-      x: center.x + offset * regionGap,
-      y: center.y + variant.laneSign * laneOffset(prepared, region, index, radius.y),
-    };
+    const regionCenter = regionCenterFor(
+      prepared,
+      layoutOptions,
+      regions,
+      index,
+      radius,
+      regionGap,
+      variant,
+      center
+    );
     const orderedNodes = orderedRegionNodes(region, variant);
     const angles = regionAngles(region, orderedNodes.length, variant);
 
@@ -228,11 +230,74 @@ function placeNestedSharedPointRegions(prepared, positions, regions, sharedNodes
 }
 
 function primaryRegions(regions) {
+  const primitiveCycles = regions
+    .filter((region) => region.loopOrder === 1 && !(region.contains || []).length)
+    .sort(compareRegion);
   const cycles = regions
     .filter((region) => region.loopOrder === 1)
     .sort(compareRegion);
+  const candidates = primitiveCycles.length ? primitiveCycles : cycles;
 
-  return (cycles.length ? cycles : regions).slice(0, 8);
+  return (candidates.length ? candidates : regions).slice(0, 8);
+}
+
+function regionRadius(layoutOptions, regions) {
+  const availableWidth = Math.max(120, layoutOptions.width - 2 * layoutOptions.marginX);
+  const availableHeight = Math.max(100, layoutOptions.height - 2 * layoutOptions.marginY);
+  const count = Math.max(1, regions.length);
+
+  if (count >= 3) {
+    return {
+      x: Math.max(40, Math.min(70, availableWidth / (count * 2.55))),
+      y: Math.max(36, Math.min(58, availableHeight / 4.2)),
+    };
+  }
+
+  return {
+    x: Math.max(46, Math.min(86, layoutOptions.width / 6)),
+    y: Math.max(42, Math.min(72, layoutOptions.height / 4)),
+  };
+}
+
+function regionGapFor(prepared, layoutOptions, regions, radius) {
+  const count = regions.length;
+
+  if (count <= 1) {
+    return 0;
+  }
+
+  const availableWidth = Math.max(0, layoutOptions.width - 2 * layoutOptions.marginX - 2 * radius.x);
+  const evenGap = availableWidth / (count - 1);
+
+  if (prepared.multiloop.kind === "disjoint" || count >= 3) {
+    return evenGap;
+  }
+
+  return Math.max(radius.x * 1.2, layoutOptions.width / Math.max(4, count + 2));
+}
+
+function regionCenterFor(prepared, layoutOptions, regions, index, radius, regionGap, variant, center) {
+  const count = regions.length;
+  const region = regions[index];
+  const y = center.y + variant.laneSign * laneOffset(prepared, region, index, radius.y);
+
+  if (count <= 1) {
+    return { x: center.x, y };
+  }
+
+  if (prepared.multiloop.kind === "disjoint" || count >= 3) {
+    const left = layoutOptions.marginX + radius.x;
+
+    return {
+      x: left + regionGap * index,
+      y,
+    };
+  }
+
+  return {
+    x: center.x + (index - (count - 1) / 2) * regionGap,
+    y,
+  };
 }
 
 function initialPositions(prepared, layoutOptions) {

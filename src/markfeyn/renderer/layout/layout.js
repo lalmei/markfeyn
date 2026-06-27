@@ -35,6 +35,7 @@ export function prepareFeynmanLayout(diagram, options = {}) {
   ));
   const multiloop = profile.measure("multiloop", () => analyzeMultiloop(semantic, topology));
   const diagnostics = [
+    ...parseWarningDiagnostics(semantic.source.warnings),
     ...validation.diagnostics,
     info(`Detected topology: ${topology.detectedTopology}`, "topology", {
       topology: topology.detectedTopology,
@@ -81,8 +82,15 @@ export function prepareFeynmanLayout(diagram, options = {}) {
 }
 
 export function shouldUseSymmetricContactLayout(prepared) {
+  const fixedTikzNoRoleContact = (
+    prepared.orientation.mode === "fixed"
+    && prepared.orientation.evidence?.includes("explicit TikZ-Feynman orientation command")
+    && !prepared.semantic.incoming.length
+    && !prepared.semantic.outgoing.length
+  );
+
   return (
-    prepared.orientation.mode === "symmetric"
+    (prepared.orientation.mode === "symmetric" || fixedTikzNoRoleContact)
     && prepared.topology.detectedTopology === "contactInteraction"
   );
 }
@@ -153,6 +161,15 @@ function info(message, stage, data = {}) {
     message,
     data,
   };
+}
+
+function parseWarningDiagnostics(warnings = []) {
+  return warnings.map((warning) => ({
+    stage: "parse",
+    severity: "warning",
+    message: warning,
+    data: {},
+  }));
 }
 
 function loopCandidateDiagnostics(prepared) {
