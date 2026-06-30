@@ -1,3 +1,7 @@
+import { BLOB_VERTEX_DEFAULT_RADII } from "../geometry/metrics.js";
+
+export { BLOB_VERTEX_DEFAULT_RADII };
+
 export const EDGE_DEFINITIONS = new Map([
   ["plain", { type: "plain" }],
   ["line", { type: "plain" }],
@@ -66,11 +70,6 @@ export const VERTEX_SHAPES = new Map([
   ["large blob", "disk"],
   ["large-blob", "disk"],
 ]);
-
-export const BLOB_VERTEX_DEFAULT_RADII = Object.freeze({
-  blob: 18,
-  disk: 44,
-});
 
 export const BLOB_VERTEX_SIZE_PRESETS = new Map([
   ["tiny", 8],

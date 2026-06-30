@@ -122,7 +122,7 @@ flowchart TD
         semantic["createSemanticDiagram<br/>(vertices + propagators)"]
         validate["validateSemanticDiagram"]
         topology["analyzeTopology<br/>(tree / decay / loop /<br/>contact, parallel groups)"]
-        orientation["analyzeOrientation<br/>(fixed / symmetric)"]
+        orientation["analyzeOrientation<br/>(process / symmetric / fixed)"]
         incremental["analyzeIncrementalStability"]
         external["analyzeExternalOrdering"]
         ports["inferredPortDiagnostics<br/>(port sides + order)"]
@@ -151,7 +151,7 @@ flowchart TD
         build["buildSemanticElkGraph<br/>(sorted nodes, ports, edges)"]
         opts["buildElkLayoutOptions<br/>algorithm = layered / mrtree / force<br/>direction, spacing, padding,<br/>layer + port constraints"]
         run["elk.layout(graph)<br/>solve node coordinates"]
-        normalize["normalizeElkLayout<br/>(layout/normalization.js)<br/>scale raw coords into viewBox,<br/>place externals, manual overrides"]
+        normalize["normalizeElkLayout<br/>(layout/normalization.js + normalizers)<br/>scale raw coords into viewBox,<br/>place externals, manual overrides"]
 
         getElk --> build --> opts --> run --> normalize
     end
@@ -303,5 +303,6 @@ Layered placement additionally pins external `incoming` vertices to the `FIRST`
 layer and `outgoing` vertices to the `LAST` layer, and inferred ports
 (`WEST`/`EAST` sides with a fixed order) keep propagators attached on the correct
 side of each vertex. After ELK solves the raw coordinates, `normalizeElkLayout`
-rescales them into the diagram's view box, places the external legs, and applies any
-manual position overrides.
+rescales them into the diagram's view box, places the external legs, applies any
+manual position overrides, and runs the focused normalizers under
+`src/markfeyn/renderer/layout/normalizers/`.
