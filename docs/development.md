@@ -89,6 +89,7 @@ src/markfeyn/
     feynman-diagrams.js        # bundle entrypoint + public API assembly
     parser/                    # block parsing facade and syntax helpers
     layout/                    # semantic analysis, placement strategies, ELK, fallback layouts
+    layout/labels/             # label placement, scoring, boxes, and local label geometry
     layout/topology/           # graph/topology helper modules
     render/                    # SVG paths, elements, labels, MathJax, styles, DOM boot
   assets/
