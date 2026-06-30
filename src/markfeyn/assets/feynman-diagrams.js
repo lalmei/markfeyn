@@ -1754,6 +1754,58 @@
     }
   });
 
+  // src/markfeyn/renderer/geometry/metrics.js
+  var BLOB_VERTEX_DEFAULT_RADII, VISUAL_DEFAULTS, LABEL_METRICS;
+  var init_metrics = __esm({
+    "src/markfeyn/renderer/geometry/metrics.js"() {
+      BLOB_VERTEX_DEFAULT_RADII = Object.freeze({
+        blob: 18,
+        disk: 44
+      });
+      VISUAL_DEFAULTS = Object.freeze({
+        edgeStrokeWidth: 2.6,
+        gluonStrokeWidth: 2.1,
+        vertexStrokeWidth: 2.3,
+        blobStrokeWidth: 2.8,
+        vertexMarkStrokeWidth: 2.4,
+        labelFontSize: 32,
+        edgeLabelFontSize: 26,
+        mathLabelFontScale: 0.72,
+        labelFontFamily: '"Latin Modern Math", "Latin Modern Roman", "Computer Modern Serif", "CMU Serif", "STIX Two Text", "Times New Roman", serif',
+        labelFontStyle: "italic",
+        scriptFontSizePercent: 82,
+        labelHorizontalOffset: 20,
+        labelTopOffset: 24,
+        labelBottomOffset: 30,
+        edgeLabelOffset: 32,
+        momentumArrowOffset: 19,
+        momentumLabelGap: 20,
+        momentumArrowShorten: 0.22,
+        momentumArrowStrokeWidth: 1.4,
+        momentumArrowHeadLength: 8,
+        momentumArrowHeadWidth: 7,
+        arrowMarkerWidth: 11,
+        arrowMarkerHeight: 11,
+        arrowMarkerRefX: 7,
+        arrowMarkerRefY: 4,
+        arrowPath: "M0,0 L8,4 L0,8 Z"
+      });
+      LABEL_METRICS = Object.freeze({
+        nodeFontSize: VISUAL_DEFAULTS.labelFontSize,
+        edgeFontSize: VISUAL_DEFAULTS.edgeLabelFontSize,
+        labelHorizontalOffset: VISUAL_DEFAULTS.labelHorizontalOffset,
+        labelTopOffset: VISUAL_DEFAULTS.labelTopOffset,
+        labelBottomOffset: VISUAL_DEFAULTS.labelBottomOffset,
+        edgeLabelOffset: VISUAL_DEFAULTS.edgeLabelOffset,
+        momentumArrowOffset: VISUAL_DEFAULTS.momentumArrowOffset,
+        momentumLabelGap: VISUAL_DEFAULTS.momentumLabelGap,
+        momentumArrowShorten: VISUAL_DEFAULTS.momentumArrowShorten,
+        momentumArrowHeadLength: VISUAL_DEFAULTS.momentumArrowHeadLength,
+        momentumArrowHeadWidth: VISUAL_DEFAULTS.momentumArrowHeadWidth
+      });
+    }
+  });
+
   // src/markfeyn/renderer/layout/labels.js
   function scoreLabelGeometry(layout, prepared, candidate = {}) {
     return analyzeLabelGeometry(layout, prepared, candidate).breakdown;
@@ -1952,7 +2004,7 @@
         y: position.y + offset.y + shift.y,
         anchor: offset.anchor
       };
-      const bounds = textBounds(anchor, text || target, METRICS.nodeFontSize);
+      const bounds = textBounds(anchor, text || target, LABEL_METRICS.nodeFontSize);
       const box = {
         id,
         type: "node-label",
@@ -1966,7 +2018,7 @@
         defaultSide,
         bounds,
         center: boundsCenter(bounds),
-        fontSize: METRICS.nodeFontSize
+        fontSize: LABEL_METRICS.nodeFontSize
       };
       return {
         id,
@@ -2130,7 +2182,7 @@
         y: placement?.y ?? position.y + offset.y,
         anchor: placement?.anchor || offset.anchor
       };
-      const bounds = textBounds(anchor, text || target, METRICS.nodeFontSize);
+      const bounds = textBounds(anchor, text || target, LABEL_METRICS.nodeFontSize);
       boxes.push({
         id: placementId,
         type: "node-label",
@@ -2143,7 +2195,7 @@
         side: placement?.side || normalizePlacementSide(position.labelSide || position.kind),
         bounds,
         center: boundsCenter(bounds),
-        fontSize: METRICS.nodeFontSize
+        fontSize: LABEL_METRICS.nodeFontSize
       });
     });
     prepared.semantic.propagators.slice().sort((left, right) => left.metadata.edgeIndex - right.metadata.edgeIndex || compareStable(left.id, right.id)).forEach((edge) => {
@@ -2199,7 +2251,7 @@
       y: options.placement.y,
       anchor: options.placement.anchor || position.anchor
     } : position;
-    const bounds = textBounds(anchor, text, METRICS.edgeFontSize);
+    const bounds = textBounds(anchor, text, LABEL_METRICS.edgeFontSize);
     const type = isMomentumEdge(edge) && !options.forceNormal ? "momentum-label" : "edge-label";
     return {
       id,
@@ -2218,7 +2270,7 @@
       explicitSide: Boolean(options.explicitSide ?? edge.metadata.labelSide),
       bounds,
       center: boundsCenter(bounds),
-      fontSize: METRICS.edgeFontSize,
+      fontSize: LABEL_METRICS.edgeFontSize,
       forceNormal: Boolean(options.forceNormal)
     };
   }
@@ -2230,8 +2282,8 @@
     }
     const arrow = momentumArrowGeometry(edge, from, to, curvePlan, options);
     const bounds = expandBounds(pointsBounds(arrow.points), Math.max(
-      METRICS.momentumArrowHeadLength,
-      METRICS.momentumArrowHeadWidth
+      LABEL_METRICS.momentumArrowHeadLength,
+      LABEL_METRICS.momentumArrowHeadWidth
     ));
     return {
       id: `momentum-arrow:${edge.id}`,
@@ -2490,21 +2542,21 @@
       }
       const momentumNormal = momentumNormalForTangent(edge, tangent, resolvedSide);
       return {
-        x: sample.point.x - momentumNormal.x * METRICS.edgeLabelOffset,
-        y: sample.point.y - momentumNormal.y * METRICS.edgeLabelOffset,
+        x: sample.point.x - momentumNormal.x * LABEL_METRICS.edgeLabelOffset,
+        y: sample.point.y - momentumNormal.y * LABEL_METRICS.edgeLabelOffset,
         anchor: "middle"
       };
     }
     const normalSign = resolvedSide === "right" ? 1 : -1;
     return {
-      x: sample.point.x + tangent.px * METRICS.edgeLabelOffset * normalSign,
-      y: sample.point.y + tangent.py * METRICS.edgeLabelOffset * normalSign,
+      x: sample.point.x + tangent.px * LABEL_METRICS.edgeLabelOffset * normalSign,
+      y: sample.point.y + tangent.py * LABEL_METRICS.edgeLabelOffset * normalSign,
       anchor: "middle"
     };
   }
   function momentumLabelPosition(edge, point, tangent, sideOverride) {
     const normal = momentumNormalForTangent(edge, tangent, sideOverride);
-    const offset = momentumArrowDistance(edge) + METRICS.momentumLabelGap + momentumLabelDistance(edge);
+    const offset = momentumArrowDistance(edge) + LABEL_METRICS.momentumLabelGap + momentumLabelDistance(edge);
     return {
       x: point.x + normal.x * offset,
       y: point.y + normal.y * offset,
@@ -2693,15 +2745,15 @@
   }
   function labelOffset(kind) {
     if (kind === "left" || kind === "incoming") {
-      return { x: -METRICS.labelHorizontalOffset, y: 0, anchor: "end" };
+      return { x: -LABEL_METRICS.labelHorizontalOffset, y: 0, anchor: "end" };
     }
     if (kind === "right" || kind === "outgoing") {
-      return { x: METRICS.labelHorizontalOffset, y: 0, anchor: "start" };
+      return { x: LABEL_METRICS.labelHorizontalOffset, y: 0, anchor: "start" };
     }
     if (kind === "bottom") {
-      return { x: 0, y: METRICS.labelBottomOffset, anchor: "middle" };
+      return { x: 0, y: LABEL_METRICS.labelBottomOffset, anchor: "middle" };
     }
-    return { x: 0, y: -METRICS.labelTopOffset, anchor: "middle" };
+    return { x: 0, y: -LABEL_METRICS.labelTopOffset, anchor: "middle" };
   }
   function textBounds(anchor, text, fontSize) {
     const width = estimateTextWidth(text, fontSize);
@@ -2886,7 +2938,7 @@
         explicitSide: entry.explicitSide,
         bounds: cloneBounds(entry.bounds),
         center: boundsCenter(entry.bounds),
-        fontSize: entry.type === "node-label" ? METRICS.nodeFontSize : METRICS.edgeFontSize
+        fontSize: entry.type === "node-label" ? LABEL_METRICS.nodeFontSize : LABEL_METRICS.edgeFontSize
       };
       if (!entry.arrowBounds) {
         return [labelBox];
@@ -3026,13 +3078,13 @@
     };
   }
   function momentumArrowDistance(edge) {
-    return edge.metadata.momentum?.arrowDistance ?? METRICS.momentumArrowOffset;
+    return edge.metadata.momentum?.arrowDistance ?? LABEL_METRICS.momentumArrowOffset;
   }
   function momentumLabelDistance(edge) {
     return edge.metadata.momentum?.labelDistance ?? 0;
   }
   function momentumArrowShorten(edge) {
-    return edge.metadata.momentum?.arrowShorten ?? METRICS.momentumArrowShorten;
+    return edge.metadata.momentum?.arrowShorten ?? LABEL_METRICS.momentumArrowShorten;
   }
   function lineVector(from, to) {
     const dx = to.x - from.x;
@@ -3088,23 +3140,11 @@
   function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
   }
-  var METRICS, LABEL_SCORE_FIELDS;
+  var LABEL_SCORE_FIELDS;
   var init_labels = __esm({
     "src/markfeyn/renderer/layout/labels.js"() {
+      init_metrics();
       init_model();
-      METRICS = Object.freeze({
-        nodeFontSize: 32,
-        edgeFontSize: 26,
-        labelHorizontalOffset: 20,
-        labelTopOffset: 24,
-        labelBottomOffset: 30,
-        edgeLabelOffset: 32,
-        momentumArrowOffset: 19,
-        momentumLabelGap: 20,
-        momentumArrowShorten: 0.22,
-        momentumArrowHeadLength: 8,
-        momentumArrowHeadWidth: 7
-      });
       LABEL_SCORE_FIELDS = Object.freeze([
         "nodeLabelOverlap",
         "edgeLabelOverlap",
@@ -4701,529 +4741,6 @@
     }
   });
 
-  // src/markfeyn/renderer/render/paths.js
-  function wavePath(from, to, amplitude, wavelength) {
-    return wavePathForEdge({}, from, to, amplitude, wavelength);
-  }
-  function wavePathForEdge(edge, from, to, amplitude, wavelength) {
-    const geometry = edgeGeometry2(edge, from, to);
-    const length = geometryLength(geometry);
-    const cycles = Math.max(2, Math.round(length / wavelength));
-    const steps = cycles * 12;
-    const points = [];
-    for (let step = 0; step <= steps; step += 1) {
-      const t = step / steps;
-      const phase = t * cycles * Math.PI * 2;
-      const offset = Math.sin(phase) * amplitude;
-      const sample = geometrySample2(geometry, t);
-      const normal = perpendicularVector(sample.tangent);
-      points.push({
-        x: sample.point.x + normal.x * offset,
-        y: sample.point.y + normal.y * offset
-      });
-    }
-    return pointsToPath(points);
-  }
-  function gluonPath(from, to, radius, loopLength) {
-    return gluonPathForEdge({}, from, to, radius, loopLength);
-  }
-  function gluonPathForEdge(edge, from, to, radius, loopLength) {
-    const geometry = edgeGeometry2(edge, from, to);
-    const length = geometryLength(geometry);
-    const loops = Math.max(3, Math.round(length / loopLength));
-    const steps = loops * 18;
-    const points = [];
-    for (let step = 0; step <= steps; step += 1) {
-      const t = step / steps;
-      const phase = t * loops * Math.PI * 2;
-      const sample = geometrySample2(geometry, t);
-      const tangent = normalizeVector2(sample.tangent.x, sample.tangent.y);
-      const normal = perpendicularVector(tangent);
-      const taper = gluonEndpointTaper(t, loops);
-      const along = Math.sin(phase) * radius * taper;
-      const offset = Math.cos(phase) * radius * taper;
-      points.push({
-        x: sample.point.x + tangent.ux * along + normal.x * offset,
-        y: sample.point.y + tangent.uy * along + normal.y * offset
-      });
-    }
-    return pointsToPath(points);
-  }
-  function gluonEndpointTaper(t, loops) {
-    const loopsFromEndpoint = Math.min(t, 1 - t) * loops;
-    const edgeProgress = Math.min(1, Math.max(0, loopsFromEndpoint / GLUON_ENDPOINT_RAMP_LOOPS));
-    return edgeProgress * edgeProgress * (3 - 2 * edgeProgress);
-  }
-  function trianglePath(from, to, amplitude, wavelength) {
-    return trianglePathForEdge({}, from, to, amplitude, wavelength);
-  }
-  function trianglePathForEdge(edge, from, to, amplitude, wavelength) {
-    const geometry = edgeGeometry2(edge, from, to);
-    const length = geometryLength(geometry);
-    const cycles = Math.max(2, Math.round(length / wavelength));
-    const quarters = cycles * 4;
-    const offsetPattern = [0, amplitude, 0, -amplitude];
-    const samples = [];
-    for (let step = 0; step <= quarters; step += 1) {
-      samples.push({
-        t: step / quarters,
-        offset: offsetPattern[step % 4]
-      });
-    }
-    return offsetSamplesToPath(geometry, samples);
-  }
-  function squarePath(from, to, amplitude, wavelength) {
-    return squarePathForEdge({}, from, to, amplitude, wavelength);
-  }
-  function squarePathForEdge(edge, from, to, amplitude, wavelength) {
-    const geometry = edgeGeometry2(edge, from, to);
-    const length = geometryLength(geometry);
-    const cycles = Math.max(2, Math.round(length / wavelength));
-    const samples = [{ t: 0, offset: 0 }];
-    for (let cycle = 0; cycle < cycles; cycle += 1) {
-      const start = cycle / cycles;
-      const mid = (cycle + 0.5) / cycles;
-      const end = (cycle + 1) / cycles;
-      samples.push({ t: start, offset: amplitude });
-      samples.push({ t: mid, offset: amplitude });
-      samples.push({ t: mid, offset: -amplitude });
-      samples.push({ t: end, offset: -amplitude });
-    }
-    samples.push({ t: 1, offset: 0 });
-    return offsetSamplesToPath(geometry, samples);
-  }
-  function offsetSamplesToPath(geometry, samples) {
-    const points = samples.map(({ t, offset }) => {
-      const sample = geometrySample2(geometry, t);
-      const normal = perpendicularVector(sample.tangent);
-      return {
-        x: sample.point.x + normal.x * offset,
-        y: sample.point.y + normal.y * offset
-      };
-    });
-    return pointsToPath(points);
-  }
-  function doubleLinePath(from, to, separation) {
-    return doubleLinePathForEdge({}, from, to, separation);
-  }
-  function doubleLinePathForEdge(edge, from, to, separation) {
-    const geometry = edgeGeometry2(edge, from, to);
-    const half = separation / 2;
-    const steps = geometry.kind === "cubic" ? 48 : 1;
-    const upper = [];
-    const lower = [];
-    for (let step = 0; step <= steps; step += 1) {
-      const sample = geometrySample2(geometry, step / steps);
-      const normal = perpendicularVector(sample.tangent);
-      upper.push({
-        x: sample.point.x + normal.x * half,
-        y: sample.point.y + normal.y * half
-      });
-      lower.push({
-        x: sample.point.x - normal.x * half,
-        y: sample.point.y - normal.y * half
-      });
-    }
-    return `${pointsToPath(upper)} ${pointsToPath(lower)}`;
-  }
-  function edgePath(edge, from, to) {
-    return geometryToPath(edgeGeometry2(edge, from, to));
-  }
-  function edgeGeometry2(edge, from, to) {
-    const outAngle = Number(edge?.outAngle);
-    const inAngle = Number(edge?.inAngle);
-    if (samePoint2(from, to)) {
-      return selfLoopGeometry2(edge, from, outAngle, inAngle);
-    }
-    if (Number.isFinite(outAngle) || Number.isFinite(inAngle)) {
-      return angleCurveGeometry2(edge, from, to, outAngle, inAngle);
-    }
-    if (edge?.curve) {
-      return offsetCurveGeometry2(edge, from, to);
-    }
-    return {
-      kind: "line",
-      from,
-      to
-    };
-  }
-  function selfLoopGeometry2(edge, point, outAngle, inAngle) {
-    const amount = clamp2(edge?.curve?.amount ?? 0.72, 0.28, 1.1);
-    const radius = 68 * amount;
-    if (Number.isFinite(outAngle) || Number.isFinite(inAngle)) {
-      const outVector = angleUnitVector2(Number.isFinite(outAngle) ? outAngle : 135);
-      const inVector = angleUnitVector2(Number.isFinite(inAngle) ? inAngle : 45);
-      return {
-        kind: "cubic",
-        from: point,
-        c1: {
-          x: point.x + outVector.x * radius * 1.65,
-          y: point.y + outVector.y * radius * 1.65
-        },
-        c2: {
-          x: point.x + inVector.x * radius * 1.65,
-          y: point.y + inVector.y * radius * 1.65
-        },
-        to: point
-      };
-    }
-    const side = selfLoopSideVector2(edge?.curve?.side);
-    const tangent = { x: -side.y, y: side.x };
-    return {
-      kind: "cubic",
-      from: point,
-      c1: {
-        x: point.x - tangent.x * radius + side.x * radius * 1.7,
-        y: point.y - tangent.y * radius + side.y * radius * 1.7
-      },
-      c2: {
-        x: point.x + tangent.x * radius + side.x * radius * 1.7,
-        y: point.y + tangent.y * radius + side.y * radius * 1.7
-      },
-      to: point
-    };
-  }
-  function samePoint2(from, to) {
-    return Math.abs(from.x - to.x) < 1e-3 && Math.abs(from.y - to.y) < 1e-3;
-  }
-  function selfLoopSideVector2(side) {
-    if (side === "right") {
-      return { x: 1, y: 0 };
-    }
-    if (side === "bottom") {
-      return { x: 0, y: 1 };
-    }
-    if (side === "left") {
-      return { x: -1, y: 0 };
-    }
-    return { x: 0, y: -1 };
-  }
-  function offsetCurveGeometry2(edge, from, to) {
-    const vector = lineVector2(from, to);
-    const normal = leftNormalVector2(vector);
-    const side = edge.curve.side === "right" ? -1 : 1;
-    const looseness = edge.looseness ?? 1;
-    const offset = vector.length * edge.curve.amount * looseness * side;
-    if (edge.curve.shape === "semicircle") {
-      return {
-        kind: "cubic",
-        from,
-        c1: {
-          x: from.x + normal.x * offset,
-          y: from.y + normal.y * offset
-        },
-        c2: {
-          x: to.x + normal.x * offset,
-          y: to.y + normal.y * offset
-        },
-        to
-      };
-    }
-    return {
-      kind: "cubic",
-      from,
-      c1: {
-        x: from.x + vector.dx * 0.33 + normal.x * offset,
-        y: from.y + vector.dy * 0.33 + normal.y * offset
-      },
-      c2: {
-        x: from.x + vector.dx * 0.67 + normal.x * offset,
-        y: from.y + vector.dy * 0.67 + normal.y * offset
-      },
-      to
-    };
-  }
-  function angleCurveGeometry2(edge, from, to, outAngle, inAngle) {
-    const vector = lineVector2(from, to);
-    const looseness = edge?.looseness ?? 1;
-    const handle = vector.length * 0.46 * looseness;
-    const relativeBase = edge?.relativeAngles ? vectorAngle2(vector) : 0;
-    const resolvedOut = Number.isFinite(outAngle) ? relativeBase + outAngle : vectorAngle2(vector);
-    const resolvedIn = Number.isFinite(inAngle) ? relativeBase + inAngle : vectorAngle2(vector) + 180;
-    const outVector = angleUnitVector2(resolvedOut);
-    const inVector = angleUnitVector2(resolvedIn);
-    return {
-      kind: "cubic",
-      from,
-      c1: {
-        x: from.x + outVector.x * handle,
-        y: from.y + outVector.y * handle
-      },
-      c2: {
-        x: to.x + inVector.x * handle,
-        y: to.y + inVector.y * handle
-      },
-      to
-    };
-  }
-  function geometryToPath(geometry) {
-    if (geometry.kind === "cubic") {
-      return [
-        `M ${round(geometry.from.x)} ${round(geometry.from.y)}`,
-        `C ${round(geometry.c1.x)} ${round(geometry.c1.y)}`,
-        `${round(geometry.c2.x)} ${round(geometry.c2.y)}`,
-        `${round(geometry.to.x)} ${round(geometry.to.y)}`
-      ].join(" ");
-    }
-    return `M ${round(geometry.from.x)} ${round(geometry.from.y)} L ${round(geometry.to.x)} ${round(geometry.to.y)}`;
-  }
-  function geometryPoint2(geometry, t) {
-    if (geometry.kind === "cubic") {
-      return cubicPoint2(geometry.from, geometry.c1, geometry.c2, geometry.to, t);
-    }
-    return {
-      x: geometry.from.x + (geometry.to.x - geometry.from.x) * t,
-      y: geometry.from.y + (geometry.to.y - geometry.from.y) * t
-    };
-  }
-  function geometryTangent2(geometry, t) {
-    if (geometry.kind === "cubic") {
-      return cubicTangent2(geometry.from, geometry.c1, geometry.c2, geometry.to, t);
-    }
-    return {
-      x: geometry.to.x - geometry.from.x,
-      y: geometry.to.y - geometry.from.y
-    };
-  }
-  function geometrySample2(geometry, t) {
-    return {
-      point: geometryPoint2(geometry, t),
-      tangent: geometryTangent2(geometry, t)
-    };
-  }
-  function geometryLength(geometry) {
-    const steps = geometry.kind === "cubic" ? 48 : 1;
-    let length = 0;
-    let previous = geometryPoint2(geometry, 0);
-    for (let step = 1; step <= steps; step += 1) {
-      const next = geometryPoint2(geometry, step / steps);
-      length += Math.hypot(next.x - previous.x, next.y - previous.y);
-      previous = next;
-    }
-    return length;
-  }
-  function cubicPoint2(p0, p1, p2, p3, t) {
-    const mt = 1 - t;
-    return {
-      x: mt ** 3 * p0.x + 3 * mt ** 2 * t * p1.x + 3 * mt * t ** 2 * p2.x + t ** 3 * p3.x,
-      y: mt ** 3 * p0.y + 3 * mt ** 2 * t * p1.y + 3 * mt * t ** 2 * p2.y + t ** 3 * p3.y
-    };
-  }
-  function cubicTangent2(p0, p1, p2, p3, t) {
-    const mt = 1 - t;
-    return {
-      x: 3 * mt ** 2 * (p1.x - p0.x) + 6 * mt * t * (p2.x - p1.x) + 3 * t ** 2 * (p3.x - p2.x),
-      y: 3 * mt ** 2 * (p1.y - p0.y) + 6 * mt * t * (p2.y - p1.y) + 3 * t ** 2 * (p3.y - p2.y)
-    };
-  }
-  function lineVector2(from, to) {
-    const dx = to.x - from.x;
-    const dy = to.y - from.y;
-    const length = Math.hypot(dx, dy) || 1;
-    return {
-      dx,
-      dy,
-      length,
-      ux: dx / length,
-      uy: dy / length,
-      px: -dy / length,
-      py: dx / length
-    };
-  }
-  function normalizeVector2(dx, dy) {
-    const length = Math.hypot(dx, dy) || 1;
-    return {
-      ux: dx / length,
-      uy: dy / length,
-      px: -dy / length,
-      py: dx / length
-    };
-  }
-  function perpendicularVector(vector) {
-    const normalized = normalizeVector2(vector.x ?? vector.dx ?? vector.ux, vector.y ?? vector.dy ?? vector.uy);
-    return {
-      x: normalized.px,
-      y: normalized.py
-    };
-  }
-  function leftNormalVector2(vector) {
-    return {
-      x: vector.dy / vector.length,
-      y: -vector.dx / vector.length
-    };
-  }
-  function vectorAngle2(vector) {
-    return Math.atan2(-vector.dy, vector.dx) * 180 / Math.PI;
-  }
-  function angleUnitVector2(degrees) {
-    const radians = degrees * Math.PI / 180;
-    return {
-      x: Math.cos(radians),
-      y: -Math.sin(radians)
-    };
-  }
-  function pointsToPath(points) {
-    return points.map((point, index) => `${index === 0 ? "M" : "L"} ${round(point.x)} ${round(point.y)}`).join(" ");
-  }
-  function clamp2(value, min, max) {
-    return Math.max(min, Math.min(max, value));
-  }
-  function round(value) {
-    return Math.round(value * 100) / 100;
-  }
-  var GLUON_ENDPOINT_RAMP_LOOPS;
-  var init_paths = __esm({
-    "src/markfeyn/renderer/render/paths.js"() {
-      GLUON_ENDPOINT_RAMP_LOOPS = 0.62;
-    }
-  });
-
-  // src/markfeyn/renderer/parser/constants.js
-  var EDGE_DEFINITIONS, SIZE_PRESETS, DEFAULT_DIAGRAM_OPTIONS, VERTEX_SHAPES, BLOB_VERTEX_DEFAULT_RADII, BLOB_VERTEX_SIZE_PRESETS, BLOB_HATCHES;
-  var init_constants = __esm({
-    "src/markfeyn/renderer/parser/constants.js"() {
-      EDGE_DEFINITIONS = /* @__PURE__ */ new Map([
-        ["plain", { type: "plain" }],
-        ["line", { type: "plain" }],
-        ["propagator", { type: "plain" }],
-        ["fermion", { type: "fermion", arrow: "forward" }],
-        ["anti fermion", { type: "fermion", arrow: "reverse" }],
-        ["anti-fermion", { type: "fermion", arrow: "reverse" }],
-        ["antifermion", { type: "fermion", arrow: "reverse" }],
-        ["photon", { type: "photon" }],
-        ["boson", { type: "photon" }],
-        ["charged boson", { type: "photon", arrow: "forward" }],
-        ["charged-boson", { type: "photon", arrow: "forward" }],
-        ["anti charged boson", { type: "photon", arrow: "reverse" }],
-        ["anti-charged-boson", { type: "photon", arrow: "reverse" }],
-        ["gluon", { type: "gluon" }],
-        ["scalar", { type: "scalar" }],
-        ["charged scalar", { type: "scalar", arrow: "forward" }],
-        ["charged-scalar", { type: "scalar", arrow: "forward" }],
-        ["anti charged scalar", { type: "scalar", arrow: "reverse" }],
-        ["anti-charged-scalar", { type: "scalar", arrow: "reverse" }],
-        ["ghost", { type: "ghost" }],
-        ["dashed", { type: "dashed" }],
-        ["dot dashed", { type: "dashdot" }],
-        ["dot-dashed", { type: "dashdot" }],
-        ["dashdot", { type: "dashdot" }],
-        ["dash-dot", { type: "dashdot" }],
-        ["triangle", { type: "triangle" }],
-        ["zigzag", { type: "triangle" }],
-        ["square", { type: "square" }],
-        ["rectangle", { type: "square" }],
-        ["rectangular", { type: "square" }],
-        ["double", { type: "double" }],
-        ["eikonal", { type: "double", arrow: "forward" }],
-        ["wilson line", { type: "double", arrow: "forward" }],
-        ["wilson-line", { type: "double", arrow: "forward" }],
-        ["invisible", { type: "invisible", hidden: true }],
-        ["hidden", { type: "invisible", hidden: true }]
-      ]);
-      SIZE_PRESETS = {
-        small: { width: 420, minHeight: 280, marginX: 70, marginY: 46, externalGap: 82 },
-        medium: { width: 520, minHeight: 330, marginX: 82, marginY: 52, externalGap: 100 },
-        large: { width: 760, minHeight: 480, marginX: 110, marginY: 70, externalGap: 140 }
-      };
-      DEFAULT_DIAGRAM_OPTIONS = {
-        layout: "spring",
-        orientation: "horizontal",
-        size: "medium"
-      };
-      VERTEX_SHAPES = /* @__PURE__ */ new Map([
-        ["dot", "dot"],
-        ["square dot", "square-dot"],
-        ["square-dot", "square-dot"],
-        ["square", "square-dot"],
-        ["empty dot", "empty-dot"],
-        ["empty-dot", "empty-dot"],
-        ["crossed dot", "crossed-dot"],
-        ["crossed-dot", "crossed-dot"],
-        ["cross dot", "crossed-dot"],
-        ["cross-dot", "crossed-dot"],
-        ["cross", "cross"],
-        ["blob", "blob"],
-        ["disk", "disk"],
-        ["large blob", "disk"],
-        ["large-blob", "disk"]
-      ]);
-      BLOB_VERTEX_DEFAULT_RADII = Object.freeze({
-        blob: 18,
-        disk: 44
-      });
-      BLOB_VERTEX_SIZE_PRESETS = /* @__PURE__ */ new Map([
-        ["tiny", 8],
-        ["small", 14],
-        ["medium", BLOB_VERTEX_DEFAULT_RADII.blob],
-        ["large", 28],
-        ["huge", BLOB_VERTEX_DEFAULT_RADII.disk],
-        ["disk", BLOB_VERTEX_DEFAULT_RADII.disk]
-      ]);
-      BLOB_HATCHES = /* @__PURE__ */ new Map([
-        ["hatched", "diagonal"],
-        ["hatch", "diagonal"],
-        ["diagonal", "diagonal"],
-        ["diagonal right", "diagonal"],
-        ["forward diagonal", "diagonal"],
-        ["slash", "diagonal"],
-        ["north east", "diagonal"],
-        ["north east lines", "diagonal"],
-        ["ne", "diagonal"],
-        ["diagonal reverse", "diagonal-reverse"],
-        ["diagonal left", "diagonal-reverse"],
-        ["reverse diagonal", "diagonal-reverse"],
-        ["backward diagonal", "diagonal-reverse"],
-        ["backslash", "diagonal-reverse"],
-        ["north west", "diagonal-reverse"],
-        ["north west lines", "diagonal-reverse"],
-        ["nw", "diagonal-reverse"],
-        ["cross", "cross"],
-        ["cross hatch", "cross"],
-        ["crosshatch", "cross"],
-        ["cross hatched", "cross"],
-        ["horizontal", "horizontal"],
-        ["horizontal lines", "horizontal"],
-        ["vertical", "vertical"],
-        ["vertical lines", "vertical"],
-        ["grid", "grid"],
-        ["grid lines", "grid"]
-      ]);
-    }
-  });
-
-  // src/markfeyn/renderer/render/vertex-shapes.js
-  function vertexDefinitionShape(definition) {
-    if (!definition) {
-      return null;
-    }
-    if (typeof definition === "string") {
-      return definition;
-    }
-    return definition.shape ?? null;
-  }
-  function vertexDefinitionOptions(definition) {
-    if (!definition || typeof definition === "string") {
-      return {};
-    }
-    return definition;
-  }
-  function blobVertexRadii(shape, definition) {
-    const options = vertexDefinitionOptions(definition);
-    const radius = options.size ?? BLOB_VERTEX_DEFAULT_RADII[shape];
-    return {
-      rx: options.rx ?? radius,
-      ry: options.ry ?? radius
-    };
-  }
-  function blobHatchPatternId(index, hatch) {
-    return `feynman-hatch-${hatch}-${index}`;
-  }
-  var init_vertex_shapes = __esm({
-    "src/markfeyn/renderer/render/vertex-shapes.js"() {
-      init_constants();
-    }
-  });
-
   // src/markfeyn/renderer/layout/coordinates.js
   function diagramAxes({ width, height, marginX, marginY, orientation: orientation2, tikzOrientation }) {
     const reverse = orientation2.endsWith("reverse");
@@ -5543,7 +5060,7 @@
       uy: dy / distance2
     };
   }
-  function clamp3(value, min, max) {
+  function clamp2(value, min, max) {
     return Math.max(min, Math.min(max, value));
   }
   function degreesToRadians(degrees) {
@@ -5554,7 +5071,529 @@
     }
   });
 
-  // src/markfeyn/renderer/layout/normalization.js
+  // src/markfeyn/renderer/layout/normalizers/alignment.js
+  function applyAlignmentConstraints(diagram, positions, layoutOptions) {
+    const alignments = layoutOptions.alignments || [];
+    if (!alignments.length) {
+      return;
+    }
+    const manual = new Set(Object.keys(diagram.manualPositions || {}));
+    alignments.forEach((alignment) => {
+      const coordinate = alignment.axis === "vertical" ? "x" : "y";
+      const crossCoordinate = alignment.axis === "vertical" ? "y" : "x";
+      const positioned = alignment.nodes.map((node) => ({ node, position: positions[node] })).filter((entry) => entry.position && Number.isFinite(entry.position[coordinate]));
+      if (positioned.length < 2) {
+        return;
+      }
+      const anchors = positioned.filter((entry) => manual.has(entry.node));
+      const source = anchors.length ? anchors : positioned;
+      const target = source.reduce((sum, entry) => sum + entry.position[coordinate], 0) / source.length;
+      positioned.forEach(({ node, position }) => {
+        if (!manual.has(node)) {
+          position[coordinate] = target;
+        }
+      });
+      orderAlignedNodesAlongCrossAxis(positioned, crossCoordinate, manual);
+    });
+  }
+  function orderAlignedNodesAlongCrossAxis(positioned, crossCoordinate, manual) {
+    if (positioned.length < 2 || positioned.some((entry) => manual.has(entry.node))) {
+      return;
+    }
+    const slots = positioned.map((entry) => entry.position[crossCoordinate]).filter((value) => Number.isFinite(value)).sort((left, right) => left - right);
+    if (slots.length !== positioned.length) {
+      return;
+    }
+    positioned.forEach((entry, index) => {
+      entry.position[crossCoordinate] = slots[index];
+    });
+  }
+  var init_alignment = __esm({
+    "src/markfeyn/renderer/layout/normalizers/alignment.js"() {
+    }
+  });
+
+  // src/markfeyn/renderer/geometry/paths.js
+  function wavePath(from, to, amplitude, wavelength) {
+    return wavePathForEdge({}, from, to, amplitude, wavelength);
+  }
+  function wavePathForEdge(edge, from, to, amplitude, wavelength) {
+    const geometry = edgeGeometry2(edge, from, to);
+    const length = geometryLength(geometry);
+    const cycles = Math.max(2, Math.round(length / wavelength));
+    const steps = cycles * 12;
+    const points = [];
+    for (let step = 0; step <= steps; step += 1) {
+      const t = step / steps;
+      const phase = t * cycles * Math.PI * 2;
+      const offset = Math.sin(phase) * amplitude;
+      const sample = geometrySample2(geometry, t);
+      const normal = perpendicularVector(sample.tangent);
+      points.push({
+        x: sample.point.x + normal.x * offset,
+        y: sample.point.y + normal.y * offset
+      });
+    }
+    return pointsToPath(points);
+  }
+  function gluonPath(from, to, radius, loopLength) {
+    return gluonPathForEdge({}, from, to, radius, loopLength);
+  }
+  function gluonPathForEdge(edge, from, to, radius, loopLength) {
+    const geometry = edgeGeometry2(edge, from, to);
+    const length = geometryLength(geometry);
+    const loops = Math.max(3, Math.round(length / loopLength));
+    const steps = loops * 18;
+    const points = [];
+    for (let step = 0; step <= steps; step += 1) {
+      const t = step / steps;
+      const phase = t * loops * Math.PI * 2;
+      const sample = geometrySample2(geometry, t);
+      const tangent = normalizeVector2(sample.tangent.x, sample.tangent.y);
+      const normal = perpendicularVector(tangent);
+      const taper = gluonEndpointTaper(t, loops);
+      const along = Math.sin(phase) * radius * taper;
+      const offset = Math.cos(phase) * radius * taper;
+      points.push({
+        x: sample.point.x + tangent.ux * along + normal.x * offset,
+        y: sample.point.y + tangent.uy * along + normal.y * offset
+      });
+    }
+    return pointsToPath(points);
+  }
+  function gluonEndpointTaper(t, loops) {
+    const loopsFromEndpoint = Math.min(t, 1 - t) * loops;
+    const edgeProgress = Math.min(1, Math.max(0, loopsFromEndpoint / GLUON_ENDPOINT_RAMP_LOOPS));
+    return edgeProgress * edgeProgress * (3 - 2 * edgeProgress);
+  }
+  function trianglePath(from, to, amplitude, wavelength) {
+    return trianglePathForEdge({}, from, to, amplitude, wavelength);
+  }
+  function trianglePathForEdge(edge, from, to, amplitude, wavelength) {
+    const geometry = edgeGeometry2(edge, from, to);
+    const length = geometryLength(geometry);
+    const cycles = Math.max(2, Math.round(length / wavelength));
+    const quarters = cycles * 4;
+    const offsetPattern = [0, amplitude, 0, -amplitude];
+    const samples = [];
+    for (let step = 0; step <= quarters; step += 1) {
+      samples.push({
+        t: step / quarters,
+        offset: offsetPattern[step % 4]
+      });
+    }
+    return offsetSamplesToPath(geometry, samples);
+  }
+  function squarePath(from, to, amplitude, wavelength) {
+    return squarePathForEdge({}, from, to, amplitude, wavelength);
+  }
+  function squarePathForEdge(edge, from, to, amplitude, wavelength) {
+    const geometry = edgeGeometry2(edge, from, to);
+    const length = geometryLength(geometry);
+    const cycles = Math.max(2, Math.round(length / wavelength));
+    const samples = [{ t: 0, offset: 0 }];
+    for (let cycle = 0; cycle < cycles; cycle += 1) {
+      const start = cycle / cycles;
+      const mid = (cycle + 0.5) / cycles;
+      const end = (cycle + 1) / cycles;
+      samples.push({ t: start, offset: amplitude });
+      samples.push({ t: mid, offset: amplitude });
+      samples.push({ t: mid, offset: -amplitude });
+      samples.push({ t: end, offset: -amplitude });
+    }
+    samples.push({ t: 1, offset: 0 });
+    return offsetSamplesToPath(geometry, samples);
+  }
+  function offsetSamplesToPath(geometry, samples) {
+    const points = samples.map(({ t, offset }) => {
+      const sample = geometrySample2(geometry, t);
+      const normal = perpendicularVector(sample.tangent);
+      return {
+        x: sample.point.x + normal.x * offset,
+        y: sample.point.y + normal.y * offset
+      };
+    });
+    return pointsToPath(points);
+  }
+  function doubleLinePath(from, to, separation) {
+    return doubleLinePathForEdge({}, from, to, separation);
+  }
+  function doubleLinePathForEdge(edge, from, to, separation) {
+    const geometry = edgeGeometry2(edge, from, to);
+    const half = separation / 2;
+    const steps = geometry.kind === "cubic" ? 48 : 1;
+    const upper = [];
+    const lower = [];
+    for (let step = 0; step <= steps; step += 1) {
+      const sample = geometrySample2(geometry, step / steps);
+      const normal = perpendicularVector(sample.tangent);
+      upper.push({
+        x: sample.point.x + normal.x * half,
+        y: sample.point.y + normal.y * half
+      });
+      lower.push({
+        x: sample.point.x - normal.x * half,
+        y: sample.point.y - normal.y * half
+      });
+    }
+    return `${pointsToPath(upper)} ${pointsToPath(lower)}`;
+  }
+  function edgePath(edge, from, to) {
+    return geometryToPath(edgeGeometry2(edge, from, to));
+  }
+  function edgeGeometry2(edge, from, to) {
+    const outAngle = Number(edge?.outAngle);
+    const inAngle = Number(edge?.inAngle);
+    if (samePoint2(from, to)) {
+      return selfLoopGeometry2(edge, from, outAngle, inAngle);
+    }
+    if (Number.isFinite(outAngle) || Number.isFinite(inAngle)) {
+      return angleCurveGeometry2(edge, from, to, outAngle, inAngle);
+    }
+    if (edge?.curve) {
+      return offsetCurveGeometry2(edge, from, to);
+    }
+    return {
+      kind: "line",
+      from,
+      to
+    };
+  }
+  function selfLoopGeometry2(edge, point, outAngle, inAngle) {
+    const amount = clamp3(edge?.curve?.amount ?? 0.72, 0.28, 1.1);
+    const radius = 68 * amount;
+    if (Number.isFinite(outAngle) || Number.isFinite(inAngle)) {
+      const outVector = angleUnitVector2(Number.isFinite(outAngle) ? outAngle : 135);
+      const inVector = angleUnitVector2(Number.isFinite(inAngle) ? inAngle : 45);
+      return {
+        kind: "cubic",
+        from: point,
+        c1: {
+          x: point.x + outVector.x * radius * 1.65,
+          y: point.y + outVector.y * radius * 1.65
+        },
+        c2: {
+          x: point.x + inVector.x * radius * 1.65,
+          y: point.y + inVector.y * radius * 1.65
+        },
+        to: point
+      };
+    }
+    const side = selfLoopSideVector2(edge?.curve?.side);
+    const tangent = { x: -side.y, y: side.x };
+    return {
+      kind: "cubic",
+      from: point,
+      c1: {
+        x: point.x - tangent.x * radius + side.x * radius * 1.7,
+        y: point.y - tangent.y * radius + side.y * radius * 1.7
+      },
+      c2: {
+        x: point.x + tangent.x * radius + side.x * radius * 1.7,
+        y: point.y + tangent.y * radius + side.y * radius * 1.7
+      },
+      to: point
+    };
+  }
+  function samePoint2(from, to) {
+    return Math.abs(from.x - to.x) < 1e-3 && Math.abs(from.y - to.y) < 1e-3;
+  }
+  function selfLoopSideVector2(side) {
+    if (side === "right") {
+      return { x: 1, y: 0 };
+    }
+    if (side === "bottom") {
+      return { x: 0, y: 1 };
+    }
+    if (side === "left") {
+      return { x: -1, y: 0 };
+    }
+    return { x: 0, y: -1 };
+  }
+  function offsetCurveGeometry2(edge, from, to) {
+    const vector = lineVector2(from, to);
+    const normal = leftNormalVector2(vector);
+    const side = edge.curve.side === "right" ? -1 : 1;
+    const looseness = edge.looseness ?? 1;
+    const offset = vector.length * edge.curve.amount * looseness * side;
+    if (edge.curve.shape === "semicircle") {
+      return {
+        kind: "cubic",
+        from,
+        c1: {
+          x: from.x + normal.x * offset,
+          y: from.y + normal.y * offset
+        },
+        c2: {
+          x: to.x + normal.x * offset,
+          y: to.y + normal.y * offset
+        },
+        to
+      };
+    }
+    return {
+      kind: "cubic",
+      from,
+      c1: {
+        x: from.x + vector.dx * 0.33 + normal.x * offset,
+        y: from.y + vector.dy * 0.33 + normal.y * offset
+      },
+      c2: {
+        x: from.x + vector.dx * 0.67 + normal.x * offset,
+        y: from.y + vector.dy * 0.67 + normal.y * offset
+      },
+      to
+    };
+  }
+  function angleCurveGeometry2(edge, from, to, outAngle, inAngle) {
+    const vector = lineVector2(from, to);
+    const looseness = edge?.looseness ?? 1;
+    const handle = vector.length * 0.46 * looseness;
+    const relativeBase = edge?.relativeAngles ? vectorAngle2(vector) : 0;
+    const resolvedOut = Number.isFinite(outAngle) ? relativeBase + outAngle : vectorAngle2(vector);
+    const resolvedIn = Number.isFinite(inAngle) ? relativeBase + inAngle : vectorAngle2(vector) + 180;
+    const outVector = angleUnitVector2(resolvedOut);
+    const inVector = angleUnitVector2(resolvedIn);
+    return {
+      kind: "cubic",
+      from,
+      c1: {
+        x: from.x + outVector.x * handle,
+        y: from.y + outVector.y * handle
+      },
+      c2: {
+        x: to.x + inVector.x * handle,
+        y: to.y + inVector.y * handle
+      },
+      to
+    };
+  }
+  function geometryToPath(geometry) {
+    if (geometry.kind === "cubic") {
+      return [
+        `M ${round(geometry.from.x)} ${round(geometry.from.y)}`,
+        `C ${round(geometry.c1.x)} ${round(geometry.c1.y)}`,
+        `${round(geometry.c2.x)} ${round(geometry.c2.y)}`,
+        `${round(geometry.to.x)} ${round(geometry.to.y)}`
+      ].join(" ");
+    }
+    return `M ${round(geometry.from.x)} ${round(geometry.from.y)} L ${round(geometry.to.x)} ${round(geometry.to.y)}`;
+  }
+  function geometryPoint2(geometry, t) {
+    if (geometry.kind === "cubic") {
+      return cubicPoint2(geometry.from, geometry.c1, geometry.c2, geometry.to, t);
+    }
+    return {
+      x: geometry.from.x + (geometry.to.x - geometry.from.x) * t,
+      y: geometry.from.y + (geometry.to.y - geometry.from.y) * t
+    };
+  }
+  function geometryTangent2(geometry, t) {
+    if (geometry.kind === "cubic") {
+      return cubicTangent2(geometry.from, geometry.c1, geometry.c2, geometry.to, t);
+    }
+    return {
+      x: geometry.to.x - geometry.from.x,
+      y: geometry.to.y - geometry.from.y
+    };
+  }
+  function geometrySample2(geometry, t) {
+    return {
+      point: geometryPoint2(geometry, t),
+      tangent: geometryTangent2(geometry, t)
+    };
+  }
+  function geometryLength(geometry) {
+    const steps = geometry.kind === "cubic" ? 48 : 1;
+    let length = 0;
+    let previous = geometryPoint2(geometry, 0);
+    for (let step = 1; step <= steps; step += 1) {
+      const next = geometryPoint2(geometry, step / steps);
+      length += Math.hypot(next.x - previous.x, next.y - previous.y);
+      previous = next;
+    }
+    return length;
+  }
+  function cubicPoint2(p0, p1, p2, p3, t) {
+    const mt = 1 - t;
+    return {
+      x: mt ** 3 * p0.x + 3 * mt ** 2 * t * p1.x + 3 * mt * t ** 2 * p2.x + t ** 3 * p3.x,
+      y: mt ** 3 * p0.y + 3 * mt ** 2 * t * p1.y + 3 * mt * t ** 2 * p2.y + t ** 3 * p3.y
+    };
+  }
+  function cubicTangent2(p0, p1, p2, p3, t) {
+    const mt = 1 - t;
+    return {
+      x: 3 * mt ** 2 * (p1.x - p0.x) + 6 * mt * t * (p2.x - p1.x) + 3 * t ** 2 * (p3.x - p2.x),
+      y: 3 * mt ** 2 * (p1.y - p0.y) + 6 * mt * t * (p2.y - p1.y) + 3 * t ** 2 * (p3.y - p2.y)
+    };
+  }
+  function lineVector2(from, to) {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const length = Math.hypot(dx, dy) || 1;
+    return {
+      dx,
+      dy,
+      length,
+      ux: dx / length,
+      uy: dy / length,
+      px: -dy / length,
+      py: dx / length
+    };
+  }
+  function normalizeVector2(dx, dy) {
+    const length = Math.hypot(dx, dy) || 1;
+    return {
+      ux: dx / length,
+      uy: dy / length,
+      px: -dy / length,
+      py: dx / length
+    };
+  }
+  function perpendicularVector(vector) {
+    const normalized = normalizeVector2(vector.x ?? vector.dx ?? vector.ux, vector.y ?? vector.dy ?? vector.uy);
+    return {
+      x: normalized.px,
+      y: normalized.py
+    };
+  }
+  function leftNormalVector2(vector) {
+    return {
+      x: vector.dy / vector.length,
+      y: -vector.dx / vector.length
+    };
+  }
+  function vectorAngle2(vector) {
+    return Math.atan2(-vector.dy, vector.dx) * 180 / Math.PI;
+  }
+  function angleUnitVector2(degrees) {
+    const radians = degrees * Math.PI / 180;
+    return {
+      x: Math.cos(radians),
+      y: -Math.sin(radians)
+    };
+  }
+  function pointsToPath(points) {
+    return points.map((point, index) => `${index === 0 ? "M" : "L"} ${round(point.x)} ${round(point.y)}`).join(" ");
+  }
+  function clamp3(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+  function round(value) {
+    return Math.round(value * 100) / 100;
+  }
+  var GLUON_ENDPOINT_RAMP_LOOPS;
+  var init_paths = __esm({
+    "src/markfeyn/renderer/geometry/paths.js"() {
+      GLUON_ENDPOINT_RAMP_LOOPS = 0.62;
+    }
+  });
+
+  // src/markfeyn/renderer/layout/normalizers/edge-bounds.js
+  function layoutEdgePathBounds(diagram, positions) {
+    const bounds = {
+      minX: Infinity,
+      maxX: -Infinity,
+      minY: Infinity,
+      maxY: -Infinity
+    };
+    let hasGeometry = false;
+    diagram.edges.forEach((edge) => {
+      if (edge.hidden) {
+        return;
+      }
+      const from = positions[edge.from];
+      const to = positions[edge.to];
+      if (!from || !to) {
+        return;
+      }
+      const numbers = edgePath(edge, from, to).match(/-?\d+(?:\.\d+)?/g);
+      if (!numbers) {
+        return;
+      }
+      numbers.map(Number).forEach((value, index) => {
+        if (index % 2 === 0) {
+          hasGeometry = true;
+          bounds.minX = Math.min(bounds.minX, value);
+          bounds.maxX = Math.max(bounds.maxX, value);
+          return;
+        }
+        bounds.minY = Math.min(bounds.minY, value);
+        bounds.maxY = Math.max(bounds.maxY, value);
+      });
+    });
+    return hasGeometry ? bounds : null;
+  }
+  function fitLayoutTranslationToEdgeBounds(diagram, positions, layoutOptions) {
+    const bounds = layoutEdgePathBounds(diagram, positions);
+    if (!bounds) {
+      return;
+    }
+    const minX = layoutOptions.marginX;
+    const maxX = layoutOptions.width - layoutOptions.marginX;
+    const minY = layoutOptions.marginY;
+    const maxY = layoutOptions.height - layoutOptions.marginY;
+    let offsetX = 0;
+    let offsetY = 0;
+    if (bounds.minX < minX) {
+      offsetX = minX - bounds.minX;
+    } else if (bounds.maxX > maxX) {
+      offsetX = maxX - bounds.maxX;
+    }
+    if (bounds.minY < minY) {
+      offsetY = minY - bounds.minY;
+    } else if (bounds.maxY > maxY) {
+      offsetY = maxY - bounds.maxY;
+    }
+    if (!offsetX && !offsetY) {
+      return;
+    }
+    Object.values(positions).forEach((position) => {
+      position.x += offsetX;
+      position.y += offsetY;
+    });
+  }
+  var init_edge_bounds = __esm({
+    "src/markfeyn/renderer/layout/normalizers/edge-bounds.js"() {
+      init_paths();
+    }
+  });
+
+  // src/markfeyn/renderer/geometry/vertex-shapes.js
+  function vertexDefinitionShape(definition) {
+    if (!definition) {
+      return null;
+    }
+    if (typeof definition === "string") {
+      return definition;
+    }
+    return definition.shape ?? null;
+  }
+  function vertexDefinitionOptions(definition) {
+    if (!definition || typeof definition === "string") {
+      return {};
+    }
+    return definition;
+  }
+  function blobVertexRadii(shape, definition) {
+    const options = vertexDefinitionOptions(definition);
+    const radius = options.size ?? BLOB_VERTEX_DEFAULT_RADII[shape];
+    return {
+      rx: options.rx ?? radius,
+      ry: options.ry ?? radius
+    };
+  }
+  function blobHatchPatternId(index, hatch) {
+    return `feynman-hatch-${hatch}-${index}`;
+  }
+  var init_vertex_shapes = __esm({
+    "src/markfeyn/renderer/geometry/vertex-shapes.js"() {
+      init_metrics();
+    }
+  });
+
+  // src/markfeyn/renderer/layout/normalizers/elk.js
   function elkNodeDimensions(node, diagram) {
     const definition = diagram.vertices?.[node] ?? null;
     const shape = vertexDefinitionShape(definition);
@@ -5567,7 +5606,8 @@
     }
     return { width: 8, height: 8 };
   }
-  function normalizeElkLayout(diagram, layoutOptions, elkGraph) {
+  function normalizeElkLayout(diagram, layoutOptions, elkGraph, applyNormalizations = () => {
+  }) {
     const { width, height } = layoutOptions;
     const axes = diagramAxes(layoutOptions);
     const positions = {};
@@ -5601,36 +5641,39 @@
       positions[node] = axes.point(layer, cross, kind);
     });
     applyManualPositions(positions, diagram, layoutOptions);
-    applyLayoutNormalizations(diagram, positions, axes, layoutOptions);
+    applyNormalizations(diagram, positions, axes, layoutOptions);
     return { width, height, positions, options: layoutOptions };
   }
-  function applyLayoutNormalizations(diagram, positions, axes, layoutOptions) {
-    centerDefaultSpringExchangeFans(diagram, positions, axes, layoutOptions);
-    centerTikzOrientationEndpointFans(diagram, positions, axes, layoutOptions);
-    if (usesSpringStyleNormalization(layoutOptions)) {
-      alignHorizontalBackboneInternals(diagram, positions, axes, layoutOptions);
-      orientHorizontalBackboneInternals(diagram, positions, axes, layoutOptions);
-      fitCurvedInternalEdgeGroupsToViewBox(diagram, positions, axes, layoutOptions);
-    }
-    straightenSingleTerminalLegs(diagram, positions, axes);
-    if (!layoutOptions.tikzOrientation) {
-      alignVerticalProcessTerminalStacks(diagram, positions, axes, layoutOptions);
-    }
-    straightenSingleTerminalLegs(diagram, positions, axes);
-    alignInternalsAcrossInvisibleTerminalPairs(diagram, positions, axes);
-    enforceDeclaredExternalOrder(diagram, positions, axes);
-    if (!layoutOptions.tikzOrientation) {
-      alignInternalsToDeclaredTerminalRows(diagram, positions, axes, layoutOptions);
-    }
-    applyAlignmentConstraints(diagram, positions, layoutOptions);
-    fitLayoutTranslationToEdgeBounds(diagram, positions, layoutOptions);
+  function elkRawPositions(elkGraph) {
+    const positions = /* @__PURE__ */ new Map();
+    (elkGraph.children || []).forEach((child) => {
+      positions.set(child.id, {
+        x: (child.x || 0) + (child.width || 0) / 2,
+        y: (child.y || 0) + (child.height || 0) / 2
+      });
+    });
+    return positions;
   }
-  function finalizeLayout(diagram, layout, layoutOptions) {
-    applyTikzPostLayoutOrientation(diagram, layout, layoutOptions);
-    applyManualPositions(layout.positions, diagram, layoutOptions);
-    layout.options = layoutOptions;
-    return layout;
+  function elkInternalLayerRange(diagram, axes) {
+    if (!diagram.incoming.length && !diagram.outgoing.length) {
+      return { start: axes.layerStart, end: axes.layerEnd };
+    }
+    const layerSpan = axes.layerEnd - axes.layerStart;
+    const terminalGap = Math.min(84, Math.max(48, Math.abs(layerSpan) * 0.24));
+    const direction = Math.sign(layerSpan) || 1;
+    return {
+      start: axes.layerStart + direction * terminalGap,
+      end: axes.layerEnd - direction * terminalGap
+    };
   }
+  var init_elk = __esm({
+    "src/markfeyn/renderer/layout/normalizers/elk.js"() {
+      init_vertex_shapes();
+      init_coordinates();
+    }
+  });
+
+  // src/markfeyn/renderer/layout/normalizers/process.js
   function terminalCrossLocks(diagram, positions, axes, pinned) {
     const externalKinds = /* @__PURE__ */ new Set(["incoming", "outgoing"]);
     const constraints = /* @__PURE__ */ new Map();
@@ -5671,31 +5714,255 @@
     });
     return locks;
   }
-  function usesSpringStyleNormalization(layoutOptions) {
-    return layoutOptions.layout === "spring" || layoutOptions.layout === "spring-electrical";
-  }
-  function elkRawPositions(elkGraph) {
-    const positions = /* @__PURE__ */ new Map();
-    (elkGraph.children || []).forEach((child) => {
-      positions.set(child.id, {
-        x: (child.x || 0) + (child.width || 0) / 2,
-        y: (child.y || 0) + (child.height || 0) / 2
+  function straightenSingleTerminalLegs(diagram, positions, axes) {
+    const manual = new Set(Object.keys(diagram.manualPositions || {}));
+    const terminalKinds = ["incoming", "outgoing"];
+    terminalKinds.forEach((kind) => {
+      const terminalsByInternal = terminalNeighborsByInternal(diagram, kind, manual);
+      terminalsByInternal.forEach((terminals, internal) => {
+        if (terminals.size !== 1 || !positions[internal]) {
+          return;
+        }
+        const terminal = Array.from(terminals)[0];
+        if (!positions[terminal]) {
+          return;
+        }
+        if (canMoveTerminalCross(terminal, axes.crossOf(positions[internal]), positions, axes, kind)) {
+          axes.setCross(positions[terminal], axes.crossOf(positions[internal]));
+        }
       });
     });
-    return positions;
   }
-  function elkInternalLayerRange(diagram, axes) {
-    if (!diagram.incoming.length && !diagram.outgoing.length) {
-      return { start: axes.layerStart, end: axes.layerEnd };
+  function alignVerticalProcessTerminalStacks(diagram, positions, axes, layoutOptions) {
+    if (!layoutOptions.orientation.startsWith("vertical")) {
+      return;
     }
-    const layerSpan = axes.layerEnd - axes.layerStart;
-    const terminalGap = Math.min(84, Math.max(48, Math.abs(layerSpan) * 0.24));
-    const direction = Math.sign(layerSpan) || 1;
-    return {
-      start: axes.layerStart + direction * terminalGap,
-      end: axes.layerEnd - direction * terminalGap
-    };
+    const manual = new Set(Object.keys(diagram.manualPositions || {}));
+    const orderedInternals = [];
+    const terminalsByInternal = /* @__PURE__ */ new Map();
+    diagram.incoming.forEach((terminal) => {
+      const internals = visibleInternalNeighborsForTerminal(diagram, terminal, manual);
+      if (internals.length !== 1) {
+        return;
+      }
+      const internal = internals[0];
+      if (!orderedInternals.includes(internal)) {
+        orderedInternals.push(internal);
+      }
+      addTerminalForInternal(terminalsByInternal, internal, terminal);
+    });
+    diagram.outgoing.forEach((terminal) => {
+      const internals = visibleInternalNeighborsForTerminal(diagram, terminal, manual);
+      if (internals.length !== 1) {
+        return;
+      }
+      const internal = internals[0];
+      if (!orderedInternals.includes(internal)) {
+        orderedInternals.push(internal);
+      }
+      addTerminalForInternal(terminalsByInternal, internal, terminal);
+    });
+    if (orderedInternals.length < 2) {
+      return;
+    }
+    orderedInternals.forEach((internal, index) => {
+      const cross = crossCoordinateAt(index, orderedInternals.length, axes.crossStart, axes.crossEnd);
+      if (positions[internal] && !manual.has(internal)) {
+        axes.setCross(positions[internal], cross);
+      }
+      (terminalsByInternal.get(internal) || []).forEach((terminal) => {
+        if (positions[terminal] && !manual.has(terminal)) {
+          axes.setCross(positions[terminal], cross);
+        }
+      });
+    });
   }
+  function addTerminalForInternal(terminalsByInternal, internal, terminal) {
+    if (!terminalsByInternal.has(internal)) {
+      terminalsByInternal.set(internal, []);
+    }
+    if (!terminalsByInternal.get(internal).includes(terminal)) {
+      terminalsByInternal.get(internal).push(terminal);
+    }
+  }
+  function alignInternalsAcrossInvisibleTerminalPairs(diagram, positions, axes) {
+    const manual = new Set(Object.keys(diagram.manualPositions || {}));
+    const terminalKinds = /* @__PURE__ */ new Set(["incoming", "outgoing"]);
+    diagram.edges.forEach((edge) => {
+      if (!edge.hidden) {
+        return;
+      }
+      const fromKind = nodeKind(edge.from, diagram);
+      const toKind = nodeKind(edge.to, diagram);
+      if (!terminalKinds.has(fromKind) || fromKind !== toKind) {
+        return;
+      }
+      const internalsFrom = visibleInternalNeighborsForTerminal(diagram, edge.from, manual);
+      const internalsTo = visibleInternalNeighborsForTerminal(diagram, edge.to, manual);
+      if (internalsFrom.length !== 1 || internalsTo.length !== 1) {
+        return;
+      }
+      const firstInternal = internalsFrom[0];
+      const secondInternal = internalsTo[0];
+      if (firstInternal === secondInternal || !positions[firstInternal] || !positions[secondInternal] || manual.has(firstInternal) || manual.has(secondInternal)) {
+        return;
+      }
+      const sharedLayer = (positions[firstInternal].x + positions[secondInternal].x) / 2;
+      positions[firstInternal].x = sharedLayer;
+      positions[secondInternal].x = sharedLayer;
+    });
+  }
+  function canMoveTerminalCross(node, cross, positions, axes, kind) {
+    const minGap = 28;
+    return Object.entries(positions).every(([otherNode, position]) => otherNode === node || position.kind === "internal" || position.kind !== kind || Math.abs(axes.crossOf(position) - cross) >= minGap);
+  }
+  function alignInternalsToDeclaredTerminalRows(diagram, positions, axes, layoutOptions) {
+    if (!diagram.incoming.length && !diagram.outgoing.length) {
+      return;
+    }
+    const pinned = /* @__PURE__ */ new Set([
+      ...diagram.incoming,
+      ...diagram.outgoing,
+      ...Object.keys(diagram.manualPositions || {})
+    ]);
+    terminalCrossLocks(diagram, positions, axes, pinned).forEach((cross, node) => {
+      if (positions[node]?.kind === "internal") {
+        axes.setCross(positions[node], cross);
+      }
+    });
+    if (layoutOptions.layout === "spring") {
+      alignJunctionsToTerminalRowCorridors(diagram, positions, axes, pinned);
+    }
+    alignTerminalLaneInternals(diagram, positions, axes, pinned);
+  }
+  function alignJunctionsToTerminalRowCorridors(diagram, positions, axes, pinned) {
+    if (axes.stackInternals) {
+      return;
+    }
+    const externalKinds = /* @__PURE__ */ new Set(["incoming", "outgoing"]);
+    const directLocks = terminalCrossLocks(diagram, positions, axes, pinned);
+    const adjacency = visibleAdjacencyForLayout(diagram, Object.keys(positions));
+    const tolerance = 1;
+    adjacency.forEach((neighbors, node) => {
+      const position = positions[node];
+      if (!position || position.kind !== "internal" || pinned.has(node) || directLocks.has(node)) {
+        return;
+      }
+      const crosses = [];
+      neighbors.forEach((neighbor) => {
+        const neighborPosition = positions[neighbor];
+        if (!neighborPosition) {
+          return;
+        }
+        if (externalKinds.has(neighborPosition.kind)) {
+          crosses.push(axes.crossOf(neighborPosition));
+          return;
+        }
+        if (directLocks.has(neighbor)) {
+          crosses.push(directLocks.get(neighbor));
+        }
+      });
+      if (crosses.length < 2) {
+        return;
+      }
+      const groups = groupNearbyCrosses(crosses, tolerance);
+      if (groups.length < 2) {
+        return;
+      }
+      const largest = Math.max(...groups.map((group) => group.count));
+      const dominantGroups = groups.filter((group) => group.count === largest);
+      const target = dominantGroups.length === 1 && largest > 1 ? dominantGroups[0].sum / dominantGroups[0].count : crosses.reduce((sum, cross) => sum + cross, 0) / crosses.length;
+      axes.setCross(position, target);
+    });
+  }
+  function groupNearbyCrosses(crosses, tolerance) {
+    const groups = [];
+    crosses.filter(Number.isFinite).sort((left, right) => left - right).forEach((cross) => {
+      const last = groups[groups.length - 1];
+      if (!last || Math.abs(cross - last.center) > tolerance) {
+        groups.push({ center: cross, sum: cross, count: 1 });
+        return;
+      }
+      last.sum += cross;
+      last.count += 1;
+      last.center = last.sum / last.count;
+    });
+    return groups;
+  }
+  function alignTerminalLaneInternals(diagram, positions, axes, pinned) {
+    if (diagram.incoming.length <= 1 && diagram.outgoing.length <= 1) {
+      return;
+    }
+    const tolerance = 1;
+    const moved = /* @__PURE__ */ new Set();
+    diagram.incoming.forEach((incoming) => {
+      const incomingPosition = positions[incoming];
+      if (!incomingPosition) {
+        return;
+      }
+      diagram.outgoing.forEach((outgoing) => {
+        const outgoingPosition = positions[outgoing];
+        if (!outgoingPosition || Math.abs(axes.crossOf(incomingPosition) - axes.crossOf(outgoingPosition)) > tolerance) {
+          return;
+        }
+        const path = terminalLanePath(diagram, positions, axes, incoming, outgoing, axes.crossOf(incomingPosition), tolerance);
+        if (!path) {
+          return;
+        }
+        const internals = path.filter((node) => positions[node]?.kind === "internal" && !pinned.has(node) && !moved.has(node));
+        if (!internals.length) {
+          return;
+        }
+        internals.forEach((node, index) => {
+          positions[node].x = axes.layerStart + (axes.layerEnd - axes.layerStart) * (index + 1) / (internals.length + 1);
+          moved.add(node);
+        });
+      });
+    });
+  }
+  function terminalLanePath(diagram, positions, axes, incoming, outgoing, cross, tolerance) {
+    const allowed = /* @__PURE__ */ new Set([incoming, outgoing]);
+    Object.entries(positions).forEach(([node, position]) => {
+      if (position.kind === "internal" && Math.abs(axes.crossOf(position) - cross) <= tolerance) {
+        allowed.add(node);
+      }
+    });
+    const adjacency = new Map(Array.from(allowed).map((node) => [node, []]));
+    diagram.edges.forEach((edge) => {
+      if (edge.hidden || !allowed.has(edge.from) || !allowed.has(edge.to)) {
+        return;
+      }
+      adjacency.get(edge.from).push(edge.to);
+      adjacency.get(edge.to).push(edge.from);
+    });
+    adjacency.forEach((neighbors) => {
+      neighbors.sort((left, right) => left.localeCompare(right));
+    });
+    const queue = [[incoming]];
+    const visited = /* @__PURE__ */ new Set([incoming]);
+    while (queue.length) {
+      const path = queue.shift();
+      const node = path[path.length - 1];
+      if (node === outgoing) {
+        return path;
+      }
+      (adjacency.get(node) || []).forEach((neighbor) => {
+        if (visited.has(neighbor)) {
+          return;
+        }
+        visited.add(neighbor);
+        queue.push([...path, neighbor]);
+      });
+    }
+    return null;
+  }
+  var init_process = __esm({
+    "src/markfeyn/renderer/layout/normalizers/process.js"() {
+      init_coordinates();
+    }
+  });
+
+  // src/markfeyn/renderer/layout/normalizers/spring.js
   function centerDefaultSpringExchangeFans(diagram, positions, axes, layoutOptions) {
     if (layoutOptions.layout !== "spring" && layoutOptions.layout !== "spring-electrical" || !layoutOptions.orientation.startsWith("horizontal") || diagram.incoming.length !== 2 || diagram.outgoing.length !== 2) {
       return;
@@ -5729,18 +5996,6 @@
       }
       return edge.from === first && edge.to === second || edge.from === second && edge.to === first;
     });
-  }
-  function centerTikzOrientationEndpointFans(diagram, positions, axes, layoutOptions) {
-    const orientation2 = layoutOptions.tikzOrientation;
-    if (!orientation2) {
-      return;
-    }
-    centerMultiTerminalFanJunctions(
-      diagram,
-      positions,
-      axes,
-      /* @__PURE__ */ new Set([orientation2.from, orientation2.to])
-    );
   }
   function centerMultiTerminalFanJunctions(diagram, positions, axes, eligibleInternals) {
     const manual = new Set(Object.keys(diagram.manualPositions || {}));
@@ -5958,170 +6213,24 @@
       axes.setCross(second, targetCross);
     });
   }
-  function layoutEdgePathBounds(diagram, positions) {
-    const bounds = {
-      minX: Infinity,
-      maxX: -Infinity,
-      minY: Infinity,
-      maxY: -Infinity
-    };
-    let hasGeometry = false;
-    diagram.edges.forEach((edge) => {
-      if (edge.hidden) {
-        return;
-      }
-      const from = positions[edge.from];
-      const to = positions[edge.to];
-      if (!from || !to) {
-        return;
-      }
-      const numbers = edgePath(edge, from, to).match(/-?\d+(?:\.\d+)?/g);
-      if (!numbers) {
-        return;
-      }
-      numbers.map(Number).forEach((value, index) => {
-        if (index % 2 === 0) {
-          hasGeometry = true;
-          bounds.minX = Math.min(bounds.minX, value);
-          bounds.maxX = Math.max(bounds.maxX, value);
-          return;
-        }
-        bounds.minY = Math.min(bounds.minY, value);
-        bounds.maxY = Math.max(bounds.maxY, value);
-      });
-    });
-    return hasGeometry ? bounds : null;
-  }
-  function fitLayoutTranslationToEdgeBounds(diagram, positions, layoutOptions) {
-    const bounds = layoutEdgePathBounds(diagram, positions);
-    if (!bounds) {
+  var init_spring = __esm({
+    "src/markfeyn/renderer/layout/normalizers/spring.js"() {
+      init_coordinates();
+    }
+  });
+
+  // src/markfeyn/renderer/layout/normalizers/tikz-orientation.js
+  function centerTikzOrientationEndpointFans(diagram, positions, axes, layoutOptions) {
+    const orientation2 = layoutOptions.tikzOrientation;
+    if (!orientation2) {
       return;
     }
-    const minX = layoutOptions.marginX;
-    const maxX = layoutOptions.width - layoutOptions.marginX;
-    const minY = layoutOptions.marginY;
-    const maxY = layoutOptions.height - layoutOptions.marginY;
-    let offsetX = 0;
-    let offsetY = 0;
-    if (bounds.minX < minX) {
-      offsetX = minX - bounds.minX;
-    } else if (bounds.maxX > maxX) {
-      offsetX = maxX - bounds.maxX;
-    }
-    if (bounds.minY < minY) {
-      offsetY = minY - bounds.minY;
-    } else if (bounds.maxY > maxY) {
-      offsetY = maxY - bounds.maxY;
-    }
-    if (!offsetX && !offsetY) {
-      return;
-    }
-    Object.values(positions).forEach((position) => {
-      position.x += offsetX;
-      position.y += offsetY;
-    });
-  }
-  function straightenSingleTerminalLegs(diagram, positions, axes) {
-    const manual = new Set(Object.keys(diagram.manualPositions || {}));
-    const terminalKinds = ["incoming", "outgoing"];
-    terminalKinds.forEach((kind) => {
-      const terminalsByInternal = terminalNeighborsByInternal(diagram, kind, manual);
-      terminalsByInternal.forEach((terminals, internal) => {
-        if (terminals.size !== 1 || !positions[internal]) {
-          return;
-        }
-        const terminal = Array.from(terminals)[0];
-        if (!positions[terminal]) {
-          return;
-        }
-        if (canMoveTerminalCross(terminal, axes.crossOf(positions[internal]), positions, axes, kind)) {
-          axes.setCross(positions[terminal], axes.crossOf(positions[internal]));
-        }
-      });
-    });
-  }
-  function alignVerticalProcessTerminalStacks(diagram, positions, axes, layoutOptions) {
-    if (!layoutOptions.orientation.startsWith("vertical")) {
-      return;
-    }
-    const manual = new Set(Object.keys(diagram.manualPositions || {}));
-    const orderedInternals = [];
-    const terminalsByInternal = /* @__PURE__ */ new Map();
-    diagram.incoming.forEach((terminal) => {
-      const internals = visibleInternalNeighborsForTerminal(diagram, terminal, manual);
-      if (internals.length !== 1) {
-        return;
-      }
-      const internal = internals[0];
-      if (!orderedInternals.includes(internal)) {
-        orderedInternals.push(internal);
-      }
-      addTerminalForInternal(terminalsByInternal, internal, terminal);
-    });
-    diagram.outgoing.forEach((terminal) => {
-      const internals = visibleInternalNeighborsForTerminal(diagram, terminal, manual);
-      if (internals.length !== 1) {
-        return;
-      }
-      const internal = internals[0];
-      if (!orderedInternals.includes(internal)) {
-        orderedInternals.push(internal);
-      }
-      addTerminalForInternal(terminalsByInternal, internal, terminal);
-    });
-    if (orderedInternals.length < 2) {
-      return;
-    }
-    orderedInternals.forEach((internal, index) => {
-      const cross = crossCoordinateAt(index, orderedInternals.length, axes.crossStart, axes.crossEnd);
-      if (positions[internal] && !manual.has(internal)) {
-        axes.setCross(positions[internal], cross);
-      }
-      (terminalsByInternal.get(internal) || []).forEach((terminal) => {
-        if (positions[terminal] && !manual.has(terminal)) {
-          axes.setCross(positions[terminal], cross);
-        }
-      });
-    });
-  }
-  function addTerminalForInternal(terminalsByInternal, internal, terminal) {
-    if (!terminalsByInternal.has(internal)) {
-      terminalsByInternal.set(internal, []);
-    }
-    if (!terminalsByInternal.get(internal).includes(terminal)) {
-      terminalsByInternal.get(internal).push(terminal);
-    }
-  }
-  function alignInternalsAcrossInvisibleTerminalPairs(diagram, positions, axes) {
-    const manual = new Set(Object.keys(diagram.manualPositions || {}));
-    const terminalKinds = /* @__PURE__ */ new Set(["incoming", "outgoing"]);
-    diagram.edges.forEach((edge) => {
-      if (!edge.hidden) {
-        return;
-      }
-      const fromKind = nodeKind(edge.from, diagram);
-      const toKind = nodeKind(edge.to, diagram);
-      if (!terminalKinds.has(fromKind) || fromKind !== toKind) {
-        return;
-      }
-      const internalsFrom = visibleInternalNeighborsForTerminal(diagram, edge.from, manual);
-      const internalsTo = visibleInternalNeighborsForTerminal(diagram, edge.to, manual);
-      if (internalsFrom.length !== 1 || internalsTo.length !== 1) {
-        return;
-      }
-      const firstInternal = internalsFrom[0];
-      const secondInternal = internalsTo[0];
-      if (firstInternal === secondInternal || !positions[firstInternal] || !positions[secondInternal] || manual.has(firstInternal) || manual.has(secondInternal)) {
-        return;
-      }
-      const sharedLayer = (positions[firstInternal].x + positions[secondInternal].x) / 2;
-      positions[firstInternal].x = sharedLayer;
-      positions[secondInternal].x = sharedLayer;
-    });
-  }
-  function canMoveTerminalCross(node, cross, positions, axes, kind) {
-    const minGap = 28;
-    return Object.entries(positions).every(([otherNode, position]) => otherNode === node || position.kind === "internal" || position.kind !== kind || Math.abs(axes.crossOf(position) - cross) >= minGap);
+    centerMultiTerminalFanJunctions(
+      diagram,
+      positions,
+      axes,
+      /* @__PURE__ */ new Set([orientation2.from, orientation2.to])
+    );
   }
   function applyTikzPostLayoutOrientation(diagram, layout, layoutOptions) {
     const orientation2 = layoutOptions.tikzOrientation;
@@ -6157,8 +6266,8 @@
       return;
     }
     const axis = lineVector2(from, to);
-    const axisGap = clamp3(Math.min(layout.width, layout.height) * 0.24, 72, 104);
-    const fanGap = orientation2.axis === "vertical" ? clamp3(Math.min(layout.width, layout.height) * 0.45, 126, 150) : clamp3(Math.min(layout.width, layout.height) * 0.33, 84, 126);
+    const axisGap = clamp2(Math.min(layout.width, layout.height) * 0.24, 72, 104);
+    const fanGap = orientation2.axis === "vertical" ? clamp2(Math.min(layout.width, layout.height) * 0.45, 126, 150) : clamp2(Math.min(layout.width, layout.height) * 0.33, 84, 126);
     [
       { internal: orientation2.from, outward: -1 },
       { internal: orientation2.to, outward: 1 }
@@ -6222,8 +6331,8 @@
       return;
     }
     const axis = lineVector2(from, to);
-    const axisGap = clamp3(Math.min(layout.width, layout.height) * 0.24, 72, 104);
-    const fanGap = clamp3(Math.min(layout.width, layout.height) * 0.33, 84, 126);
+    const axisGap = clamp2(Math.min(layout.width, layout.height) * 0.24, 72, 104);
+    const fanGap = clamp2(Math.min(layout.width, layout.height) * 0.33, 84, 126);
     [
       { internal: orientation2.from, kind: "incoming", outward: -1 },
       { internal: orientation2.to, kind: "outgoing", outward: 1 }
@@ -6296,187 +6405,172 @@
       position.y = position.y * scale + offsetY;
     });
   }
-  function alignInternalsToDeclaredTerminalRows(diagram, positions, axes, layoutOptions) {
-    if (!diagram.incoming.length && !diagram.outgoing.length) {
-      return;
+  var init_tikz_orientation = __esm({
+    "src/markfeyn/renderer/layout/normalizers/tikz-orientation.js"() {
+      init_paths();
+      init_spring();
+      init_coordinates();
     }
-    const pinned = /* @__PURE__ */ new Set([
-      ...diagram.incoming,
-      ...diagram.outgoing,
-      ...Object.keys(diagram.manualPositions || {})
-    ]);
-    terminalCrossLocks(diagram, positions, axes, pinned).forEach((cross, node) => {
-      if (positions[node]?.kind === "internal") {
-        axes.setCross(positions[node], cross);
-      }
-    });
-    if (layoutOptions.layout === "spring") {
-      alignJunctionsToTerminalRowCorridors(diagram, positions, axes, pinned);
-    }
-    alignTerminalLaneInternals(diagram, positions, axes, pinned);
+  });
+
+  // src/markfeyn/renderer/layout/normalization.js
+  function normalizeElkLayout2(diagram, layoutOptions, elkGraph) {
+    return normalizeElkLayout(
+      diagram,
+      layoutOptions,
+      elkGraph,
+      applyLayoutNormalizations
+    );
   }
-  function alignJunctionsToTerminalRowCorridors(diagram, positions, axes, pinned) {
-    if (axes.stackInternals) {
-      return;
+  function applyLayoutNormalizations(diagram, positions, axes, layoutOptions) {
+    centerDefaultSpringExchangeFans(diagram, positions, axes, layoutOptions);
+    centerTikzOrientationEndpointFans(diagram, positions, axes, layoutOptions);
+    if (usesSpringStyleNormalization(layoutOptions)) {
+      alignHorizontalBackboneInternals(diagram, positions, axes, layoutOptions);
+      orientHorizontalBackboneInternals(diagram, positions, axes, layoutOptions);
+      fitCurvedInternalEdgeGroupsToViewBox(diagram, positions, axes, layoutOptions);
     }
-    const externalKinds = /* @__PURE__ */ new Set(["incoming", "outgoing"]);
-    const directLocks = terminalCrossLocks(diagram, positions, axes, pinned);
-    const adjacency = visibleAdjacencyForLayout(diagram, Object.keys(positions));
-    const tolerance = 1;
-    adjacency.forEach((neighbors, node) => {
-      const position = positions[node];
-      if (!position || position.kind !== "internal" || pinned.has(node) || directLocks.has(node)) {
-        return;
-      }
-      const crosses = [];
-      neighbors.forEach((neighbor) => {
-        const neighborPosition = positions[neighbor];
-        if (!neighborPosition) {
-          return;
-        }
-        if (externalKinds.has(neighborPosition.kind)) {
-          crosses.push(axes.crossOf(neighborPosition));
-          return;
-        }
-        if (directLocks.has(neighbor)) {
-          crosses.push(directLocks.get(neighbor));
-        }
-      });
-      if (crosses.length < 2) {
-        return;
-      }
-      const groups = groupNearbyCrosses(crosses, tolerance);
-      if (groups.length < 2) {
-        return;
-      }
-      const largest = Math.max(...groups.map((group) => group.count));
-      const dominantGroups = groups.filter((group) => group.count === largest);
-      const target = dominantGroups.length === 1 && largest > 1 ? dominantGroups[0].sum / dominantGroups[0].count : crosses.reduce((sum, cross) => sum + cross, 0) / crosses.length;
-      axes.setCross(position, target);
-    });
+    straightenSingleTerminalLegs(diagram, positions, axes);
+    if (!layoutOptions.tikzOrientation) {
+      alignVerticalProcessTerminalStacks(diagram, positions, axes, layoutOptions);
+    }
+    straightenSingleTerminalLegs(diagram, positions, axes);
+    alignInternalsAcrossInvisibleTerminalPairs(diagram, positions, axes);
+    enforceDeclaredExternalOrder(diagram, positions, axes);
+    if (!layoutOptions.tikzOrientation) {
+      alignInternalsToDeclaredTerminalRows(diagram, positions, axes, layoutOptions);
+    }
+    applyAlignmentConstraints(diagram, positions, layoutOptions);
+    fitLayoutTranslationToEdgeBounds(diagram, positions, layoutOptions);
   }
-  function groupNearbyCrosses(crosses, tolerance) {
-    const groups = [];
-    crosses.filter(Number.isFinite).sort((left, right) => left - right).forEach((cross) => {
-      const last = groups[groups.length - 1];
-      if (!last || Math.abs(cross - last.center) > tolerance) {
-        groups.push({ center: cross, sum: cross, count: 1 });
-        return;
-      }
-      last.sum += cross;
-      last.count += 1;
-      last.center = last.sum / last.count;
-    });
-    return groups;
+  function finalizeLayout(diagram, layout, layoutOptions) {
+    applyTikzPostLayoutOrientation(diagram, layout, layoutOptions);
+    applyManualPositions(layout.positions, diagram, layoutOptions);
+    layout.options = layoutOptions;
+    return layout;
   }
-  function alignTerminalLaneInternals(diagram, positions, axes, pinned) {
-    if (diagram.incoming.length <= 1 && diagram.outgoing.length <= 1) {
-      return;
-    }
-    const tolerance = 1;
-    const moved = /* @__PURE__ */ new Set();
-    diagram.incoming.forEach((incoming) => {
-      const incomingPosition = positions[incoming];
-      if (!incomingPosition) {
-        return;
-      }
-      diagram.outgoing.forEach((outgoing) => {
-        const outgoingPosition = positions[outgoing];
-        if (!outgoingPosition || Math.abs(axes.crossOf(incomingPosition) - axes.crossOf(outgoingPosition)) > tolerance) {
-          return;
-        }
-        const path = terminalLanePath(diagram, positions, axes, incoming, outgoing, axes.crossOf(incomingPosition), tolerance);
-        if (!path) {
-          return;
-        }
-        const internals = path.filter((node) => positions[node]?.kind === "internal" && !pinned.has(node) && !moved.has(node));
-        if (!internals.length) {
-          return;
-        }
-        internals.forEach((node, index) => {
-          positions[node].x = axes.layerStart + (axes.layerEnd - axes.layerStart) * (index + 1) / (internals.length + 1);
-          moved.add(node);
-        });
-      });
-    });
-  }
-  function terminalLanePath(diagram, positions, axes, incoming, outgoing, cross, tolerance) {
-    const allowed = /* @__PURE__ */ new Set([incoming, outgoing]);
-    Object.entries(positions).forEach(([node, position]) => {
-      if (position.kind === "internal" && Math.abs(axes.crossOf(position) - cross) <= tolerance) {
-        allowed.add(node);
-      }
-    });
-    const adjacency = new Map(Array.from(allowed).map((node) => [node, []]));
-    diagram.edges.forEach((edge) => {
-      if (edge.hidden || !allowed.has(edge.from) || !allowed.has(edge.to)) {
-        return;
-      }
-      adjacency.get(edge.from).push(edge.to);
-      adjacency.get(edge.to).push(edge.from);
-    });
-    adjacency.forEach((neighbors) => {
-      neighbors.sort((left, right) => left.localeCompare(right));
-    });
-    const queue = [[incoming]];
-    const visited = /* @__PURE__ */ new Set([incoming]);
-    while (queue.length) {
-      const path = queue.shift();
-      const node = path[path.length - 1];
-      if (node === outgoing) {
-        return path;
-      }
-      (adjacency.get(node) || []).forEach((neighbor) => {
-        if (visited.has(neighbor)) {
-          return;
-        }
-        visited.add(neighbor);
-        queue.push([...path, neighbor]);
-      });
-    }
-    return null;
-  }
-  function applyAlignmentConstraints(diagram, positions, layoutOptions) {
-    const alignments = layoutOptions.alignments || [];
-    if (!alignments.length) {
-      return;
-    }
-    const manual = new Set(Object.keys(diagram.manualPositions || {}));
-    alignments.forEach((alignment) => {
-      const coordinate = alignment.axis === "vertical" ? "x" : "y";
-      const crossCoordinate = alignment.axis === "vertical" ? "y" : "x";
-      const positioned = alignment.nodes.map((node) => ({ node, position: positions[node] })).filter((entry) => entry.position && Number.isFinite(entry.position[coordinate]));
-      if (positioned.length < 2) {
-        return;
-      }
-      const anchors = positioned.filter((entry) => manual.has(entry.node));
-      const source = anchors.length ? anchors : positioned;
-      const target = source.reduce((sum, entry) => sum + entry.position[coordinate], 0) / source.length;
-      positioned.forEach(({ node, position }) => {
-        if (!manual.has(node)) {
-          position[coordinate] = target;
-        }
-      });
-      orderAlignedNodesAlongCrossAxis(positioned, crossCoordinate, manual);
-    });
-  }
-  function orderAlignedNodesAlongCrossAxis(positioned, crossCoordinate, manual) {
-    if (positioned.length < 2 || positioned.some((entry) => manual.has(entry.node))) {
-      return;
-    }
-    const slots = positioned.map((entry) => entry.position[crossCoordinate]).filter((value) => Number.isFinite(value)).sort((left, right) => left - right);
-    if (slots.length !== positioned.length) {
-      return;
-    }
-    positioned.forEach((entry, index) => {
-      entry.position[crossCoordinate] = slots[index];
-    });
+  function usesSpringStyleNormalization(layoutOptions) {
+    return layoutOptions.layout === "spring" || layoutOptions.layout === "spring-electrical";
   }
   var init_normalization = __esm({
     "src/markfeyn/renderer/layout/normalization.js"() {
-      init_paths();
-      init_vertex_shapes();
       init_coordinates();
+      init_alignment();
+      init_edge_bounds();
+      init_elk();
+      init_process();
+      init_spring();
+      init_tikz_orientation();
+    }
+  });
+
+  // src/markfeyn/renderer/parser/constants.js
+  var EDGE_DEFINITIONS, SIZE_PRESETS, DEFAULT_DIAGRAM_OPTIONS, VERTEX_SHAPES, BLOB_VERTEX_SIZE_PRESETS, BLOB_HATCHES;
+  var init_constants = __esm({
+    "src/markfeyn/renderer/parser/constants.js"() {
+      init_metrics();
+      EDGE_DEFINITIONS = /* @__PURE__ */ new Map([
+        ["plain", { type: "plain" }],
+        ["line", { type: "plain" }],
+        ["propagator", { type: "plain" }],
+        ["fermion", { type: "fermion", arrow: "forward" }],
+        ["anti fermion", { type: "fermion", arrow: "reverse" }],
+        ["anti-fermion", { type: "fermion", arrow: "reverse" }],
+        ["antifermion", { type: "fermion", arrow: "reverse" }],
+        ["photon", { type: "photon" }],
+        ["boson", { type: "photon" }],
+        ["charged boson", { type: "photon", arrow: "forward" }],
+        ["charged-boson", { type: "photon", arrow: "forward" }],
+        ["anti charged boson", { type: "photon", arrow: "reverse" }],
+        ["anti-charged-boson", { type: "photon", arrow: "reverse" }],
+        ["gluon", { type: "gluon" }],
+        ["scalar", { type: "scalar" }],
+        ["charged scalar", { type: "scalar", arrow: "forward" }],
+        ["charged-scalar", { type: "scalar", arrow: "forward" }],
+        ["anti charged scalar", { type: "scalar", arrow: "reverse" }],
+        ["anti-charged-scalar", { type: "scalar", arrow: "reverse" }],
+        ["ghost", { type: "ghost" }],
+        ["dashed", { type: "dashed" }],
+        ["dot dashed", { type: "dashdot" }],
+        ["dot-dashed", { type: "dashdot" }],
+        ["dashdot", { type: "dashdot" }],
+        ["dash-dot", { type: "dashdot" }],
+        ["triangle", { type: "triangle" }],
+        ["zigzag", { type: "triangle" }],
+        ["square", { type: "square" }],
+        ["rectangle", { type: "square" }],
+        ["rectangular", { type: "square" }],
+        ["double", { type: "double" }],
+        ["eikonal", { type: "double", arrow: "forward" }],
+        ["wilson line", { type: "double", arrow: "forward" }],
+        ["wilson-line", { type: "double", arrow: "forward" }],
+        ["invisible", { type: "invisible", hidden: true }],
+        ["hidden", { type: "invisible", hidden: true }]
+      ]);
+      SIZE_PRESETS = {
+        small: { width: 420, minHeight: 280, marginX: 70, marginY: 46, externalGap: 82 },
+        medium: { width: 520, minHeight: 330, marginX: 82, marginY: 52, externalGap: 100 },
+        large: { width: 760, minHeight: 480, marginX: 110, marginY: 70, externalGap: 140 }
+      };
+      DEFAULT_DIAGRAM_OPTIONS = {
+        layout: "spring",
+        orientation: "horizontal",
+        size: "medium"
+      };
+      VERTEX_SHAPES = /* @__PURE__ */ new Map([
+        ["dot", "dot"],
+        ["square dot", "square-dot"],
+        ["square-dot", "square-dot"],
+        ["square", "square-dot"],
+        ["empty dot", "empty-dot"],
+        ["empty-dot", "empty-dot"],
+        ["crossed dot", "crossed-dot"],
+        ["crossed-dot", "crossed-dot"],
+        ["cross dot", "crossed-dot"],
+        ["cross-dot", "crossed-dot"],
+        ["cross", "cross"],
+        ["blob", "blob"],
+        ["disk", "disk"],
+        ["large blob", "disk"],
+        ["large-blob", "disk"]
+      ]);
+      BLOB_VERTEX_SIZE_PRESETS = /* @__PURE__ */ new Map([
+        ["tiny", 8],
+        ["small", 14],
+        ["medium", BLOB_VERTEX_DEFAULT_RADII.blob],
+        ["large", 28],
+        ["huge", BLOB_VERTEX_DEFAULT_RADII.disk],
+        ["disk", BLOB_VERTEX_DEFAULT_RADII.disk]
+      ]);
+      BLOB_HATCHES = /* @__PURE__ */ new Map([
+        ["hatched", "diagonal"],
+        ["hatch", "diagonal"],
+        ["diagonal", "diagonal"],
+        ["diagonal right", "diagonal"],
+        ["forward diagonal", "diagonal"],
+        ["slash", "diagonal"],
+        ["north east", "diagonal"],
+        ["north east lines", "diagonal"],
+        ["ne", "diagonal"],
+        ["diagonal reverse", "diagonal-reverse"],
+        ["diagonal left", "diagonal-reverse"],
+        ["reverse diagonal", "diagonal-reverse"],
+        ["backward diagonal", "diagonal-reverse"],
+        ["backslash", "diagonal-reverse"],
+        ["north west", "diagonal-reverse"],
+        ["north west lines", "diagonal-reverse"],
+        ["nw", "diagonal-reverse"],
+        ["cross", "cross"],
+        ["cross hatch", "cross"],
+        ["crosshatch", "cross"],
+        ["cross hatched", "cross"],
+        ["horizontal", "horizontal"],
+        ["horizontal lines", "horizontal"],
+        ["vertical", "vertical"],
+        ["vertical lines", "vertical"],
+        ["grid", "grid"],
+        ["grid lines", "grid"]
+      ]);
     }
   });
 
@@ -99238,8 +99332,8 @@
     const { width, height, marginX, marginY } = layoutOptions;
     const next = {
       ...position,
-      x: clamp3(position.x + force.x, marginX, width - marginX),
-      y: clamp3(position.y + force.y, marginY, height - marginY)
+      x: clamp2(position.x + force.x, marginX, width - marginX),
+      y: clamp2(position.y + force.y, marginY, height - marginY)
     };
     if (position.kind !== "internal" || !diagram.incoming.length && !diagram.outgoing.length) {
       return next;
@@ -99248,7 +99342,7 @@
     const layerMax = Math.max(axes.layerStart, axes.layerEnd);
     const terminalGap = Math.min(72, Math.max(42, (layerMax - layerMin) * 0.24));
     if (layerMax - layerMin > 2 * terminalGap) {
-      next.x = clamp3(next.x, layerMin + terminalGap, layerMax - terminalGap);
+      next.x = clamp2(next.x, layerMin + terminalGap, layerMax - terminalGap);
     }
     return next;
   }
@@ -100305,7 +100399,7 @@
     return layoutWithElk(diagram, layoutOptions, prepared, {
       buildSemanticElkGraph,
       elkNodeDimensions,
-      normalizeElkLayout
+      normalizeElkLayout: normalizeElkLayout2
     });
   }
   function applyLoopCandidateCurves(diagram, selectedCandidate) {
@@ -101416,39 +101510,19 @@
     }
   });
 
+  // src/markfeyn/renderer/render/paths.js
+  var init_paths2 = __esm({
+    "src/markfeyn/renderer/render/paths.js"() {
+      init_paths();
+    }
+  });
+
   // src/markfeyn/renderer/render/visual-defaults.js
-  var GLUON_JUNCTION_CAP_RADIUS, VISUAL_DEFAULTS, TEX_BRACE_METRICS, BRACE_LABEL_PADDING, BRACE_SIDE_GAP, TEX_BRACE_PATHS, BLOB_HATCH_PATTERNS;
+  var GLUON_JUNCTION_CAP_RADIUS, TEX_BRACE_METRICS, BRACE_LABEL_PADDING, BRACE_SIDE_GAP, TEX_BRACE_PATHS, BLOB_HATCH_PATTERNS;
   var init_visual_defaults = __esm({
     "src/markfeyn/renderer/render/visual-defaults.js"() {
+      init_metrics();
       GLUON_JUNCTION_CAP_RADIUS = 1.7;
-      VISUAL_DEFAULTS = Object.freeze({
-        edgeStrokeWidth: 2.6,
-        gluonStrokeWidth: 2.1,
-        vertexStrokeWidth: 2.3,
-        blobStrokeWidth: 2.8,
-        vertexMarkStrokeWidth: 2.4,
-        labelFontSize: 32,
-        edgeLabelFontSize: 26,
-        mathLabelFontScale: 0.72,
-        labelFontFamily: '"Latin Modern Math", "Latin Modern Roman", "Computer Modern Serif", "CMU Serif", "STIX Two Text", "Times New Roman", serif',
-        labelFontStyle: "italic",
-        scriptFontSizePercent: 82,
-        labelHorizontalOffset: 20,
-        labelTopOffset: 24,
-        labelBottomOffset: 30,
-        edgeLabelOffset: 32,
-        momentumArrowOffset: 19,
-        momentumLabelGap: 20,
-        momentumArrowShorten: 0.22,
-        momentumArrowStrokeWidth: 1.4,
-        momentumArrowHeadLength: 8,
-        momentumArrowHeadWidth: 7,
-        arrowMarkerWidth: 11,
-        arrowMarkerHeight: 11,
-        arrowMarkerRefX: 7,
-        arrowMarkerRefY: 4,
-        arrowPath: "M0,0 L8,4 L0,8 Z"
-      });
       TEX_BRACE_METRICS = Object.freeze({
         centerX: 4.4234125,
         topMinY: 9963e-6,
@@ -101773,7 +101847,7 @@
   }
   var init_edges2 = __esm({
     "src/markfeyn/renderer/render/edges.js"() {
-      init_paths();
+      init_paths2();
       init_dom();
       init_visual_defaults();
     }
@@ -102256,6 +102330,13 @@
     }
   });
 
+  // src/markfeyn/renderer/render/vertex-shapes.js
+  var init_vertex_shapes2 = __esm({
+    "src/markfeyn/renderer/render/vertex-shapes.js"() {
+      init_vertex_shapes();
+    }
+  });
+
   // src/markfeyn/renderer/render/definitions.js
   function createDefinitions(index) {
     const defs = createSvg("defs");
@@ -102303,7 +102384,7 @@
   var init_definitions = __esm({
     "src/markfeyn/renderer/render/definitions.js"() {
       init_dom();
-      init_vertex_shapes();
+      init_vertex_shapes2();
       init_visual_defaults();
     }
   });
@@ -102586,7 +102667,7 @@
   var init_vertices2 = __esm({
     "src/markfeyn/renderer/render/vertices.js"() {
       init_dom();
-      init_vertex_shapes();
+      init_vertex_shapes2();
     }
   });
 
@@ -102732,7 +102813,7 @@
       init_edges2();
       init_label_markup();
       init_mathjax();
-      init_paths();
+      init_paths2();
       init_svg_renderer();
       init_visual_defaults();
       (function() {

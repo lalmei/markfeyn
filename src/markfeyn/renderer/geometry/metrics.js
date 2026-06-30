@@ -1,0 +1,47 @@
+export const BLOB_VERTEX_DEFAULT_RADII = Object.freeze({
+  blob: 18,
+  disk: 44,
+});
+
+export const VISUAL_DEFAULTS = Object.freeze({
+  edgeStrokeWidth: 2.6,
+  gluonStrokeWidth: 2.1,
+  vertexStrokeWidth: 2.3,
+  blobStrokeWidth: 2.8,
+  vertexMarkStrokeWidth: 2.4,
+  labelFontSize: 32,
+  edgeLabelFontSize: 26,
+  mathLabelFontScale: 0.72,
+  labelFontFamily: "\"Latin Modern Math\", \"Latin Modern Roman\", \"Computer Modern Serif\", \"CMU Serif\", \"STIX Two Text\", \"Times New Roman\", serif",
+  labelFontStyle: "italic",
+  scriptFontSizePercent: 82,
+  labelHorizontalOffset: 20,
+  labelTopOffset: 24,
+  labelBottomOffset: 30,
+  edgeLabelOffset: 32,
+  momentumArrowOffset: 19,
+  momentumLabelGap: 20,
+  momentumArrowShorten: 0.22,
+  momentumArrowStrokeWidth: 1.4,
+  momentumArrowHeadLength: 8,
+  momentumArrowHeadWidth: 7,
+  arrowMarkerWidth: 11,
+  arrowMarkerHeight: 11,
+  arrowMarkerRefX: 7,
+  arrowMarkerRefY: 4,
+  arrowPath: "M0,0 L8,4 L0,8 Z",
+});
+
+export const LABEL_METRICS = Object.freeze({
+  nodeFontSize: VISUAL_DEFAULTS.labelFontSize,
+  edgeFontSize: VISUAL_DEFAULTS.edgeLabelFontSize,
+  labelHorizontalOffset: VISUAL_DEFAULTS.labelHorizontalOffset,
+  labelTopOffset: VISUAL_DEFAULTS.labelTopOffset,
+  labelBottomOffset: VISUAL_DEFAULTS.labelBottomOffset,
+  edgeLabelOffset: VISUAL_DEFAULTS.edgeLabelOffset,
+  momentumArrowOffset: VISUAL_DEFAULTS.momentumArrowOffset,
+  momentumLabelGap: VISUAL_DEFAULTS.momentumLabelGap,
+  momentumArrowShorten: VISUAL_DEFAULTS.momentumArrowShorten,
+  momentumArrowHeadLength: VISUAL_DEFAULTS.momentumArrowHeadLength,
+  momentumArrowHeadWidth: VISUAL_DEFAULTS.momentumArrowHeadWidth,
+});

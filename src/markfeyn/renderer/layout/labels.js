@@ -1,18 +1,5 @@
+import { LABEL_METRICS as METRICS } from "../geometry/metrics.js";
 import { compareStable } from "./model.js";
-
-const METRICS = Object.freeze({
-  nodeFontSize: 32,
-  edgeFontSize: 26,
-  labelHorizontalOffset: 20,
-  labelTopOffset: 24,
-  labelBottomOffset: 30,
-  edgeLabelOffset: 32,
-  momentumArrowOffset: 19,
-  momentumLabelGap: 20,
-  momentumArrowShorten: 0.22,
-  momentumArrowHeadLength: 8,
-  momentumArrowHeadWidth: 7,
-});
 
 export const LABEL_SCORE_FIELDS = Object.freeze([
   "nodeLabelOverlap",
