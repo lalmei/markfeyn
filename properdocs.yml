@@ -1,4 +1,6 @@
 site_name: MarkFeyn
+site_url: https://lalmei.github.io/markfeyn/
+repo_url: https://github.com/lalmei/markfeyn
 site_description: Render simple Feynman diagram code blocks as native SVG in MkDocs and ProperDocs.
 theme:
   name: materialx
