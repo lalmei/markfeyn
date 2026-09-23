@@ -1,4 +1,4 @@
-import { createLayoutEngine } from "./layout-engine.js";
+import { createLayoutEngine, createLayoutFallbackDiagnostic } from "./layout-engine.js";
 import { parseFeynman } from "./parser/index.js";
 import { braceGeometry } from "./render/braces.js";
 import {
@@ -59,6 +59,7 @@ import { VISUAL_DEFAULTS } from "./render/visual-defaults.js";
     parseFeynman,
     layoutFeynman,
     layoutFeynmanFallbackSync,
+    createLayoutFallbackDiagnostic,
     edgePath,
     wavePath,
     wavePathForEdge,
@@ -83,6 +84,7 @@ import { VISUAL_DEFAULTS } from "./render/visual-defaults.js";
     materializePendingMathLabels,
     visualDefaults: VISUAL_DEFAULTS,
     renderAll,
+    SvgRenderer,
   };
 
   if (typeof globalThis !== "undefined") {
