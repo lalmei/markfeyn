@@ -1,0 +1,9 @@
+options width=520 height=220
+incoming e_minus e_plus
+outgoing mu_plus mu_minus
+fermion e_minus->ann
+anti fermion e_plus->ann
+photon ann->prod[momentum'=k]
+anti fermion prod->mu_plus
+fermion prod->mu_minus
+label e_minus:e^- e_plus:e^+ mu_plus:\mu^+ mu_minus:\mu^- ann->prod:\gamma
