@@ -1,6 +1,7 @@
 """Test that documentation uses present-tense language, not roadmap/milestone references."""
 
 from pathlib import Path
+
 import pytest
 
 
