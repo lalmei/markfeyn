@@ -84,17 +84,13 @@ plugins:
 
 ## Manual JavaScript Mode
 
-If a project does not want to load a plugin, copy the renderer from:
+If a project does not want to load a plugin, copy the renderer:
 
-```text
-src/markfeyn/assets/feynman-diagrams.js
+```bash
+python -m markfeyn copy-asset docs/javascripts/feynman-diagrams.js
 ```
 
-to:
-
-```text
-docs/javascripts/feynman-diagrams.js
-```
+(Source checkouts can also copy `src/markfeyn/assets/feynman-diagrams.js` directly.)
 
 Then configure MkDocs or ProperDocs:
 

@@ -224,17 +224,13 @@ as an SVG ellipse.
 
 ## Manual JavaScript Setup
 
-If you do not want to use a plugin, copy the bundled renderer from:
+If you do not want to use a plugin, copy the bundled renderer:
 
-```text
-src/markfeyn/assets/feynman-diagrams.js
+```bash
+python -m markfeyn copy-asset docs/javascripts/feynman-diagrams.js
 ```
 
-to:
-
-```text
-docs/javascripts/feynman-diagrams.js
-```
+(Source checkouts can also copy `src/markfeyn/assets/feynman-diagrams.js` directly.)
 
 Then configure MkDocs or ProperDocs directly:
 
