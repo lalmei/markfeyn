@@ -116,6 +116,13 @@ def test_plugin_copies_bundled_asset_to_default_path(tmp_path, plugin_class, con
     assert b"parseFeynman" in target.read_bytes()
 
 
+
+def entry_points_for(group):
+    # entry_points(group=...) is Python 3.10+; 3.9 returns a dict of groups.
+    found = entry_points()
+    return found.select(group=group) if hasattr(found, "select") else found.get(group, [])
+
+
 @pytest.mark.parametrize(
     ("group", "plugin_class"),
     [
@@ -124,7 +131,7 @@ def test_plugin_copies_bundled_asset_to_default_path(tmp_path, plugin_class, con
     ],
 )
 def test_plugin_entry_point_is_registered(group, plugin_class):
-    plugins = entry_points(group=group)
+    plugins = entry_points_for(group)
     entry_point = next(item for item in plugins if item.name == "feynman-diagrams")
 
     assert entry_point.load() is plugin_class
