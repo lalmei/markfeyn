@@ -307,3 +307,12 @@ side of each vertex. After ELK solves the raw coordinates, `normalizeElkLayout`
 rescales them into the diagram's view box, places the external legs, applies any
 manual position overrides, and runs the focused normalizers under
 `src/markfeyn/renderer/layout/normalizers/`.
+
+## History
+
+Capabilities arrived in the following milestones:
+
+- **Milestone 2**: Strict semantic ordering and diagnostics contract; parallel-edge detection and self-energy topology.
+- **Milestones 3A, 3B, and 3D**: One-loop candidate layouts with deterministic placement strategies; label-aware scoring and final label placement.
+- **Milestone 3C**: Symmetric unclassified tree and two-point loop refinement.
+- **Milestone 3E**: Symmetric unclassified contact stars.
