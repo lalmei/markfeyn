@@ -23,6 +23,15 @@ const AUTO_GROWTH_TARGET_SPACING = 40;
 const AUTO_GROWTH_MAX_WIDTH = 1600;
 const AUTO_GROWTH_MAX_ATTEMPTS = 3;
 
+export function createLayoutFallbackDiagnostic(error) {
+  return {
+    stage: "layout-fallback",
+    severity: "warning",
+    message: `Layout engine failed, using fallback layout: ${error?.message || String(error)}`,
+    data: {},
+  };
+}
+
 export function createLayoutEngine() {
   return {
     async layoutFeynman(diagram, options) {
@@ -47,6 +56,7 @@ export function createLayoutEngine() {
           const fallbackStartedAt = profileNow();
           rawLayout = layoutFeynmanPreparedFallbackRaw(layoutDiagram, layoutOptions, prepared);
           prepared.profile?.push("layout-fallback", profileNow() - fallbackStartedAt);
+          prepared.diagnostics.push(createLayoutFallbackDiagnostic(error));
         }
 
         const finalLayout = applyIncrementalStability(

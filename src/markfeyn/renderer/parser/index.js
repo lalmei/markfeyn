@@ -5,6 +5,7 @@ import {
   parseExplicitTikzOrientationCommand,
   parseManualPosition,
   parseTikzOrientationCommand,
+  parseTitle,
 } from "./directives.js";
 import {
   matchEdgeCommand,
@@ -29,6 +30,7 @@ export function createEmptyFeynmanDiagram() {
     manualPositions: {},
     vertices: {},
     options: { ...DEFAULT_DIAGRAM_OPTIONS },
+    title: null,
     errors: [],
     warnings: [],
   };
@@ -46,6 +48,7 @@ export function parseFeynman(source) {
     parseLabels,
     parseManualPosition,
     parseTikzOrientationCommand,
+    parseTitle,
     parseVertices,
     setDiagramOption,
     isTikzOrientationCommand,

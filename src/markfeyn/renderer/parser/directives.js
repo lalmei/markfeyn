@@ -1,4 +1,5 @@
 import {
+  cleanLabelValue,
   isNodeIdentifier,
   isTikzOrientationCommand,
 } from "./options.js";
@@ -64,6 +65,17 @@ export function parseAlignmentCommand(parts, diagram, lineNumber) {
     ...(diagram.options.alignments || []),
     { axis, nodes },
   ];
+}
+
+export function parseTitle(source, diagram, lineNumber) {
+  const text = cleanLabelValue(source);
+
+  if (!text) {
+    diagram.errors.push(`Line ${lineNumber}: title requires a value`);
+    return;
+  }
+
+  diagram.title = text;
 }
 
 export function parseManualPosition(parts, diagram, lineNumber) {

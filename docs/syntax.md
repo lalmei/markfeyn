@@ -456,6 +456,25 @@ Supported orientations:
 The size presets are `small`, `medium`, and `large`. `options width=...` and
 `options height=...` override the SVG viewBox size.
 
+## Title
+
+Use `title` to set the accessible `<title>` of the rendered SVG:
+
+```feynman
+title Electron-positron annihilation
+incoming e- e+
+outgoing mu- mu+
+fermion e-->v1 e+->v1
+photon v1->v2
+fermion v2->mu- v2->mu+
+```
+
+The value can be free text or a quoted string (`title "e+ e- to mu+ mu-"`).
+When no `title` directive is given, MarkFeyn generates one from the declared
+`incoming`/`outgoing` vertex labels (falling back to vertex names), e.g.
+`Feynman diagram: e+ e- → mu+ mu-`. With no roles declared, the title is
+simply `Feynman diagram`.
+
 ## Implementation Summary
 
 Rendering happens entirely in the bundled browser script. The documentation
