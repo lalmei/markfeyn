@@ -1,5 +1,6 @@
 import { LABEL_METRICS as METRICS } from "../../geometry/metrics.js";
 import { compareStable } from "../model.js";
+import { EDGE_LABEL_TARGET_REGEX } from "../../parser/constants.js";
 import {
   boundsCenter,
   cloneBounds,
@@ -319,7 +320,7 @@ export function decorateLoopLabelBoxes(boxes, prepared, candidate) {
 }
 
 export function findEdgeByLabelTarget(target, edges) {
-  const match = String(target || "").match(/^([A-Za-z0-9_.-]+)->([A-Za-z0-9_.-]+)(?:#([0-9]+))?$/);
+  const match = String(target || "").match(EDGE_LABEL_TARGET_REGEX);
 
   if (!match) {
     return null;

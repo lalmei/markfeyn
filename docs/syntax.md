@@ -15,6 +15,11 @@ label i1:e⁻ i2:e⁺ o1:μ⁻ o2:μ⁺ v1->v2:γ
 
 ## Nodes
 
+Node names use ASCII letters, digits, `_`, `.` and `-`. They must start and end
+with a letter, digit or underscore, so `e1`, `q_2` and `v-left` are valid but
+`a-` is not. Write edges with a single arrow, `a->b`; use `label` to show
+Unicode or TeX text such as `e⁻` or `\gamma`.
+
 Visible degree-1 endpoints are external nodes, but MarkFeyn does not infer
 incoming or outgoing roles from edge source/target order. A degree-1 endpoint
 without an explicit role is unclassified and is laid out symmetrically when no
