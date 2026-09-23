@@ -161,8 +161,41 @@ export function injectStyles() {
         margin-top: 0.25rem;
       }
 
+      .feynman-diagram__warnings {
+        color: var(--md-default-fg-color--light, #6b7280);
+        font-size: 0.7rem;
+        font-style: italic;
+        margin-top: 0.25rem;
+        opacity: 0.85;
+      }
+
+      .feynman-diagram__empty {
+        color: var(--md-default-fg-color--light, #6b7280);
+        font-size: 0.8rem;
+        font-style: italic;
+      }
+
+      .feynman-diagram__source {
+        color: var(--md-default-fg-color--light, #6b7280);
+        font-size: 0.75rem;
+        margin-top: 0.5rem;
+      }
+
+      .feynman-diagram__source summary {
+        cursor: pointer;
+      }
+
+      .feynman-diagram__source pre {
+        margin: 0.35rem 0 0;
+        overflow-x: auto;
+      }
+
       .feynman-diagram--loading {
         min-height: 9rem;
+      }
+
+      .feynman-diagram--empty {
+        min-height: 4rem;
       }
     `;
 

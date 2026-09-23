@@ -37,6 +37,11 @@ export class FeynmanParser {
       return;
     }
 
+    if (command === "title") {
+      helpers.parseTitle(line.slice(command.length).trim(), this.diagram, lineNumber);
+      return;
+    }
+
     if (command === "layout") {
       helpers.setDiagramOption(this.diagram, "layout", rest.join(" "), lineNumber);
       return;

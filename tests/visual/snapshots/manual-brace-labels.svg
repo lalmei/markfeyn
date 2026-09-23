@@ -1,5 +1,6 @@
 <svg style="--feynman-diagram-width: 500px;" aria-labelledby="feynman-title-3" viewBox="0 0 500 280" height="280" width="500" role="img" class="feynman-diagram__svg">
 <title id="feynman-title-3">Feynman diagram</title>
+<desc>3 vertices, 1 photon propagator, 1 fermion propagator</desc>
 <defs>
 <marker markerUnits="strokeWidth" orient="auto" refY="4" refX="7" markerHeight="11" markerWidth="11" id="feynman-arrow-3">
 <path class="feynman-diagram__arrow" d="M0,0 L8,4 L0,8 Z" />
