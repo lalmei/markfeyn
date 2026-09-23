@@ -219,7 +219,9 @@ The renderer keeps this graph contract around ELK:
 - Single visible terminal legs are kept straight where possible by matching the
   terminal node's cross-axis coordinate to its adjacent internal node.
 
-Milestone 2 adds a stricter semantic ordering and diagnostics contract:
+### Semantic Ordering and Diagnostics
+
+MarkFeyn enforces a strict semantic ordering and diagnostics contract:
 
 - External ordering is stable. Declared `incoming` and `outgoing` nodes use
   clockwise boundary order on process diagrams: the left boundary is ordered
@@ -260,14 +262,15 @@ Milestone 2 adds a stricter semantic ordering and diagnostics contract:
   ordering, port constraints, parallel-edge groups, label placement, and the
   score summary. ELK's compiled graph remains debug-only under `layout.debug`.
 
-Milestones 3A, 3B, and 3D add focused one-loop candidate layouts plus final
-label placement:
+### One-Loop Candidate Layouts and Label Placement
+
+MarkFeyn supports focused one-loop candidate layouts with final label placement:
 
 - Topology analysis detects triangle loops, box loops, tadpoles, and simple
   one-loop polygon cycles among interaction vertices. Generic polygon loops
   with five or more loop vertices use the `polygonLoop` topology. Two-vertex
-  self-energy bubbles made from parallel internal propagators keep the
-  Milestone 2 `selfEnergy` behavior and are not replaced by the loop-candidate
+  self-energy bubbles made from parallel internal propagators preserve their
+  `selfEnergy` topology classification and are not replaced by the loop-candidate
   path.
 - The candidate generator tries deterministic placements for the detected loop
   and chooses the lowest-scoring candidate. The implemented score checks cover
