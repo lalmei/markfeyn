@@ -12,6 +12,7 @@ import {
 } from "./edges.js";
 import { createSvg } from "./dom.js";
 import { VISUAL_DEFAULTS } from "./visual-defaults.js";
+import { EDGE_LABEL_TARGET_REGEX } from "../parser/constants.js";
 
 export function renderLabels(diagram, layout) {
   const declaredLabels = Object.entries(diagram.labels)
@@ -172,7 +173,7 @@ function edgePlacementId(edge, index) {
 }
 
 function findEdgeByLabelTarget(target, edges) {
-  const match = String(target || "").match(/^([A-Za-z0-9_.-]+)->([A-Za-z0-9_.-]+)(?:#([0-9]+))?$/);
+  const match = String(target || "").match(EDGE_LABEL_TARGET_REGEX);
 
   if (!match) {
     return null;

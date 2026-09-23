@@ -1,5 +1,7 @@
-import { EDGE_DEFINITIONS } from "./constants.js";
+import { EDGE_DEFINITIONS, IDENTIFIER_SOURCE } from "./constants.js";
 import { parseEdgeOptions } from "./options.js";
+
+const EDGE_SPEC_PATTERN = new RegExp(`^(${IDENTIFIER_SOURCE})->(${IDENTIFIER_SOURCE})(.*)$`);
 
 export function matchEdgeCommand(parts) {
   const maxWords = Math.min(3, parts.length);
@@ -38,9 +40,18 @@ export function parseEdges(source, command, definition, diagram, lineNumber) {
 }
 
 export function parseEdgeSpec(spec, command, definition, errors, lineNumber) {
-  const match = spec.match(/^([A-Za-z0-9_.-]+)->([A-Za-z0-9_.-]+)(.*)$/);
+  if (spec.split("[", 1)[0].includes("-->")) {
+    errors.push(`Line ${lineNumber}: invalid ${command} edge "${spec}": use "->" between vertex names`);
+    return null;
+  }
+
+  const match = spec.match(EDGE_SPEC_PATTERN);
 
   if (!match) {
+    if (spec.includes("->")) {
+      errors.push(`Line ${lineNumber}: invalid ${command} edge "${spec}": vertex names may only contain ASCII letters, digits, "_", "." and "-" (not at the start or end)`);
+      return null;
+    }
     errors.push(`Line ${lineNumber}: invalid ${command} edge "${spec}"`);
     return null;
   }
