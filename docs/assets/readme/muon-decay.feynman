@@ -1,0 +1,8 @@
+options width=460 height=280
+incoming mu
+outgoing numu e nue
+fermion mu->v v->numu
+boson v->w
+fermion w->e
+anti fermion w->nue
+label mu:\mu^- numu:\nu_\mu e:e^- nue:\overline{\nu}_e v->w:W^-

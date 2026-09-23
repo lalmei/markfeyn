@@ -1,0 +1,7 @@
+options width=440 height=380
+incoming  e_minus  e_plus
+outgoing e_plus_out e_minus_out
+fermion e_minus->upper upper->e_minus_out
+photon upper->lower[edge label=\gamma]
+anti fermion e_plus->lower lower->e_plus_out
+label e_minus:e^- e_plus:e^+ e_minus_out:e^- e_plus_out:e^+
