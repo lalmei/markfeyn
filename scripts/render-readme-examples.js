@@ -157,7 +157,9 @@ function loadRenderer() {
 }
 
 async function waitForRender(document) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  // Wait on a time budget, not a tick count: ELK and canvas auto-growth
+  // may need many event-loop turns on a loaded machine.
+  for (const deadline = Date.now() + 10000; Date.now() < deadline;) {
     await new Promise((resolve) => setImmediate(resolve));
 
     if (
