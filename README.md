@@ -7,6 +7,101 @@
 
 MarkFeyn renders fenced `feynman` code blocks as native SVG diagrams in MkDocs and ProperDocs.
 
+## Examples
+
+A short text-based syntax produces publication-style diagrams, from simple
+tree-level scattering to loops and QCD vertices. More examples live in
+[`docs/examples/`](docs/examples/).
+
+<table>
+<tr>
+<th>Source</th>
+<th>Rendered</th>
+</tr>
+<tr>
+<td>
+
+```feynman
+incoming e_minus e_plus
+outgoing mu_plus mu_minus
+fermion e_minus->ann
+anti fermion e_plus->ann
+photon ann->prod[momentum'=k]
+anti fermion prod->mu_plus
+fermion prod->mu_minus
+label e_minus:e^- e_plus:e^+ mu_plus:\mu^+ mu_minus:\mu^- ann->prod:\gamma
+```
+
+</td>
+<td><img src="docs/assets/readme/ee-to-mumu.svg" alt="e+ e- to mu+ mu- s-channel annihilation diagram" width="360"></td>
+</tr>
+<tr>
+<td>
+
+```feynman
+incoming  e_minus  e_plus
+outgoing e_plus_out e_minus_out
+fermion e_minus->upper upper->e_minus_out
+photon upper->lower[edge label=\gamma]
+anti fermion e_plus->lower lower->e_plus_out
+label e_minus:e^- e_plus:e^+ e_minus_out:e^- e_plus_out:e^+
+```
+
+</td>
+<td><img src="docs/assets/readme/bhabha-scattering.svg" alt="Bhabha scattering t-channel photon exchange diagram" width="300"></td>
+</tr>
+<tr>
+<td>
+
+```feynman
+incoming q
+outgoing q2 g
+fermion q->v1 v1->q2
+gluon v1->g
+label q:q q2:q g:g
+```
+
+</td>
+<td><img src="docs/assets/readme/gluon-emission.svg" alt="Quark radiating a gluon" width="280"></td>
+</tr>
+<tr>
+<td>
+
+```feynman
+incoming mu
+outgoing numu e nue
+fermion mu->v v->numu
+boson v->w
+fermion w->e
+anti fermion w->nue
+label mu:\mu^- numu:\nu_\mu e:e^- nue:\overline{\nu}_e v->w:W^-
+```
+
+</td>
+<td><img src="docs/assets/readme/muon-decay.svg" alt="Muon decay via a virtual W boson" width="320"></td>
+</tr>
+<tr>
+<td>
+
+```feynman
+incoming i1 i2
+outgoing f1 f2
+fermion i1->a b->f1 a->c[edge label'=q]
+anti fermion i2->c d->f2 b->d[edge label=\nu_\mu]
+photon a->b[edge label=W^-] c->d[edge label'=W^+]
+label i1:d i2:\overline{s} f1:\mu^- f2:\mu^+
+```
+
+</td>
+<td><img src="docs/assets/readme/w-box-diagram.svg" alt="One-loop W boson box diagram" width="400"></td>
+</tr>
+</table>
+
+The exact sources used to render these images (including the layout options
+that were trimmed above for brevity) are under
+[`docs/assets/readme/`](docs/assets/readme/), and can be re-rendered with
+`npm run render:readme`.
+
 ## Installation
 
 From PyPI:

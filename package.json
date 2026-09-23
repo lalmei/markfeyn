@@ -8,7 +8,8 @@
     "check:js": "npm run build:js && node --check src/markfeyn/assets/feynman-diagrams.js",
     "test:visual": "node tests/feynman-visual-snapshots.test.js",
     "update:visual": "MARKFEYN_UPDATE_VISUAL=1 node tests/feynman-visual-snapshots.test.js",
-    "test:js": "npm run check:js && node --test tests/"
+    "test:js": "npm run check:js && node --test tests/",
+    "render:readme": "npm run build:js && node scripts/render-readme-examples.js"
   },
   "repository": {
     "type": "git",

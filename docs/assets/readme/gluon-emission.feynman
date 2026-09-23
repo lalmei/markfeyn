@@ -1,0 +1,6 @@
+options width=380 height=220
+incoming q
+outgoing q2 g
+fermion q->v1 v1->q2
+gluon v1->g
+label q:q q2:q g:g
