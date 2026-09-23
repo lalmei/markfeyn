@@ -55,8 +55,22 @@ export function classifyTopology(semantic, visibleEdges, connectedComponents, lo
   return "unknown";
 }
 
-export function topologyLimitations(semantic, connectedComponents, loopOrder, oneLoop, loopRegions) {
+export function topologyLimitations(
+  semantic,
+  connectedComponents,
+  loopOrder,
+  oneLoop,
+  loopRegions,
+  cycleEnumerationTruncated
+) {
   const limitations = [];
+
+  if (cycleEnumerationTruncated) {
+    limitations.push({
+      code: "cycle-enumeration-truncated",
+      message: "Simple cycle enumeration was truncated because the internal graph is too dense; layout falls back to generic heuristics.",
+    });
+  }
 
   if (loopOrder > 1 && !loopRegions.length) {
     limitations.push({

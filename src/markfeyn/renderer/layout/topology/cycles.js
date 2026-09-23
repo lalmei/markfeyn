@@ -7,6 +7,15 @@ import {
   loopTypeRank,
 } from "./regions.js";
 
+// Enumerating every simple cycle of a graph is combinatorial: a complete
+// graph on n internal vertices has on the order of n! simple cycles, so an
+// unbounded search hangs (or exhausts memory) on dense diagrams. Real physics
+// diagrams — triangles, boxes, self-energy bubbles, multi-loop chains — have
+// only a handful of independent loops and stay far below this cap; it only
+// engages on pathologically dense graphs and lets those fall back to the
+// generic layout instead of enumerating cycles forever.
+const MAX_SIMPLE_CYCLES = 128;
+
 export function detectTadpoleLoops(semantic, visibleEdges) {
   const internal = new Set(semantic.internalVertices);
 
@@ -38,15 +47,28 @@ export function detectSimpleInternalCycles(semantic, visibleEdges) {
 
   const cyclesByKey = new Map();
   const nodes = Array.from(adjacency.keys()).sort(compareStable);
+  const truncated = { value: false };
 
-  nodes.forEach((start) => {
-    findCyclesFrom(start, start, adjacency, [start], new Set([start]), cyclesByKey);
-  });
+  for (const start of nodes) {
+    findCyclesFrom(start, start, adjacency, [start], new Set([start]), cyclesByKey, truncated);
 
-  return Array.from(cyclesByKey.values())
+    if (truncated.value) {
+      break;
+    }
+  }
+
+  if (truncated.value) {
+    // A partial cycle list depends on DFS order; drop it so dense graphs take
+    // the generic layout path instead of a loop layout built on some cycles.
+    return { cycles: [], truncated: true };
+  }
+
+  const cycles = Array.from(cyclesByKey.values())
     .map((nodesInCycle) => cycleSummary(nodesInCycle, pairEdges, semantic))
     .filter(Boolean)
     .sort(compareCycleSummaries);
+
+  return { cycles, truncated: truncated.value };
 }
 
 export function selectOneLoopTopology(simpleCycles, tadpoleLoops) {
@@ -98,26 +120,39 @@ function internalPairEdges(visibleEdges, internal) {
   return pairEdges;
 }
 
-function findCyclesFrom(start, current, adjacency, path, visited, cyclesByKey) {
-  Array.from(adjacency.get(current) || [])
-    .sort(compareStable)
-    .forEach((neighbor) => {
-      if (neighbor === start && path.length >= 3) {
-        const canonical = canonicalCycle(path);
-        cyclesByKey.set(canonical.join("|"), canonical);
-        return;
-      }
+function findCyclesFrom(start, current, adjacency, path, visited, cyclesByKey, truncated) {
+  if (truncated.value) {
+    return;
+  }
 
-      if (visited.has(neighbor) || compareStable(neighbor, start) < 0 || path.length >= 12) {
-        return;
-      }
+  const neighbors = Array.from(adjacency.get(current) || []).sort(compareStable);
 
-      visited.add(neighbor);
-      path.push(neighbor);
-      findCyclesFrom(start, neighbor, adjacency, path, visited, cyclesByKey);
-      path.pop();
-      visited.delete(neighbor);
-    });
+  for (const neighbor of neighbors) {
+    if (cyclesByKey.size > MAX_SIMPLE_CYCLES) {
+      truncated.value = true;
+      return;
+    }
+
+    if (neighbor === start && path.length >= 3) {
+      const canonical = canonicalCycle(path);
+      cyclesByKey.set(canonical.join("|"), canonical);
+      continue;
+    }
+
+    if (visited.has(neighbor) || compareStable(neighbor, start) < 0 || path.length >= 12) {
+      continue;
+    }
+
+    visited.add(neighbor);
+    path.push(neighbor);
+    findCyclesFrom(start, neighbor, adjacency, path, visited, cyclesByKey, truncated);
+    path.pop();
+    visited.delete(neighbor);
+
+    if (truncated.value) {
+      return;
+    }
+  }
 }
 
 function canonicalCycle(nodes) {

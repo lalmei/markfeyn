@@ -27,15 +27,35 @@ export function buildLoopRegions(semantic, cycles, biconnectedComponents) {
       attachments: externalLegsForNodes(semantic, component.nodes),
     }));
 
+  const seenRegionKeys = new Set();
   const regions = [...cycleRegions, ...componentRegions]
-    .filter((region, index, list) => (
-      list.findIndex((other) => sameMembers(region.nodes, other.nodes) && sameMembers(region.edges, other.edges)) === index
-    ))
+    .filter((region) => {
+      const key = `${region.nodes.join(",")}|${region.edges.join(",")}`;
+
+      if (seenRegionKeys.has(key)) {
+        return false;
+      }
+
+      seenRegionKeys.add(key);
+
+      return true;
+    })
     .sort(compareLoopRegions);
 
-  regions.forEach((region) => {
+  // Precompute each region's node Set once so the O(R^2) containment check
+  // below reuses it instead of allocating a fresh Set per comparison.
+  const nodeSets = regions.map((region) => new Set(region.nodes));
+
+  regions.forEach((region, index) => {
+    const containerSet = nodeSets[index];
+    const containerSize = region.nodes.length;
+
     region.contains = regions
-      .filter((other) => other.id !== region.id && isStrictSubset(other.nodes, region.nodes))
+      .filter((other, otherIndex) => (
+        otherIndex !== index
+        && other.nodes.length < containerSize
+        && other.nodes.every((node) => containerSet.has(node))
+      ))
       .map((other) => other.id)
       .sort(compareStable);
   });
@@ -187,16 +207,6 @@ function compareLoopRegions(left, right) {
     || left.nodes.length - right.nodes.length
     || compareCycleNodeList(left.nodes, right.nodes)
     || compareCycleNodeList(left.edges, right.edges);
-}
-
-function sameMembers(left, right) {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-function isStrictSubset(left, right) {
-  const rightSet = new Set(right);
-
-  return left.length < right.length && left.every((value) => rightSet.has(value));
 }
 
 function hasSharedMembers(cycles, key) {

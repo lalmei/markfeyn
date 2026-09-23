@@ -49,7 +49,10 @@ export class TopologyAnalyzer {
     const internalVertices = semantic.internalVertices.slice().sort(compareStable);
     const parallelEdgeGroups = detectParallelEdgeGroups(semantic, visibleEdges);
     const tadpoleLoops = detectTadpoleLoops(semantic, visibleEdges);
-    const simpleCycles = detectSimpleInternalCycles(semantic, visibleEdges);
+    const { cycles: simpleCycles, truncated: cycleEnumerationTruncated } = detectSimpleInternalCycles(
+      semantic,
+      visibleEdges
+    );
     const oneLoop = selectOneLoopTopology(simpleCycles, tadpoleLoops);
     const edgeCount = visibleEdges.length;
     const loopOrder = Math.max(0, edgeCount - semantic.vertices.length + connectedComponents.length);
@@ -73,7 +76,14 @@ export class TopologyAnalyzer {
     const graphCenters = graphCentersFor(adjacency, internalVertices);
     const principalSkeleton = buildPrincipalSkeleton(semantic, loopRegions, biconnected);
     const limitations = [
-      ...topologyLimitations(semantic, connectedComponents, loopOrder, oneLoop, loopRegions),
+      ...topologyLimitations(
+        semantic,
+        connectedComponents,
+        loopOrder,
+        oneLoop,
+        loopRegions,
+        cycleEnumerationTruncated
+      ),
       ...fermionFlowLimitations(fermionFlow),
     ];
 
