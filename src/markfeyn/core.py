@@ -1,9 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import MutableMapping
 from importlib import resources
 from pathlib import Path, PurePosixPath
-from typing import MutableMapping
-
 
 ASSET_NAME = "feynman-diagrams.js"
 DEFAULT_SCRIPT_PATH = "assets/javascripts/feynman-diagrams.js"

@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from mkdocs.commands.build import build
 from mkdocs.config import load_config
 
