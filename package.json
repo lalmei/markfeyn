@@ -19,7 +19,7 @@
   "bugs": {
     "url": "https://github.com/lalmei/markfeyn/issues"
   },
-  "homepage": "https://github.com/lalmei/markfeyn#readme",
+  "homepage": "https://lalmei.github.io/markfeyn/",
   "dependencies": {
     "elkjs": "^0.11.1"
   },
