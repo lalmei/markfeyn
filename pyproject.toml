@@ -37,6 +37,10 @@ dev = [
   "pytest>=8",
 ]
 
+[project.urls]
+Documentation = "https://lalmei.github.io/markfeyn/"
+Repository = "https://github.com/lalmei/markfeyn"
+
 [project.entry-points."properdocs.plugins"]
 feynman-diagrams = "markfeyn.properdocs_plugin:FeynmanDiagramsPlugin"
 

@@ -1,5 +1,10 @@
 # MarkFeyn
 
+[![CI](https://github.com/lalmei/markfeyn/actions/workflows/ci.yml/badge.svg)](https://github.com/lalmei/markfeyn/actions/workflows/ci.yml)
+[![Docs](https://github.com/lalmei/markfeyn/actions/workflows/docs.yml/badge.svg)](https://lalmei.github.io/markfeyn/)
+
+📖 **Documentation:** https://lalmei.github.io/markfeyn/
+
 MarkFeyn renders fenced `feynman` code blocks as native SVG diagrams in MkDocs and ProperDocs.
 
 ## Installation
