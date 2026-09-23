@@ -1,4 +1,4 @@
-.PHONY: help sync build-js test test-py test-js docs build-docs serve-docs serve build package publish publish-test clean
+.PHONY: help sync build-js lint test test-py test-js docs build-docs serve-docs serve build package publish publish-test clean
 
 PYTEST := uv run --group dev pytest
 PROPERDOCS := uv run properdocs
@@ -11,6 +11,7 @@ help:
 	@echo "Targets:"
 	@echo "  sync        Install/update the uv environment"
 	@echo "  build-js    Bundle the browser renderer"
+	@echo "  lint        Lint Python code with ruff"
 	@echo "  test        Run Python and JavaScript tests"
 	@echo "  test-py     Run pytest"
 	@echo "  test-js     Check and run the JavaScript renderer tests"
@@ -33,6 +34,9 @@ sync:
 
 build-js:
 	npm run build:js
+
+lint:
+	uv run ruff check src tests scripts
 
 test: test-py test-js
 

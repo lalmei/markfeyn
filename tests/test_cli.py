@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from markfeyn import __version__
 from markfeyn.__main__ import main
 from markfeyn.core import ASSET_NAME, read_bundled_asset

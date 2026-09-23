@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from properdocs.commands.build import build
 from properdocs.config import load_config
 
