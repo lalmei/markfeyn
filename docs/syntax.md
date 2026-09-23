@@ -406,6 +406,20 @@ presets are `small` at `420 x 280`, `medium` at `520 x 330`, and `large` at
 `760 x 480`, with separate margins and external-node gaps. The ELK result is
 scaled into that viewBox rather than using TikZ's centimeter-based distances.
 
+When no `size` preset and no `options width=... height=...` was requested,
+MarkFeyn automatically grows the default canvas for diagrams with many
+vertices, so that vertices don't end up crowded together or overlapping. It
+measures the minimum spacing between vertices in the rendered layout and, if
+it falls short of a comfortable target, re-lays out the diagram on a larger
+canvas (up to 1600px wide), preserving the portrait/landscape aspect ratio
+the orientation would normally pick. This only ever grows the canvas — small
+diagrams that already fit comfortably (the common case, a handful of
+vertices) keep the exact same `520 x 330` default they always had. Setting
+`size` or `options width=...`/`height=...` explicitly always wins and
+disables this auto-growth, even if the result is crowded; in that case the
+renderer emits a `crowded-layout` warning diagnostic instead, suggesting
+`size large` or explicit `options width=... height=...`.
+
 The practical result is that MarkFeyn can mimic simple TikZ-Feynman diagram
 shapes, but matching TikZ output exactly requires manual `position` commands
 and sometimes invisible layout edges.
