@@ -2,6 +2,12 @@ import { BLOB_VERTEX_DEFAULT_RADII } from "../geometry/metrics.js";
 
 export { BLOB_VERTEX_DEFAULT_RADII };
 
+// Identifier pattern: must start and end with letter, digit or underscore;
+// dot and hyphen allowed only in the middle.
+export const IDENTIFIER_SOURCE = "[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_])?";
+export const IDENTIFIER_REGEX = new RegExp(`^${IDENTIFIER_SOURCE}$`);
+export const EDGE_LABEL_TARGET_REGEX = new RegExp(`^(${IDENTIFIER_SOURCE})->(${IDENTIFIER_SOURCE})(?:#([0-9]+))?$`);
+
 export const EDGE_DEFINITIONS = new Map([
   ["plain", { type: "plain" }],
   ["line", { type: "plain" }],

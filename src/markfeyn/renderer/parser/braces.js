@@ -1,5 +1,9 @@
+import { IDENTIFIER_SOURCE } from "./constants.js";
+
+const BRACE_PATTERN = new RegExp(`^(${IDENTIFIER_SOURCE})->(${IDENTIFIER_SOURCE})(?:\\[([^\\]]*)\\])?:(?:"([^"]*)"|'([^']*)'|(.+))$`);
+
 export function parseBrace(source, diagram, lineNumber) {
-  const match = String(source || "").trim().match(/^([A-Za-z0-9_.-]+)->([A-Za-z0-9_.-]+)(?:\[([^\]]*)\])?:(?:"([^"]*)"|'([^']*)'|(.+))$/);
+  const match = String(source || "").trim().match(BRACE_PATTERN);
 
   if (!match) {
     diagram.errors.push(`Line ${lineNumber}: braces must use "brace from->to[side]:label"`);

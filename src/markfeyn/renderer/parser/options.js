@@ -1,4 +1,4 @@
-import { SIZE_PRESETS } from "./constants.js";
+import { SIZE_PRESETS, IDENTIFIER_REGEX } from "./constants.js";
 
 export function parseEdgeOptions(source) {
   const options = {};
@@ -489,7 +489,7 @@ export function isTikzOrientationCommand(command) {
 }
 
 export function isNodeIdentifier(value) {
-  return /^[A-Za-z0-9_.-]+$/.test(String(value || ""));
+  return IDENTIFIER_REGEX.test(String(value || ""));
 }
 
 export function normalizeTikzOrientation(value) {
