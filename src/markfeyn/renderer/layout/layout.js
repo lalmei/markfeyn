@@ -13,6 +13,7 @@ import {
 import { analyzeMultiloop, multiloopDiagnostic } from "./multiloop.js";
 import { analyzeIncrementalStability, incrementalDiagnostic } from "./incremental.js";
 import { labelPlacementDiagnostic, resolveLabelPlacement } from "./labels.js";
+import { crowdedLayoutDiagnostic, measureMinVertexDistance } from "./crowding.js";
 
 export function prepareFeynmanLayout(diagram, options = {}) {
   const profile = createProfile(options);
@@ -124,11 +125,14 @@ export function attachLayoutAnalysis(layout, prepared, debug = {}) {
     validation: prepared.validation,
   };
   layout.score = score;
+  const crowding = crowdedLayoutDiagnostic(measureMinVertexDistance(layout.positions));
+
   layout.diagnostics = [
     ...prepared.diagnostics,
     ...loopCandidateDiagnostics(prepared),
     labelPlacementDiagnostic(labelPlacement),
     scoreDiagnostic(score),
+    ...(crowding ? [crowding] : []),
   ];
 
   if (debug.enabled) {
