@@ -38,7 +38,6 @@ incoming e
 outgoing e2
 fermion e->a a->b b->e2
 photon a->b[half left, edge label=\gamma]
-fermion b->a[half left]
 label e:e^- e2:e^-
 ```
 ````
@@ -49,7 +48,6 @@ incoming e
 outgoing e2
 fermion e->a a->b b->e2
 photon a->b[half left, edge label=\gamma]
-fermion b->a[half left]
 label e:e^- e2:e^-
 ```
 
