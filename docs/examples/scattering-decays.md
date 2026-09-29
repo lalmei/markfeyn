@@ -65,7 +65,7 @@ above `b`, listing `lower` first puts it on top, which produces the crossing.
     outgoing e_plus_out e_minus_out
     fermion e_minus->upper upper->e_minus_out
     photon upper->lower[edge label=\gamma]
-    anti fermion e_plus_out->lower lower->e_plus
+    fermion e_plus_out->lower lower->e_plus
     label e_minus:e^- e_plus:e^+ e_minus_out:e^- e_plus_out:e^+
     ```
 
@@ -78,7 +78,7 @@ above `b`, listing `lower` first puts it on top, which produces the crossing.
     outgoing    e_minus_out e_plus_out
     fermion e_minus->upper upper->e_minus_out
     photon upper->lower[edge label=\gamma]
-    anti fermion e_plus_out->lower lower->e_plus
+    fermion e_plus_out->lower lower->e_plus
     label e_minus:e^- e_plus:e^+ e_minus_out:e^- e_plus_out:e^+
     ```
 
@@ -107,7 +107,7 @@ above `b`, listing `lower` first puts it on top, which produces the crossing.
     outgoing e_plus_out e_minus_out
     fermion e_minus->upper upper->e_minus_out
     photon upper->lower[edge label=\gamma]
-    anti fermion e_plus_out->lower lower->e_plus
+    fermion e_plus_out->lower lower->e_plus
     label e_minus:e^- e_plus:e^+ e_minus_out:e^- e_plus_out:e^+
     ```
     ````
@@ -123,7 +123,7 @@ above `b`, listing `lower` first puts it on top, which produces the crossing.
     outgoing    e_minus_out e_plus_out
     fermion e_minus->upper upper->e_minus_out
     photon upper->lower[edge label=\gamma]
-    anti fermion e_plus_out->lower lower->e_plus
+    fermion e_plus_out->lower lower->e_plus
     label e_minus:e^- e_plus:e^+ e_minus_out:e^- e_plus_out:e^+
     ```
     ````
