@@ -1,5 +1,5 @@
 import {
-  labelMarkupToText,
+  labelMarkupToAccessibleText,
   labelNeedsMathJax,
   labelSegmentText,
   parseLabelMarkup,
@@ -189,7 +189,7 @@ function findEdgeByLabelTarget(target, edges) {
 function appendLabelMarkup(label, source) {
   const segments = parseLabelMarkup(source);
 
-  label.setAttribute("aria-label", labelMarkupToText(source));
+  label.setAttribute("aria-label", labelMarkupToAccessibleText(source));
   segments.forEach((segment) => {
     if (!segment.text) {
       return;
