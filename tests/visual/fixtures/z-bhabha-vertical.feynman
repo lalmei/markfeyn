@@ -1,0 +1,8 @@
+orientation vertical
+size small
+incoming e positron
+outgoing positron2 electron
+fermion e->a a->electron
+photon a->b
+fermion positron2->b b->positron
+label e:e^- positron:e^+ electron:e^- positron2:e^+ a->b:\gamma

@@ -1,0 +1,6 @@
+layout spring
+incoming e
+outgoing e2
+fermion e->a a->b b->e2
+photon a->b[half left, edge label=\gamma]
+label e:e^- e2:e^-
