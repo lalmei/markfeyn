@@ -6,7 +6,7 @@ import {
   renderEdges,
   renderJunctionCaps,
 } from "./edges.js";
-import { labelMarkupToText } from "./label-markup.js";
+import { labelMarkupToAccessibleText } from "./label-markup.js";
 import { renderLabels } from "./labels.js";
 import { materializePendingMathLabels } from "./mathjax.js";
 import { injectStyles } from "./styles.js";
@@ -33,7 +33,7 @@ function pluralize(count, singular, plural) {
 function vertexDisplayLabel(diagram, node) {
   const rawLabel = diagram.labels?.[node];
 
-  return rawLabel ? labelMarkupToText(rawLabel) : node;
+  return rawLabel ? labelMarkupToAccessibleText(rawLabel) : node;
 }
 
 function computeDiagramTitle(diagram) {
