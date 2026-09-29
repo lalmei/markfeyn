@@ -228,6 +228,14 @@ export function labelMarkupToText(source) {
   return parseLabelMarkup(source).map((segment) => segment.text).join("");
 }
 
+// Like labelMarkupToText, but keeps bars (antiparticles) as a combining
+// macron so \overline{q} is announced as "q̄" rather than "q".
+export function labelMarkupToAccessibleText(source) {
+  return parseLabelMarkup(source)
+    .map((segment) => (segment.overline ? segment.text.replace(/(.)/gu, "$1\u0304") : segment.text))
+    .join("");
+}
+
 function pushLabelSegment(segments, kind, text, options = {}) {
   if (!text) {
     return;

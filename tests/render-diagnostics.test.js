@@ -342,3 +342,14 @@ test("error figure omits the source details block when no source is given", () =
 
   assert.ok(!figure.querySelector("details.feynman-diagram__source"));
 });
+
+test("accessible title and label names keep antiparticle bars", async () => {
+  const figure = await renderDiagramFigure(
+    "incoming q qbar\noutgoing l1 l2\nfermion q->v\nanti fermion qbar->v\nphoton v->w\nfermion w->l1\nanti fermion w->l2\nlabel q:q qbar:\\overline{q} l1:\\ell^- l2:\\ell^+"
+  );
+
+  assert.match(figure.querySelector("title").textContent, /q q\u0304 →/);
+  assert.ok(
+    Array.from(figure.querySelectorAll("[aria-label]")).some((node) => node.getAttribute("aria-label") === "q\u0304")
+  );
+});
