@@ -11,6 +11,7 @@ class FeynmanDiagramsPlugin(BasePlugin):
 
     config_scheme = (
         ("script_path", config_options.Type(str, default=DEFAULT_SCRIPT_PATH)),
+        ("lazy_load", config_options.Type(bool, default=True)),
     )
 
     def on_config(self, config):

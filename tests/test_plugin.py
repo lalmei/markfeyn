@@ -43,7 +43,7 @@ def test_normalize_script_path_rejects_directory_traversal():
 )
 def test_plugin_adds_extra_javascript_when_missing(plugin_class, config_class):
     plugin = plugin_class()
-    plugin.load_config({})
+    plugin.load_config({"lazy_load": False})
 
     config = config_class()
     config["extra_javascript"] = []
@@ -62,7 +62,7 @@ def test_plugin_adds_extra_javascript_when_missing(plugin_class, config_class):
 )
 def test_plugin_does_not_duplicate_extra_javascript(plugin_class, config_class):
     plugin = plugin_class()
-    plugin.load_config({})
+    plugin.load_config({"lazy_load": False})
 
     config = config_class()
     config["extra_javascript"] = [DEFAULT_SCRIPT_PATH]
@@ -81,7 +81,7 @@ def test_plugin_does_not_duplicate_extra_javascript(plugin_class, config_class):
 )
 def test_plugin_respects_custom_script_path(tmp_path, plugin_class, config_class):
     plugin = plugin_class()
-    plugin.load_config({"script_path": "/custom/feynman.js"})
+    plugin.load_config({"script_path": "/custom/feynman.js", "lazy_load": False})
 
     config = config_class()
     config["extra_javascript"] = []
@@ -103,7 +103,7 @@ def test_plugin_respects_custom_script_path(tmp_path, plugin_class, config_class
 )
 def test_plugin_copies_bundled_asset_to_default_path(tmp_path, plugin_class, config_class):
     plugin = plugin_class()
-    plugin.load_config({})
+    plugin.load_config({"lazy_load": False})
 
     config = config_class()
     config["site_dir"] = str(tmp_path)
