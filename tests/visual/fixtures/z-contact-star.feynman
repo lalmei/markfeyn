@@ -1,0 +1,4 @@
+fermion l1->hub l2->hub l3->hub l4->hub
+photon hub->r1 hub->r2
+label l1:a_1 l2:a_2 l3:a_3 l4:a_4 r1:b_1 r2:b_2
+vertex hub:blob

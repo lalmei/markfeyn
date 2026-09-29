@@ -1,0 +1,6 @@
+size small
+incoming q
+outgoing q2 g
+fermion q->v1 v1->q2
+gluon v1->g[momentum=k_T]
+label q:q q2:q g:g

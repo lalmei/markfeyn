@@ -1,0 +1,71 @@
+<svg style="--feynman-diagram-width: 280px;" aria-labelledby="feynman-title-7" viewBox="0 0 280 420" height="420" width="280" role="img" class="feynman-diagram__svg">
+<title id="feynman-title-7">Feynman diagram: e- e+ → e+ e-</title>
+<desc>6 vertices, 4 fermion propagators, 1 photon propagator</desc>
+<defs>
+<marker markerUnits="strokeWidth" orient="auto" refY="4" refX="7" markerHeight="11" markerWidth="11" id="feynman-arrow-7">
+<path class="feynman-diagram__arrow" d="M0,0 L8,4 L0,8 Z" />
+</marker>
+<pattern height="8" width="8" patternUnits="userSpaceOnUse" id="feynman-hatch-diagonal-7">
+<rect height="8" width="8" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M -2 10 L 10 -2" class="feynman-diagram__hatch-line" />
+</pattern>
+<pattern height="8" width="8" patternUnits="userSpaceOnUse" id="feynman-hatch-diagonal-reverse-7">
+<rect height="8" width="8" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M -2 -2 L 10 10" class="feynman-diagram__hatch-line" />
+</pattern>
+<pattern height="8" width="8" patternUnits="userSpaceOnUse" id="feynman-hatch-cross-7">
+<rect height="8" width="8" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M -2 10 L 10 -2" class="feynman-diagram__hatch-line" />
+<path d="M -2 -2 L 10 10" class="feynman-diagram__hatch-line" />
+</pattern>
+<pattern height="7" width="7" patternUnits="userSpaceOnUse" id="feynman-hatch-horizontal-7">
+<rect height="7" width="7" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M 0 2 L 7 2" class="feynman-diagram__hatch-line" />
+</pattern>
+<pattern height="7" width="7" patternUnits="userSpaceOnUse" id="feynman-hatch-vertical-7">
+<rect height="7" width="7" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M 2 0 L 2 7" class="feynman-diagram__hatch-line" />
+</pattern>
+<pattern height="8" width="8" patternUnits="userSpaceOnUse" id="feynman-hatch-grid-7">
+<rect height="8" width="8" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M 0 2 L 8 2" class="feynman-diagram__hatch-line" />
+<path d="M 2 0 L 2 8" class="feynman-diagram__hatch-line" />
+</pattern>
+</defs>
+<g class="feynman-diagram__edge-group">
+<path d="M 46 374 L 140 374" class="feynman-diagram__edge feynman-diagram__edge--fermion" />
+<path d="M 102.33 374 L 88.33 379.5 L 88.33 368.5 Z" class="feynman-diagram__arrow" />
+</g>
+<g class="feynman-diagram__edge-group">
+<path d="M 140 374 L 234 374" class="feynman-diagram__edge feynman-diagram__edge--fermion" />
+<path d="M 196.33 374 L 182.33 379.5 L 182.33 368.5 Z" class="feynman-diagram__arrow" />
+</g>
+<path d="M 140 374 L 143.5 372.48 L 146.06 370.96 L 147 369.44 L 146.06 367.93 L 143.5 366.41 L 140 364.89 L 136.5 363.37 L 133.94 361.85 L 133 360.33 L 133.94 358.81 L 136.5 357.3 L 140 355.78 L 143.5 354.26 L 146.06 352.74 L 147 351.22 L 146.06 349.7 L 143.5 348.19 L 140 346.67 L 136.5 345.15 L 133.94 343.63 L 133 342.11 L 133.94 340.59 L 136.5 339.07 L 140 337.56 L 143.5 336.04 L 146.06 334.52 L 147 333 L 146.06 331.48 L 143.5 329.96 L 140 328.44 L 136.5 326.93 L 133.94 325.41 L 133 323.89 L 133.94 322.37 L 136.5 320.85 L 140 319.33 L 143.5 317.81 L 146.06 316.3 L 147 314.78 L 146.06 313.26 L 143.5 311.74 L 140 310.22 L 136.5 308.7 L 133.94 307.19 L 133 305.67 L 133.94 304.15 L 136.5 302.63 L 140 301.11 L 143.5 299.59 L 146.06 298.07 L 147 296.56 L 146.06 295.04 L 143.5 293.52 L 140 292 L 136.5 290.48 L 133.94 288.96 L 133 287.44 L 133.94 285.93 L 136.5 284.41 L 140 282.89 L 143.5 281.37 L 146.06 279.85 L 147 278.33 L 146.06 276.81 L 143.5 275.3 L 140 273.78 L 136.5 272.26 L 133.94 270.74 L 133 269.22 L 133.94 267.7 L 136.5 266.19 L 140 264.67 L 143.5 263.15 L 146.06 261.63 L 147 260.11 L 146.06 258.59 L 143.5 257.07 L 140 255.56 L 136.5 254.04 L 133.94 252.52 L 133 251 L 133.94 249.48 L 136.5 247.96 L 140 246.44 L 143.5 244.93 L 146.06 243.41 L 147 241.89 L 146.06 240.37 L 143.5 238.85 L 140 237.33 L 136.5 235.81 L 133.94 234.3 L 133 232.78 L 133.94 231.26 L 136.5 229.74 L 140 228.22 L 143.5 226.7 L 146.06 225.19 L 147 223.67 L 146.06 222.15 L 143.5 220.63 L 140 219.11 L 136.5 217.59 L 133.94 216.07 L 133 214.56 L 133.94 213.04 L 136.5 211.52 L 140 210 L 143.5 208.48 L 146.06 206.96 L 147 205.44 L 146.06 203.93 L 143.5 202.41 L 140 200.89 L 136.5 199.37 L 133.94 197.85 L 133 196.33 L 133.94 194.81 L 136.5 193.3 L 140 191.78 L 143.5 190.26 L 146.06 188.74 L 147 187.22 L 146.06 185.7 L 143.5 184.19 L 140 182.67 L 136.5 181.15 L 133.94 179.63 L 133 178.11 L 133.94 176.59 L 136.5 175.07 L 140 173.56 L 143.5 172.04 L 146.06 170.52 L 147 169 L 146.06 167.48 L 143.5 165.96 L 140 164.44 L 136.5 162.93 L 133.94 161.41 L 133 159.89 L 133.94 158.37 L 136.5 156.85 L 140 155.33 L 143.5 153.81 L 146.06 152.3 L 147 150.78 L 146.06 149.26 L 143.5 147.74 L 140 146.22 L 136.5 144.7 L 133.94 143.19 L 133 141.67 L 133.94 140.15 L 136.5 138.63 L 140 137.11 L 143.5 135.59 L 146.06 134.07 L 147 132.56 L 146.06 131.04 L 143.5 129.52 L 140 128 L 136.5 126.48 L 133.94 124.96 L 133 123.44 L 133.94 121.93 L 136.5 120.41 L 140 118.89 L 143.5 117.37 L 146.06 115.85 L 147 114.33 L 146.06 112.81 L 143.5 111.3 L 140 109.78 L 136.5 108.26 L 133.94 106.74 L 133 105.22 L 133.94 103.7 L 136.5 102.19 L 140 100.67 L 143.5 99.15 L 146.06 97.63 L 147 96.11 L 146.06 94.59 L 143.5 93.07 L 140 91.56 L 136.5 90.04 L 133.94 88.52 L 133 87 L 133.94 85.48 L 136.5 83.96 L 140 82.44 L 143.5 80.93 L 146.06 79.41 L 147 77.89 L 146.06 76.37 L 143.5 74.85 L 140 73.33 L 136.5 71.81 L 133.94 70.3 L 133 68.78 L 133.94 67.26 L 136.5 65.74 L 140 64.22 L 143.5 62.7 L 146.06 61.19 L 147 59.67 L 146.06 58.15 L 143.5 56.63 L 140 55.11 L 136.5 53.59 L 133.94 52.07 L 133 50.56 L 133.94 49.04 L 136.5 47.52 L 140 46" class="feynman-diagram__edge feynman-diagram__edge--photon" />
+<g class="feynman-diagram__edge-group">
+<path d="M 234 46 L 140 46" class="feynman-diagram__edge feynman-diagram__edge--fermion" />
+<path d="M 177.67 46 L 191.67 40.5 L 191.67 51.5 Z" class="feynman-diagram__arrow" />
+</g>
+<g class="feynman-diagram__edge-group">
+<path d="M 140 46 L 46 46" class="feynman-diagram__edge feynman-diagram__edge--fermion" />
+<path d="M 83.67 46 L 97.67 40.5 L 97.67 51.5 Z" class="feynman-diagram__arrow" />
+</g>
+<text aria-label="e-" dominant-baseline="middle" text-anchor="middle" y="350" x="46" class="feynman-diagram__label feynman-diagram__label--incoming">
+<tspan>e</tspan>
+<tspan font-size="82%" baseline-shift="super">−</tspan>
+</text>
+<text aria-label="e+" dominant-baseline="middle" text-anchor="middle" y="22" x="46" class="feynman-diagram__label feynman-diagram__label--incoming">
+<tspan>e</tspan>
+<tspan font-size="82%" baseline-shift="super">+</tspan>
+</text>
+<text aria-label="e-" dominant-baseline="middle" text-anchor="middle" y="350" x="234" class="feynman-diagram__label feynman-diagram__label--outgoing">
+<tspan>e</tspan>
+<tspan font-size="82%" baseline-shift="super">−</tspan>
+</text>
+<text aria-label="e+" dominant-baseline="middle" text-anchor="middle" y="22" x="234" class="feynman-diagram__label feynman-diagram__label--outgoing">
+<tspan>e</tspan>
+<tspan font-size="82%" baseline-shift="super">+</tspan>
+</text>
+<text aria-label="γ" dominant-baseline="middle" text-anchor="middle" y="210" x="108" class="feynman-diagram__label feynman-diagram__label--edge">
+<tspan>γ</tspan>
+</text>
+</svg>
