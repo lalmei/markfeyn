@@ -192,6 +192,14 @@ plugins:
 
 `script_path` is interpreted relative to the generated site directory. Parent-directory traversal such as `../feynman.js` is rejected.
 
+By default the plugin loads the renderer lazily: it injects a tiny loader script (`feynman-diagrams-loader.js`, written next to `script_path`) and the full renderer is only downloaded on pages that contain a `feynman` block. Set `lazy_load: false` to load the renderer on every page instead:
+
+```yaml
+plugins:
+  - feynman-diagrams:
+      lazy_load: false
+```
+
 ## Syntax
 
 ````markdown
@@ -323,7 +331,7 @@ as an SVG ellipse.
 
 ## Manual JavaScript Setup
 
-If you do not want to use a plugin, copy the bundled renderer:
+If you do not want to use a plugin, copy the bundled renderer. Manual mode loads the full renderer directly on every page:
 
 ```bash
 python -m markfeyn copy-asset docs/javascripts/feynman-diagrams.js
