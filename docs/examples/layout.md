@@ -15,9 +15,9 @@ The same decay can be drawn with different automatic layouts.
     outgoing numu e nue
     fermion mu->w w->numu
     boson w->v
-    anti fermion nue->v
+    anti fermion v->nue
     fermion v->e
-    label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
+    label mu:\mu^- numu:\nu_\mu nue:\overline{\nu}_e e:e^- w->v:W^-
     ```
     ````
 
@@ -30,9 +30,9 @@ The same decay can be drawn with different automatic layouts.
     outgoing numu e nue
     fermion mu->w w->numu
     boson w->v
-    anti fermion nue->v
+    anti fermion v->nue
     fermion v->e
-    label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
+    label mu:\mu^- numu:\nu_\mu nue:\overline{\nu}_e e:e^- w->v:W^-
     ```
     ````
 
@@ -45,9 +45,9 @@ The same decay can be drawn with different automatic layouts.
     outgoing numu e nue
     fermion mu->w w->numu
     boson w->v
-    anti fermion nue->v
+    anti fermion v->nue
     fermion v->e
-    label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
+    label mu:\mu^- numu:\nu_\mu nue:\overline{\nu}_e e:e^- w->v:W^-
     ```
     ````
 
@@ -61,9 +61,9 @@ The same decay can be drawn with different automatic layouts.
     outgoing numu e nue
     fermion mu->w w->numu
     boson w->v
-    anti fermion nue->v
+    anti fermion v->nue
     fermion v->e
-    label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
+    label mu:\mu^- numu:\nu_\mu nue:\overline{\nu}_e e:e^- w->v:W^-
     ```
 
 === "spring"
@@ -74,9 +74,9 @@ The same decay can be drawn with different automatic layouts.
     outgoing numu e nue
     fermion mu->w w->numu
     boson w->v
-    anti fermion nue->v
+    anti fermion v->nue
     fermion v->e
-    label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
+    label mu:\mu^- numu:\nu_\mu nue:\overline{\nu}_e e:e^- w->v:W^-
     ```
 
 === "electrical spring"
@@ -87,9 +87,9 @@ The same decay can be drawn with different automatic layouts.
     outgoing numu e nue
     fermion mu->w w->numu
     boson w->v
-    anti fermion nue->v
+    anti fermion v->nue
     fermion v->e
-    label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
+    label mu:\mu^- numu:\nu_\mu nue:\overline{\nu}_e e:e^- w->v:W^-
     ```
 
 Source:
@@ -101,9 +101,9 @@ incoming mu
 outgoing numu nue e
 fermion mu->w w->numu
 boson w->v
-anti fermion nue->v
+anti fermion v->nue
 fermion v->e
-label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
+label mu:\mu^- numu:\nu_\mu nue:\overline{\nu}_e e:e^- w->v:W^-
 ```
 ````
 
@@ -113,9 +113,9 @@ incoming mu
 outgoing numu nue e
 fermion mu->w w->numu
 boson w->v
-anti fermion nue->v
+anti fermion v->nue
 fermion v->e
-label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
+label mu:\mu^- numu:\nu_\mu nue:\overline{\nu}_e e:e^- w->v:W^-
 ```
 
 Source:
@@ -127,9 +127,9 @@ incoming mu
 outgoing numu nue e
 fermion mu->w w->numu
 boson w->v
-anti fermion nue->v
+anti fermion v->nue
 fermion v->e
-label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
+label mu:\mu^- numu:\nu_\mu nue:\overline{\nu}_e e:e^- w->v:W^-
 ```
 ````
 
@@ -139,9 +139,9 @@ incoming mu
 outgoing numu nue e
 fermion mu->w w->numu
 boson w->v
-anti fermion nue->v
+anti fermion v->nue
 fermion v->e
-label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
+label mu:\mu^- numu:\nu_\mu nue:\overline{\nu}_e e:e^- w->v:W^-
 ```
 
 Source:
@@ -153,9 +153,9 @@ incoming mu
 outgoing numu nue e
 fermion mu->w w->numu
 boson w->v
-anti fermion nue->v
+anti fermion v->nue
 fermion v->e
-label mu:\mu^- numu:\nu_\mu nue:\nu_e e:e^- w->v:W^-
+label mu:\mu^- numu:\nu_\mu nue:\overline{\nu}_e e:e^- w->v:W^-
 ```
 ````
 
