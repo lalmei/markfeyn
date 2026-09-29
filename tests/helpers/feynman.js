@@ -319,7 +319,48 @@ function edgePathBounds(diagram, layout) {
   return bounds;
 }
 
+function segmentOrientation(p, q, r) {
+  const value = (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+
+  return Math.abs(value) < 1e-9 ? 0 : Math.sign(value);
+}
+
+function segmentsProperlyCross(p, q, r, s) {
+  const o1 = segmentOrientation(p, q, r);
+  const o2 = segmentOrientation(p, q, s);
+  const o3 = segmentOrientation(r, s, p);
+  const o4 = segmentOrientation(r, s, q);
+
+  return o1 * o2 < 0 && o3 * o4 < 0;
+}
+
+// Pairs of visible straight edges that cross away from a shared endpoint.
+function edgeCrossings(diagram, layout) {
+  const edges = diagram.edges.filter((edge) => !edge.hidden && edge.from !== edge.to);
+  const crossings = [];
+
+  for (let i = 0; i < edges.length; i += 1) {
+    for (let j = i + 1; j < edges.length; j += 1) {
+      const a = edges[i];
+      const b = edges[j];
+
+      if (a.from === b.from || a.from === b.to || a.to === b.from || a.to === b.to) {
+        continue;
+      }
+
+      const pos = layout.positions;
+
+      if (segmentsProperlyCross(pos[a.from], pos[a.to], pos[b.from], pos[b.to])) {
+        crossings.push([`${a.from}->${a.to}`, `${b.from}->${b.to}`]);
+      }
+    }
+  }
+
+  return crossings;
+}
+
 module.exports = {
+  edgeCrossings,
   LAYOUT_FIXTURE_DIR,
   readLayoutFixture,
   renderDiagramSvg,
