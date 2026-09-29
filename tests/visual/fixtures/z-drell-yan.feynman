@@ -1,0 +1,11 @@
+layout spring
+incoming q qbar
+outgoing lminus lplus
+align vertical q qbar
+anti fermion qbar->ann
+fermion q->ann
+photon ann->boson[edge label=\gamma^*]
+fermion boson->lminus
+anti fermion boson->lplus
+vertex ann:dot boson:dot
+label q:q qbar:\overline{q} lminus:\ell^- lplus:\ell^+

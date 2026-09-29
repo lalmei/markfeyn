@@ -1,0 +1,59 @@
+<svg style="--feynman-diagram-width: 520px;" aria-labelledby="feynman-title-13" viewBox="0 0 520 330" height="330" width="520" role="img" class="feynman-diagram__svg">
+<title id="feynman-title-13">Feynman diagram: e- → e-</title>
+<desc>4 vertices, 3 fermion propagators, 1 photon propagator</desc>
+<defs>
+<marker markerUnits="strokeWidth" orient="auto" refY="4" refX="7" markerHeight="11" markerWidth="11" id="feynman-arrow-13">
+<path class="feynman-diagram__arrow" d="M0,0 L8,4 L0,8 Z" />
+</marker>
+<pattern height="8" width="8" patternUnits="userSpaceOnUse" id="feynman-hatch-diagonal-13">
+<rect height="8" width="8" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M -2 10 L 10 -2" class="feynman-diagram__hatch-line" />
+</pattern>
+<pattern height="8" width="8" patternUnits="userSpaceOnUse" id="feynman-hatch-diagonal-reverse-13">
+<rect height="8" width="8" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M -2 -2 L 10 10" class="feynman-diagram__hatch-line" />
+</pattern>
+<pattern height="8" width="8" patternUnits="userSpaceOnUse" id="feynman-hatch-cross-13">
+<rect height="8" width="8" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M -2 10 L 10 -2" class="feynman-diagram__hatch-line" />
+<path d="M -2 -2 L 10 10" class="feynman-diagram__hatch-line" />
+</pattern>
+<pattern height="7" width="7" patternUnits="userSpaceOnUse" id="feynman-hatch-horizontal-13">
+<rect height="7" width="7" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M 0 2 L 7 2" class="feynman-diagram__hatch-line" />
+</pattern>
+<pattern height="7" width="7" patternUnits="userSpaceOnUse" id="feynman-hatch-vertical-13">
+<rect height="7" width="7" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M 2 0 L 2 7" class="feynman-diagram__hatch-line" />
+</pattern>
+<pattern height="8" width="8" patternUnits="userSpaceOnUse" id="feynman-hatch-grid-13">
+<rect height="8" width="8" y="0" x="0" class="feynman-diagram__hatch-fill" />
+<path d="M 0 2 L 8 2" class="feynman-diagram__hatch-line" />
+<path d="M 2 0 L 2 8" class="feynman-diagram__hatch-line" />
+</pattern>
+</defs>
+<g class="feynman-diagram__edge-group">
+<path d="M 82 165 L 179.49 165" class="feynman-diagram__edge feynman-diagram__edge--fermion" />
+<path d="M 140.08 165 L 126.08 170.5 L 126.08 159.5 Z" class="feynman-diagram__arrow" />
+</g>
+<g class="feynman-diagram__edge-group">
+<path d="M 179.49 165 C 232.63 84.49 287.37 84.49 340.51 165" class="feynman-diagram__edge feynman-diagram__edge--fermion" />
+<path d="M 269.33 104.62 L 255.33 110.12 L 255.33 99.12 Z" class="feynman-diagram__arrow" />
+</g>
+<g class="feynman-diagram__edge-group">
+<path d="M 340.51 165 L 438 165" class="feynman-diagram__edge feynman-diagram__edge--fermion" />
+<path d="M 398.59 165 L 384.59 170.5 L 384.59 159.5 Z" class="feynman-diagram__arrow" />
+</g>
+<path d="M 179.49 165 L 183 163.16 L 185.61 161.43 L 186.63 159.73 L 185.8 157.96 L 183.39 156.02 L 180.09 153.91 L 176.83 151.69 L 174.55 149.49 L 173.92 147.5 L 175.18 145.84 L 178.04 144.57 L 181.83 143.64 L 185.62 142.87 L 188.5 142.01 L 189.82 140.81 L 189.37 139.09 L 187.41 136.84 L 184.64 134.19 L 181.94 131.43 L 180.19 128.91 L 179.99 126.97 L 181.55 125.8 L 184.57 125.41 L 188.41 125.57 L 192.2 125.87 L 195.13 125.87 L 196.64 125.15 L 196.56 123.48 L 195.15 120.92 L 193.06 117.76 L 191.07 114.5 L 189.93 111.71 L 190.17 109.86 L 191.9 109.19 L 194.87 109.62 L 198.5 110.78 L 202.05 112.06 L 204.85 112.83 L 206.45 112.54 L 206.73 110.95 L 205.95 108.15 L 204.65 104.62 L 203.46 101.01 L 202.99 98.06 L 203.62 96.35 L 205.43 96.13 L 208.18 97.28 L 211.41 99.28 L 214.54 101.37 L 217.07 102.77 L 218.68 102.86 L 219.32 101.38 L 219.19 98.49 L 218.7 94.76 L 218.34 90.98 L 218.52 88.01 L 219.5 86.49 L 221.3 86.69 L 223.72 88.41 L 226.43 91.06 L 229.04 93.78 L 231.22 95.69 L 232.78 96.12 L 233.72 94.8 L 234.21 91.94 L 234.52 88.18 L 234.94 84.42 L 235.73 81.55 L 236.99 80.26 L 238.71 80.81 L 240.73 82.99 L 242.86 86.13 L 244.89 89.31 L 246.65 91.61 L 248.11 92.34 L 249.3 91.23 L 250.35 88.52 L 251.39 84.9 L 252.54 81.28 L 253.87 78.62 L 255.36 77.6 L 256.93 78.47 L 258.51 81 L 260 84.49 L 261.38 88 L 262.68 90.59 L 263.98 91.58 L 265.36 90.72 L 266.9 88.26 L 268.61 84.9 L 270.43 81.57 L 272.24 79.2 L 273.89 78.48 L 275.27 79.64 L 276.34 82.42 L 277.14 86.13 L 277.82 89.84 L 278.59 92.63 L 279.66 93.85 L 281.18 93.27 L 283.16 91.15 L 285.48 88.18 L 287.91 85.27 L 290.14 83.31 L 291.91 82.92 L 293.03 84.33 L 293.53 87.27 L 293.57 91.06 L 293.48 94.83 L 293.67 97.72 L 294.46 99.12 L 296.05 98.86 L 298.42 97.19 L 301.3 94.76 L 304.28 92.41 L 306.88 90.96 L 308.69 90.96 L 309.5 92.58 L 309.36 95.56 L 308.59 99.28 L 307.69 102.94 L 307.24 105.79 L 307.71 107.34 L 309.32 107.43 L 311.99 106.33 L 315.35 104.62 L 318.8 103.02 L 321.68 102.21 L 323.46 102.65 L 323.9 104.44 L 323.1 107.32 L 321.5 110.78 L 319.79 114.15 L 318.69 116.84 L 318.79 118.47 L 320.36 118.97 L 323.24 118.58 L 326.94 117.76 L 330.7 117.09 L 333.73 117.06 L 335.38 117.97 L 335.41 119.88 L 333.95 122.54 L 331.59 125.57 L 329.14 128.48 L 327.45 130.89 L 327.18 132.58 L 328.61 133.54 L 331.54 133.97 L 335.36 134.19 L 339.21 134.58 L 342.18 135.41 L 343.6 136.82 L 343.19 138.79 L 341.16 141.15 L 338.17 143.64 L 335.11 146.02 L 332.91 148.11 L 332.28 149.85 L 333.46 151.3 L 336.23 152.59 L 339.91 153.91 L 343.58 155.38 L 346.29 157.07 L 347.35 158.97 L 346.5 160.99 L 343.99 163.03 L 340.51 165" class="feynman-diagram__edge feynman-diagram__edge--photon" />
+<text aria-label="e-" dominant-baseline="middle" text-anchor="end" y="165" x="62" class="feynman-diagram__label feynman-diagram__label--incoming">
+<tspan>e</tspan>
+<tspan font-size="82%" baseline-shift="super">−</tspan>
+</text>
+<text aria-label="e-" dominant-baseline="middle" text-anchor="start" y="165" x="458" class="feynman-diagram__label feynman-diagram__label--outgoing">
+<tspan>e</tspan>
+<tspan font-size="82%" baseline-shift="super">−</tspan>
+</text>
+<text aria-label="γ" dominant-baseline="middle" text-anchor="middle" y="52.4875" x="260" class="feynman-diagram__label feynman-diagram__label--edge">
+<tspan>γ</tspan>
+</text>
+</svg>

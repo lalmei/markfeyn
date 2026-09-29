@@ -1,0 +1,10 @@
+options width=560 height=300
+incoming a
+outgoing d
+position a 70 150
+position b 220 150
+position c 340 150
+position d 490 150
+photon a->b[momentum=p] c->d[momentum=p]
+fermion b->c[half left, momentum=k] c->b[half left, momentum'=k-p]
+label a:\gamma d:\gamma
