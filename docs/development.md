@@ -28,6 +28,30 @@ Run JavaScript checks:
 make test-js
 ```
 
+The JavaScript tests use `node:test` and live in `tests/*.test.js`, one themed file per area:
+
+| File | Covers |
+| --- | --- |
+| `parser-core.test.js` | Parser validation, TikZ orientation and `align` directives, braced label spaces |
+| `render-dom.test.js` | SVG rendering, particle styles, vertex shapes, curved edges, labels markup |
+| `orientation.test.js` | TikZ/vertical orientation, `align`, layered and spring lane layouts |
+| `symmetric-refinement.test.js` | Process-mode detection and symmetric refinement of annihilation trees |
+| `contact-star.test.js` | Fermion flow and contact-star layouts |
+| `loops.test.js` | One-loop candidates, self-energy bubbles, loop label-independent layout |
+| `labels.test.js` | Loop label placement and node-label avoidance |
+| `multiloop.test.js` | Multiloop decomposition, packing and incremental layout |
+| `layout-misc.test.js` | Layout API, tree and spring-electrical layouts, options |
+| `docs-examples.test.js` | Every documented example parses and lays out |
+
+Shared render and geometry helpers live in `tests/helpers/feynman.js`; it is not named `*.test.js`, so `node --test` does not run it as a test. Each test is independent, so a failure no longer aborts the rest.
+
+Run a single file, or a single test by name:
+
+```bash
+node --test tests/loops.test.js
+node --test --test-name-pattern "two edge loop" tests/
+```
+
 Build both documentation variants:
 
 ```bash
