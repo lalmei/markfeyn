@@ -104,13 +104,17 @@ that were trimmed above for brevity) are under
 
 ## Installation
 
-From PyPI:
+From PyPI, install with optional support for your documentation engine:
 
 ```bash
-uv add markfeyn
+uv add "markfeyn[mkdocs]"      # MkDocs
+uv add "markfeyn[properdocs]"  # ProperDocs
 ```
 
-This installs both supported documentation engines as runtime dependencies so the same package exposes both plugin entry points. Install Material for MkDocs when using the Material theme:
+The extras install the engine for you. If the engine is already in your
+environment, plain `uv add markfeyn` is enough.
+
+Install Material for MkDocs when using the Material theme:
 
 ```bash
 uv add mkdocs-material
