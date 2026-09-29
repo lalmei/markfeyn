@@ -27,7 +27,8 @@ theme:
   name: material
 plugins:
   - search
-  - feynman-diagrams
+  - feynman-diagrams:
+      lazy_load: false
 markdown_extensions:
   - pymdownx.highlight:
       anchor_linenums: true
@@ -69,6 +70,7 @@ plugins:
   - search
   - feynman-diagrams:
       script_path: javascripts/markfeyn.js
+      lazy_load: false
 markdown_extensions:
   - pymdownx.highlight:
       anchor_linenums: true
