@@ -11,3 +11,4 @@ site/
 
 .DS_Store
 tmp/
+.claude/worktrees/
