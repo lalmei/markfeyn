@@ -24,13 +24,17 @@ classifiers = [
   "Topic :: Documentation",
   "Topic :: Scientific/Engineering :: Physics",
 ]
-dependencies = [
-  "mkdocs>=1.5",
-  "properdocs>=1.6.7",
-]
+dependencies = []
+
+[project.optional-dependencies]
+mkdocs = ["mkdocs>=1.5"]
+properdocs = ["properdocs>=1.6.7"]
+all = ["mkdocs>=1.5", "properdocs>=1.6.7"]
 
 [dependency-groups]
 dev = [
+  "mkdocs>=1.5",
+  "properdocs>=1.6.7",
   "mkdocs-material>=9.7.6",
   "mkdocs-materialx>=10.1.8",
   "mkdocs-table-reader-plugin>=3.1.0",
