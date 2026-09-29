@@ -1,12 +1,16 @@
 # Installation
 
-Install the package into the same environment as MkDocs or ProperDocs:
+Install the package with support for your documentation engine:
 
 ```bash
-uv add markfeyn
+uv add "markfeyn[mkdocs]"      # MkDocs
+uv add "markfeyn[properdocs]"  # ProperDocs
 ```
 
-This installs both supported documentation engines as runtime dependencies. Install Material for MkDocs when using the Material theme:
+The extras install the engine for you. If the engine is already in your
+environment, plain `uv add markfeyn` is enough.
+
+Install Material for MkDocs when using the Material theme:
 
 ```bash
 uv add mkdocs-material
