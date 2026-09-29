@@ -56,11 +56,15 @@ jobs:
       - run: npm ci
       - name: Build wheel
         run: uv build
-      - name: Install wheel into a clean venv
+      - name: Test bare install (no engines)
+        run: |
+          uv venv "$RUNNER_TEMP/bare"
+          uv pip install --python "$RUNNER_TEMP/bare" dist/*.whl
+          "$RUNNER_TEMP/bare/bin/python" -c "import markfeyn, markfeyn.core; assert markfeyn.core.read_bundled_asset()"
+          "$RUNNER_TEMP/bare/bin/python" -m markfeyn --version
+      - name: Test full install (all engines)
         run: |
           uv venv "$RUNNER_TEMP/smoke"
-          uv pip install --python "$RUNNER_TEMP/smoke" dist/*.whl
-      - name: Smoke test wheel
-        run: |
+          uv pip install --python "$RUNNER_TEMP/smoke" "$(ls dist/*.whl)[all]"
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/smoke/bin/python" "$GITHUB_WORKSPACE/scripts/smoke_wheel.py" "$GITHUB_WORKSPACE/dist"
