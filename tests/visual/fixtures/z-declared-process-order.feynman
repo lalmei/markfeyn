@@ -1,0 +1,8 @@
+incoming e_minus positron
+outgoing mu_minus mu_plus
+fermion e_minus->ann
+anti fermion positron->ann
+photon ann->prod[edge label=\gamma]
+fermion prod->mu_minus
+anti fermion prod->mu_plus
+label e_minus:e^- positron:e^+ mu_minus:\mu^- mu_plus:\mu^+
