@@ -74,3 +74,20 @@ label g1:g_{\\pi\\pi n} g2:g_{\\pi\\pi n} plain:ok tail:+...
   assert.equal(feynman.parseMathJaxSvgLength("2.5ex", 20), 20 * 2.5 * 0.431);
   assert.equal(feynman.parseMathJaxSvgLength("18px", 20), 18);
 });
+
+test("primed options preserve subsequent edges and quoted values", () => {
+  const diagram = feynman.parseFeynman(
+    "photon a->b[momentum'=k] b->c[momentum'=k-p]\n"
+    + "anti  fermion c->d[label'='x, y', arrow position=30%] d->e",
+  );
+
+  assert.deepEqual(diagram.errors, []);
+  assert.deepEqual(diagram.edges.map(({ from, to, label }) => [from, to, label]), [
+    ["a", "b", "k"],
+    ["b", "c", "k-p"],
+    ["c", "d", "x, y"],
+    ["d", "e", undefined],
+  ]);
+  assert.equal(diagram.edges[2].arrowPosition, 0.3);
+  assert.equal(diagram.edges[2].arrow, "reverse");
+});

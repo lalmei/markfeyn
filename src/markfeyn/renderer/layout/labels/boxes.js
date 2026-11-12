@@ -126,7 +126,7 @@ export function buildLabelBoxes(layout, prepared, candidate, curvePlan) {
 }
 
 export function edgeLabelBox(edge, text, layout, curvePlan, options = {}) {
-  if (!edge) {
+  if (!edge || edge.metadata.hidden) {
     return null;
   }
 

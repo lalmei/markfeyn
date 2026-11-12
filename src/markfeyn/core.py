@@ -37,7 +37,9 @@ def copy_renderer_asset(config: MutableMapping, plugin_config: MutableMapping) -
 
 
 def loader_path(script_path: str) -> str:
-    return PurePosixPath(script_path).with_name(LOADER_NAME).as_posix()
+    path = PurePosixPath(script_path)
+    name = LOADER_NAME if path.name != LOADER_NAME else "markfeyn-loader.js"
+    return path.with_name(name).as_posix()
 
 
 def render_loader(script_path: str) -> str:

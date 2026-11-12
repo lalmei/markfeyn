@@ -267,13 +267,13 @@ function renderDirectedEdge(edge, from, to, className) {
     d: geometryToPath(geometry),
   }));
 
-  group.appendChild(renderArrowGlyphOnGeometry(geometry, edge.arrow === "reverse"));
+  group.appendChild(renderArrowGlyphOnGeometry(geometry, edge.arrow === "reverse", edge.arrowPosition));
 
   return group;
 }
 
-function renderArrowGlyphOnGeometry(geometry, reverse) {
-  const sample = geometrySample(geometry, 0.5);
+function renderArrowGlyphOnGeometry(geometry, reverse, position = 0.5) {
+  const sample = geometrySample(geometry, position);
   const vector = normalizeVector(sample.tangent.x, sample.tangent.y);
 
   if (reverse) {
@@ -300,7 +300,7 @@ function renderDoubleEdge(edge, from, to) {
   const geometry = edgeGeometry(edge, from, to);
 
   group.appendChild(path);
-  group.appendChild(renderArrowGlyphOnGeometry(geometry, edge.arrow === "reverse"));
+  group.appendChild(renderArrowGlyphOnGeometry(geometry, edge.arrow === "reverse", edge.arrowPosition));
 
   return group;
 }

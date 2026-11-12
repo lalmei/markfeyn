@@ -7,7 +7,7 @@ const feynman = require("../src/markfeyn/assets/feynman-diagrams.js");
 // the placeholder <figure class="feynman-diagram--loading"> to be replaced
 // by the final figure (which may or may not contain an <svg>, depending on
 // whether the diagram is empty or errored).
-async function renderDiagramFigure(source) {
+async function renderDiagramFigure(source, mathJax) {
   const previousDocument = globalThis.document;
   const previousWindow = globalThis.window;
   const env = parseHTML("<!doctype html><html><head></head><body></body></html>");
@@ -18,6 +18,7 @@ async function renderDiagramFigure(source) {
   try {
     globalThis.document = testDocument;
     globalThis.window = env.window;
+    env.window.MathJax = mathJax;
     code.className = "language-feynman";
     code.textContent = source;
     pre.appendChild(code);
@@ -39,6 +40,7 @@ async function renderDiagramFigure(source) {
 
     throw new Error("Timed out waiting for diagram render");
   } finally {
+    delete env.window.MathJax;
     if (previousDocument === undefined) {
       delete globalThis.document;
     } else {
@@ -352,4 +354,20 @@ test("accessible title and label names keep antiparticle bars", async () => {
   assert.ok(
     Array.from(figure.querySelectorAll("[aria-label]")).some((node) => node.getAttribute("aria-label") === "q\u0304")
   );
+});
+
+test("rich labels keep their fallback while MathJax starts or fails", async () => {
+  let rejectStartup;
+  const startup = new Promise((resolve, reject) => {
+    rejectStartup = reject;
+  });
+  const mathJax = { startup: { promise: startup } };
+  const figure = await renderDiagramFigure("plain a->b\nlabel a:\\frac{a}{b}", mathJax);
+
+  assert.ok(figure.querySelector("svg"));
+  assert.ok(figure.querySelector(".feynman-diagram__label--fallback"));
+  rejectStartup(new Error("MathJax unavailable"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(figure.querySelector("svg"));
+  assert.equal(figure.querySelector(".feynman-diagram__errors"), null);
 });

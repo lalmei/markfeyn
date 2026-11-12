@@ -490,11 +490,12 @@ function scoreMultiloopInterleaving(layout, prepared) {
     return 0;
   }
 
-  const centers = (prepared.topology.loopRegions || [])
-    .filter((region) => selection.regions?.includes(region.id))
-    .map((region) => centerForNodes(layout, region.nodes))
+  const regions = new Map((prepared.topology.loopRegions || []).map((region) => [region.id, region]));
+  const centers = (selection.regions || [])
+    .map((id) => regions.get(id))
     .filter(Boolean)
-    .sort((left, right) => left.x - right.x);
+    .map((region) => centerForNodes(layout, region.nodes))
+    .filter(Boolean);
 
   if (centers.length < 3) {
     return 0;

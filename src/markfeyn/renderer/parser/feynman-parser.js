@@ -101,7 +101,7 @@ export class FeynmanParser {
 
     if (edgeCommand) {
       helpers.parseEdges(
-        line.slice(edgeCommand.words.join(" ").length).trim(),
+        line.replace(new RegExp(`^${edgeCommand.words.join("\\s+")}(?:\\s+|$)`), ""),
         edgeCommand.name,
         edgeCommand.definition,
         this.diagram,

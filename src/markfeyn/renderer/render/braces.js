@@ -1,3 +1,4 @@
+import { textBounds } from "../layout/labels/geometry.js";
 import { createSvg, round } from "./dom.js";
 import { createDiagramLabel } from "./labels.js";
 import {
@@ -5,12 +6,39 @@ import {
   BRACE_SIDE_GAP,
   TEX_BRACE_METRICS,
   TEX_BRACE_PATHS,
+  VISUAL_DEFAULTS,
 } from "./visual-defaults.js";
 
 export function renderBraces(diagram, layout) {
   return (diagram.braces || [])
     .map((brace) => renderBrace(brace, layout))
     .filter(Boolean);
+}
+
+export function braceViewBox(diagram, layout) {
+  let left = 0;
+  let top = 0;
+  let right = layout.width;
+  let bottom = layout.height;
+  const padding = 8;
+
+  for (const brace of diagram.braces || []) {
+    const from = layout.positions[brace.from];
+    const to = layout.positions[brace.to];
+
+    if (!from || !to) {
+      continue;
+    }
+
+    const geometry = braceGeometry(from, to, brace.side);
+    const bounds = textBounds(geometry.label, brace.label, VISUAL_DEFAULTS.labelFontSize);
+    left = Math.min(left, Math.floor(bounds.x1 - padding));
+    top = Math.min(top, Math.floor(Math.min(bounds.y1, geometry.bounds?.y1 ?? bounds.y1) - padding));
+    right = Math.max(right, Math.ceil(bounds.x2 + padding));
+    bottom = Math.max(bottom, Math.ceil(Math.max(bounds.y2, geometry.bounds?.y2 ?? bounds.y2) + padding));
+  }
+
+  return { left, top, width: right - left, height: bottom - top };
 }
 
 export function renderBrace(brace, layout) {
