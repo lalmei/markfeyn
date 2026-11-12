@@ -8,6 +8,7 @@ export function parallelPropagatorCurvePlan(topology) {
 
     const count = group.edges.length;
     const center = (count - 1) / 2;
+    const step = count > 6 ? (0.72 - 0.26) / (count / 2) : 0.18;
 
     group.edges.forEach((edge, index) => {
       const canonicalSide = index <= center ? "left" : "right";
@@ -15,7 +16,7 @@ export function parallelPropagatorCurvePlan(topology) {
       const distance = Math.abs(index - center) + 0.5;
       const amount = count === 2
         ? 0.5
-        : Math.min(0.72, 0.26 + distance * 0.18);
+        : Math.min(0.72, 0.26 + distance * step);
 
       assignments.push({
         propagator: edge.id,

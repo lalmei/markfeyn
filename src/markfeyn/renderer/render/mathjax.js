@@ -78,7 +78,11 @@ export async function materializePendingMathLabels(root) {
     return;
   }
 
-  await whenMathJaxReady();
+  try {
+    await whenMathJaxReady();
+  } catch {
+    return;
+  }
 
   if (!mathJaxTexToSvgAvailable()) {
     return;

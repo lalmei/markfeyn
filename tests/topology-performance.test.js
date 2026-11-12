@@ -75,3 +75,15 @@ function findTruncationDiagnostic(layout) {
     assert.equal(diagnostic.stage, "topology");
   });
 });
+
+test("a long simple ring keeps its polygon topology", async () => {
+  const count = 13;
+  const edges = Array.from({ length: count }, (_, index) => (
+    `v${index}->v${(index + 1) % count}`
+  ));
+  const diagram = feynman.parseFeynman(`photon ${edges.join(" ")}`);
+  const { analysis } = await feynman.layoutFeynman(diagram);
+
+  assert.equal(analysis.topology.detectedTopology, "polygonLoop");
+  assert.equal(analysis.topology.loopCandidate.length, count);
+});

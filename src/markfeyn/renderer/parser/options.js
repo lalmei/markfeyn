@@ -30,6 +30,14 @@ export function parseEdgeOptions(source) {
         options.overlay = true;
       }
 
+      if (name === "arrow position") {
+        const position = parseFractionValue(parsed.value);
+
+        if (Number.isFinite(position) && position > 0 && position < 1) {
+          options.arrowPosition = position;
+        }
+      }
+
       applyCurveOption(options, name, parsed.value);
 
       if (name === "out") {
@@ -210,7 +218,7 @@ export function splitOptionList(source) {
       continue;
     }
 
-    if (character === "\"") {
+    if (character === "\"" || (character === "'" && buffer.trimEnd().endsWith("="))) {
       quote = character;
       buffer += character;
       continue;

@@ -1,4 +1,4 @@
-import { renderBraces } from "./braces.js";
+import { braceViewBox, renderBraces } from "./braces.js";
 import { createDefinitions } from "./definitions.js";
 import { createSvg } from "./dom.js";
 import {
@@ -58,7 +58,7 @@ function summarizeDiagram(diagram, layout) {
   const counts = new Map();
 
   (diagram.edges || []).forEach((edge) => {
-    if (edge.type === "invisible") {
+    if (edge.hidden) {
       return;
     }
 
@@ -96,14 +96,15 @@ export class SvgRenderer {
     }
 
     const figure = document.createElement("figure");
+    const { left, top, width, height } = braceViewBox(diagram, layout);
     const svg = createSvg("svg", {
       class: "feynman-diagram__svg",
       role: "img",
-      width: layout.width,
-      height: layout.height,
-      viewBox: `0 0 ${layout.width} ${layout.height}`,
+      width,
+      height,
+      viewBox: `${left} ${top} ${width} ${height}`,
       "aria-labelledby": `feynman-title-${index}`,
-      style: `--feynman-diagram-width: ${layout.width}px;`,
+      style: `--feynman-diagram-width: ${width}px;`,
     });
     const title = createSvg("title", { id: `feynman-title-${index}` });
     const desc = createSvg("desc", {});
@@ -152,8 +153,6 @@ export class SvgRenderer {
       svg.appendChild(label);
     });
 
-    await materializePendingMathLabels(svg);
-
     figure.appendChild(svg);
 
     const layoutErrorMessages = (layout.diagnostics || [])
@@ -168,10 +167,17 @@ export class SvgRenderer {
       figure.appendChild(errors);
     }
 
-    if (fallbackDiagnostic) {
+    const warningMessages = dedupe((layout.diagnostics || [])
+      .filter(({ stage, code, data }) => (
+        stage === "layout-fallback" || code === "crowded-layout"
+        || (stage === "label-placement" && data?.hardCollisionCount > 0)
+      ))
+      .map(({ message }) => message));
+
+    if (warningMessages.length) {
       const warnings = document.createElement("figcaption");
       warnings.className = "feynman-diagram__warnings";
-      warnings.textContent = fallbackDiagnostic.message;
+      warnings.textContent = warningMessages.join("; ");
       figure.appendChild(warnings);
     }
 
@@ -271,6 +277,7 @@ export class SvgRenderer {
       this.renderFeynmanElement(code.textContent, renderIndex)
         .then((figure) => {
           placeholder.replaceWith(figure);
+          void materializePendingMathLabels(figure);
         })
         .catch((error) => {
           placeholder.replaceWith(this.renderErrorFigure(error, renderIndex, code.textContent));

@@ -102,7 +102,7 @@ export function splitEdgeSpecs(source) {
       continue;
     }
 
-    if (character === "\"" || character === "'") {
+    if (character === "\"" || (character === "'" && buffer.trimEnd().endsWith("="))) {
       quote = character;
       buffer += character;
       continue;
