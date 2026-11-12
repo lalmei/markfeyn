@@ -104,15 +104,15 @@ that were trimmed above for brevity) are under
 
 ## Installation
 
-From PyPI, install with optional support for your documentation engine:
+From a checkout of this repository, install MarkFeyn into your documentation
+project by passing the checkout path to uv. Choose the extra for your engine.
 
 ```bash
-uv add "markfeyn[mkdocs]"      # MkDocs
-uv add "markfeyn[properdocs]"  # ProperDocs
+uv add "/path/to/markfeyn[mkdocs]"
+uv add "/path/to/markfeyn[properdocs]"
 ```
 
-The extras install the engine for you. If the engine is already in your
-environment, plain `uv add markfeyn` is enough.
+Omit the extra if the engine is already installed.
 
 Install Material for MkDocs when using the Material theme:
 
@@ -185,7 +185,6 @@ To customize the emitted script path:
 
 ```yaml
 plugins:
-  - search
   - feynman-diagrams:
       script_path: assets/javascripts/feynman-diagrams.js
 ```

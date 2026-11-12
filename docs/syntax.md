@@ -571,7 +571,8 @@ synchronous layout helper. The helper is also exposed as
 Edge rendering uses the same geometry helpers for straight and curved edges.
 Curve options create cubic Bezier geometry; photons and gluons sample wave or
 loop points along that geometry, while fermions and charged particles draw a
-centered arrow glyph. Edge labels and momentum arrows sample the edge midpoint
+centered arrow glyph by default. Set `arrow position=30%` to move it 30% of the way
+from the declared source to the target, including on reversed-arrow edges. Edge labels and momentum arrows sample the edge midpoint
 and offset along the local normal.
 
 ## Manual Positions
