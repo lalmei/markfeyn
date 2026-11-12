@@ -23,14 +23,15 @@ position jr 380 115
 position jrlabel 380 105
 position eq 440 115
 position sum 515 115
+position sumlimit 515 127
 position f1 640 115
 position f1label 640 105
 position f2 760 115
 position f2label 760 105
 position tail 825 115
-plain jl->disk disk->jr f1->f2[edge label=n] f2->tail
+plain jl->disk disk->jr f1->f2[edge label'=n]
 vertex jl:cross disk:disk jr:cross f1:cross f2:cross
-label jllabel:J_V jrlabel:J_V eq:= sum:∑_n f1label:f_n f2label:f_n tail:+...
+label jllabel:J_V jrlabel:J_V eq:= sum:∑ sumlimit:_{n∈1^{--}} f1label:f_n f2label:f_n tail:+...
 ```
 
 Source:
@@ -45,14 +46,15 @@ position jr 380 115
 position jrlabel 380 105
 position eq 440 115
 position sum 515 115
+position sumlimit 515 127
 position f1 640 115
 position f1label 640 105
 position f2 760 115
 position f2label 760 105
 position tail 825 115
-plain jl->disk disk->jr f1->f2[edge label=n] f2->tail
+plain jl->disk disk->jr f1->f2[edge label'=n]
 vertex jl:cross disk:disk jr:cross f1:cross f2:cross
-label jllabel:J_V jrlabel:J_V eq:= sum:∑_n f1label:f_n f2label:f_n tail:+...
+label jllabel:J_V jrlabel:J_V eq:= sum:∑ sumlimit:_{n∈1^{--}} f1label:f_n f2label:f_n tail:+...
 ```
 ````
 
@@ -72,16 +74,18 @@ position disk 220 150
 position jv 335 150
 position eq 395 150
 position sum 455 150
+position sumlimit 455 162
 position rpi1 530 85
 position rpi2 530 215
 position g 610 150
 position glabel 610 105
 position meson 700 150
+position mesonlabel 700 140
 position tail 755 150
-plain pi1->disk pi2->disk disk->jv g->meson[edge label=n] meson->tail[edge label=f_n]
+plain pi1->disk pi2->disk disk->jv g->meson[edge label'=n]
 scalar rpi1->g rpi2->g
 vertex disk:disk jv:cross g:dot meson:cross
-label pi1:\pi pi2:\pi jv:J_V eq:= sum:∑_n rpi1:\pi rpi2:\pi glabel:g_{\pi\pi n} tail:+...
+label pi1:\pi pi2:\pi jv:J_V eq:= sum:∑ sumlimit:_{n∈1^{--}} rpi1:\pi rpi2:\pi glabel:g_{\pi\pi n} mesonlabel:f_n tail:+...
 ```
 
 Source:
@@ -95,16 +99,18 @@ position disk 220 150
 position jv 335 150
 position eq 395 150
 position sum 455 150
+position sumlimit 455 162
 position rpi1 530 85
 position rpi2 530 215
 position g 610 150
 position glabel 610 105
 position meson 700 150
+position mesonlabel 700 140
 position tail 755 150
-plain pi1->disk pi2->disk disk->jv g->meson[edge label=n] meson->tail[edge label=f_n]
+plain pi1->disk pi2->disk disk->jv g->meson[edge label'=n]
 scalar rpi1->g rpi2->g
 vertex disk:disk jv:cross g:dot meson:cross
-label pi1:\pi pi2:\pi jv:J_V eq:= sum:∑_n rpi1:\pi rpi2:\pi glabel:g_{\pi\pi n} tail:+...
+label pi1:\pi pi2:\pi jv:J_V eq:= sum:∑ sumlimit:_{n∈1^{--}} rpi1:\pi rpi2:\pi glabel:g_{\pi\pi n} mesonlabel:f_n tail:+...
 ```
 ````
 
@@ -125,19 +131,20 @@ position pi3 340 75
 position pi4 340 255
 position eq 395 165
 position sum 470 165
+position sumlimit 470 177
 position lpi1 555 85
 position lpi2 555 245
 position g1 630 165
-position g1label 625 120
+position g1label 640 132
 position g2 735 165
-position g2label 740 120
+position g2label 725 132
 position rpi1 810 85
 position rpi2 810 245
 position tail 845 165
-plain pi1->disk pi2->disk disk->pi3 disk->pi4 g1->g2[edge label=n]
+plain pi1->disk pi2->disk disk->pi3 disk->pi4 g1->g2[edge label'=n]
 scalar lpi1->g1 lpi2->g1 g2->rpi1 g2->rpi2
 vertex disk:disk g1:dot g2:dot
-label pi1:\pi pi2:\pi pi3:\pi pi4:\pi eq:= sum:∑_n g1label:g_{\pi\pi n} g2label:g_{\pi\pi n} tail:+...
+label pi1:\pi pi2:\pi pi3:\pi pi4:\pi eq:= sum:∑ sumlimit:_{n∈J^{PC}} g1label:g_{\pi\pi n} g2label:g_{\pi\pi n} tail:+...
 ```
 
 Source:
@@ -152,18 +159,19 @@ position pi3 340 75
 position pi4 340 255
 position eq 395 165
 position sum 470 165
+position sumlimit 470 177
 position lpi1 555 85
 position lpi2 555 245
 position g1 630 165
-position g1label 625 120
+position g1label 640 132
 position g2 735 165
-position g2label 740 120
+position g2label 725 132
 position rpi1 810 85
 position rpi2 810 245
 position tail 845 165
-plain pi1->disk pi2->disk disk->pi3 disk->pi4 g1->g2[edge label=n]
+plain pi1->disk pi2->disk disk->pi3 disk->pi4 g1->g2[edge label'=n]
 scalar lpi1->g1 lpi2->g1 g2->rpi1 g2->rpi2
 vertex disk:disk g1:dot g2:dot
-label pi1:\pi pi2:\pi pi3:\pi pi4:\pi eq:= sum:∑_n g1label:g_{\pi\pi n} g2label:g_{\pi\pi n} tail:+...
+label pi1:\pi pi2:\pi pi3:\pi pi4:\pi eq:= sum:∑ sumlimit:_{n∈J^{PC}} g1label:g_{\pi\pi n} g2label:g_{\pi\pi n} tail:+...
 ```
 ````
