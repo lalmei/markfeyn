@@ -267,7 +267,7 @@ function nodePlacementSpec(target, text, position) {
 }
 
 function edgePlacementSpec(edge, text, layout, curvePlan, options = {}) {
-  if (!edge) {
+  if (!edge || edge.metadata.hidden) {
     return null;
   }
 

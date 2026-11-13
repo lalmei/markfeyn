@@ -48,7 +48,7 @@ above `b`, listing `lower` first puts it on top, which produces the crossing.
 === "Annihilation"
 
     ```feynman
-    incoming  e_plus e_minus
+    incoming e_minus e_plus
     outgoing e_minus_out e_plus_out
     fermion e_minus->ann
     anti fermion e_plus->ann
@@ -76,9 +76,9 @@ above `b`, listing `lower` first puts it on top, which produces the crossing.
     align vertical lower upper
     incoming  e_minus  e_plus
     outgoing    e_minus_out e_plus_out
-    fermion e_minus->upper upper->e_minus_out
+    fermion e_minus->upper upper->e_minus_out[arrow position=30%]
     photon upper->lower[edge label=\gamma]
-    fermion e_plus_out->lower lower->e_plus
+    fermion e_plus_out->lower[arrow position=30%] lower->e_plus
     label e_minus:e^- e_plus:e^+ e_minus_out:e^- e_plus_out:e^+
     ```
 
@@ -116,14 +116,13 @@ above `b`, listing `lower` first puts it on top, which produces the crossing.
 
     ````markdown
     ```feynman
-    options width=330 height=520
     layout layered
     align vertical lower upper
     incoming  e_minus  e_plus
     outgoing    e_minus_out e_plus_out
-    fermion e_minus->upper upper->e_minus_out
+    fermion e_minus->upper upper->e_minus_out[arrow position=30%]
     photon upper->lower[edge label=\gamma]
-    fermion e_plus_out->lower lower->e_plus
+    fermion e_plus_out->lower[arrow position=30%] lower->e_plus
     label e_minus:e^- e_plus:e^+ e_minus_out:e^- e_plus_out:e^+
     ```
     ````
@@ -145,14 +144,33 @@ incoming h2s2l  h2s1l h2ql h1ql h1s2l  h1s1l
 outgoing h1s1r  h1s2r lminus lplus  h2s1r h2s2r
 fermion h1s1l->h1s1r[overlay] h1ql->q[overlay] h1s2l->h1s2r[overlay]
 anti fermion h2s1l->h2s1r[overlay] h2ql->qbar[overlay] h2s2l->h2s2r[overlay]
-align vertical q qbar
+position hadron1 180 90
+position hadron2 180 290
+position h1s1l 75 65
+position h1s2l 75 115
+position h1ql 75 90
+position h2s1l 75 265
+position h2s2l 75 315
+position h2ql 75 290
+position h1s1r 285 65
+position h1s2r 285 115
+position h2s1r 285 265
+position h2s2r 285 315
+position q 285 90
+position qbar 285 290
+position qlabel 300 70
+position qbarlabel 300 310
+position ann 435 190
+position boson 570 190
+position lminus 690 115
+position lplus 690 265
 anti fermion qbar->ann
 fermion q->ann
 photon ann->boson[edge label=\gamma^*/Z]
 fermion boson->lminus
 anti fermion boson->lplus
-vertex  ann:dot boson:dot
-label q:q qbar:\overline{q} lminus:\ell^- lplus:\ell^+
+vertex hadron1:blob[hatch=grid,width=150,height=84] hadron2:blob[hatch=grid,width=150,height=84] ann:dot boson:dot
+label qlabel:q qbarlabel:\overline{q} lminus:\ell^- lplus:\ell^+
 ```
 
 Source:
@@ -164,14 +182,33 @@ incoming h2s2l  h2s1l h2ql h1ql h1s2l  h1s1l
 outgoing h1s1r  h1s2r lminus lplus  h2s1r h2s2r
 fermion h1s1l->h1s1r[overlay] h1ql->q[overlay] h1s2l->h1s2r[overlay]
 anti fermion h2s1l->h2s1r[overlay] h2ql->qbar[overlay] h2s2l->h2s2r[overlay]
-align vertical q qbar
+position hadron1 180 90
+position hadron2 180 290
+position h1s1l 75 65
+position h1s2l 75 115
+position h1ql 75 90
+position h2s1l 75 265
+position h2s2l 75 315
+position h2ql 75 290
+position h1s1r 285 65
+position h1s2r 285 115
+position h2s1r 285 265
+position h2s2r 285 315
+position q 285 90
+position qbar 285 290
+position qlabel 300 70
+position qbarlabel 300 310
+position ann 435 190
+position boson 570 190
+position lminus 690 115
+position lplus 690 265
 anti fermion qbar->ann
 fermion q->ann
 photon ann->boson[edge label=\gamma^*/Z]
 fermion boson->lminus
 anti fermion boson->lplus
-vertex  ann:dot boson:dot
-label q:q qbar:\overline{q} lminus:\ell^- lplus:\ell^+
+vertex hadron1:blob[hatch=grid,width=150,height=84] hadron2:blob[hatch=grid,width=150,height=84] ann:dot boson:dot
+label qlabel:q qbarlabel:\overline{q} lminus:\ell^- lplus:\ell^+
 ```
 ````
 
@@ -182,26 +219,11 @@ selected from the parallel parton lines inside an elliptical hadron blob.
 
 ```feynman
 options width=760 height=400
-incoming p1l p2l pql lepton_in
-outgoing lepton_out jet p2r p1r
-fermion  pql->parton[overlay] lepton_in->lepton_vertex
-fermion parton->struck
-photon lepton_vertex->struck[edge label=\gamma^*]
-fermion lepton_vertex->lepton_out
-fermion struck->jet
-fermion  p2l->p2r[overlay] p1l->p1r[overlay]
-label lepton_in:\ell lepton_out:\ell'  parton:q jet:X
-```
-
-Source:
-
-````markdown
-```feynman
-options width=760 height=400
 position lepton_in 80 95
 position lepton_vertex 300 95
 position lepton_out 640 60
 position proton 135 285
+position protonlabel 135 348
 position p1l 45 255
 position p1r 255 255
 position pql 45 285
@@ -217,7 +239,35 @@ fermion p1l->p1r[overlay] pql->parton[overlay] p2l->p2r[overlay]
 fermion parton->struck struck->jet
 plain p2r->remnant
 vertex proton:blob[hatch=grid,width=150,height=84] lepton_vertex:dot struck:dot
-label lepton_in:\ell lepton_out:\ell' proton:P parton:q jet:X remnant:remnant
+label lepton_in:\ell lepton_out:\ell' protonlabel:P parton:q jet:X remnant:remnant
+```
+
+Source:
+
+````markdown
+```feynman
+options width=760 height=400
+position lepton_in 80 95
+position lepton_vertex 300 95
+position lepton_out 640 60
+position proton 135 285
+position protonlabel 135 348
+position p1l 45 255
+position p1r 255 255
+position pql 45 285
+position parton 255 285
+position p2l 45 315
+position p2r 255 315
+position struck 390 250
+position jet 640 220
+position remnant 640 330
+fermion lepton_in->lepton_vertex lepton_vertex->lepton_out
+photon lepton_vertex->struck[edge label=\gamma^*]
+fermion p1l->p1r[overlay] pql->parton[overlay] p2l->p2r[overlay]
+fermion parton->struck struck->jet
+plain p2r->remnant
+vertex proton:blob[hatch=grid,width=150,height=84] lepton_vertex:dot struck:dot
+label lepton_in:\ell lepton_out:\ell' protonlabel:P parton:q jet:X remnant:remnant
 ```
 ````
 
@@ -369,7 +419,7 @@ Source:
 
 ````markdown
 ```feynman
-options width=880 height=340
+options width=680 height=340
 incoming a1 b1
 outgoing a4 b2 c1 c3
 position a1 90 185

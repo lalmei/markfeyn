@@ -431,3 +431,43 @@ test("visual defaults stay readable at rendered scale", async () => {
   assert.ok(feynman.visualDefaults.edgeLabelOffset > feynman.visualDefaults.edgeLabelFontSize);
   assert.ok(feynman.visualDefaults.arrowMarkerWidth > 2 * feynman.visualDefaults.edgeStrokeWidth);
 });
+
+test("brace label bounds expand the SVG viewBox", async () => {
+  const svg = await renderDiagramSvg(`
+options width=420 height=220
+position a 50 70
+position b 50 140
+plain a->b
+brace a->b[left]:B^0
+`);
+
+  const [left] = svg.getAttribute("viewBox").split(" ").map(Number);
+  const label = svg.querySelector(".feynman-diagram__label--brace");
+
+  assert.ok(left < Number(label.getAttribute("x")) - 20);
+});
+
+test("layout-only propagators do not emit annotations", async () => {
+  const svg = await renderDiagramSvg(`
+fermion a->b[hidden, momentum=k]
+invisible b->c
+label b->c:Z
+plain c->d
+`);
+
+  assert.equal(svg.querySelector(".feynman-diagram__label--edge"), null);
+  assert.match(svg.querySelector("desc").textContent, /^4 vertices, 1 propagator$/);
+});
+
+test("eight parallel photons have distinct paths", async () => {
+  const svg = await renderDiagramSvg(`
+incoming i
+outgoing o
+fermion i->a b->o
+photon a->b a->b a->b a->b a->b a->b a->b a->b
+`);
+  const paths = [...svg.querySelectorAll(".feynman-diagram__edge--photon")];
+
+  assert.equal(paths.length, 8);
+  assert.equal(new Set(paths.map((path) => path.getAttribute("d"))).size, 8);
+});
