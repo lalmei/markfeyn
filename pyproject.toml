@@ -26,6 +26,9 @@ classifiers = [
 ]
 dependencies = []
 
+[project.scripts]
+markfeyn = "markfeyn.__main__:main"
+
 [project.optional-dependencies]
 mkdocs = ["mkdocs>=1.5"]
 properdocs = ["properdocs>=1.6.7"]
@@ -56,7 +59,7 @@ feynman-diagrams = "markfeyn.mkdocs_plugin:FeynmanDiagramsPlugin"
 where = ["src"]
 
 [tool.setuptools.package-data]
-markfeyn = ["assets/*.js"]
+markfeyn = ["assets/*.js", "assets/*.cjs"]
 
 [tool.setuptools.dynamic]
 version = {attr = "markfeyn.__version__"}

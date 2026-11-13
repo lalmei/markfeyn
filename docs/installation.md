@@ -119,3 +119,75 @@ markdown_extensions:
           class: language-feynman
           format: !!python/name:pymdownx.superfences.fence_code_format
 ```
+
+### Python-Markdown and other HTML renderers
+
+Any HTML page can render a `feynman` fence if its Markdown engine emits
+`<pre><code class="language-feynman">…</code></pre>` and the page loads the
+MarkFeyn bundle. Python-Markdown's `fenced_code` extension does this by default.
+
+```sh
+python -m pip install markfeyn Markdown
+python -m markfeyn copy-asset feynman-diagrams.js
+```
+
+Save this as `build.py` and run `python build.py`. Open the generated
+`index.html` alongside the copied bundle.
+
+````python
+from pathlib import Path
+
+from markdown import markdown
+
+source = """# Photon exchange
+
+```feynman
+incoming a
+outgoing b
+photon a->b
+label a:e^- b:e^- a->b:\\gamma
+```
+"""
+
+body = markdown(source, extensions=["fenced_code"])
+Path("index.html").write_text(
+    '<!doctype html><meta charset="utf-8"><title>Photon exchange</title>'
+    '<script defer src="feynman-diagrams.js"></script>'
+    f"<main id='content'>{body}</main>",
+    encoding="utf-8",
+)
+````
+
+If your application inserts Markdown-generated HTML after page load, call
+`renderAll` on the container after updating it. Load the bundle before this
+code runs and pass HTML from a trusted source or your application's sanitizer.
+
+```javascript
+function showRenderedMarkdown(container, html) {
+  container.innerHTML = html;
+  FeynmanDiagrams.renderAll(container);
+}
+```
+
+If a syntax highlighter takes over unknown code languages, configure it to
+preserve `language-feynman` on the `code` or `pre` element and leave the
+diagram source intact.
+
+## Export a standalone SVG
+
+For a source checkout, run `npm ci` and `npm run build:js` before installing
+MarkFeyn. Put Node.js 22 or newer on `PATH`. The export command
+uses the renderer and MathJax bundled in the Python package, so it runs
+offline without a browser or an npm install.
+
+Save one diagram's source in `diagram.feynman` without the Markdown fences.
+
+```sh
+markfeyn render diagram.feynman -o diagram.svg
+python -m markfeyn render - < diagram.feynman > diagram.svg
+```
+
+Use `-` as the input path to read stdin. SVG goes to stdout unless you pass
+`-o`. Invalid diagram source or math labels produce a diagnostic on stderr
+and a nonzero exit status. Embed the resulting file in Markdown as
+`![Photon exchange](diagram.svg)`.
