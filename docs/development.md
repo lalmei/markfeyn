@@ -340,3 +340,15 @@ Capabilities arrived in the following milestones:
 - **Milestones 3A, 3B, and 3D**: One-loop candidate layouts with deterministic placement strategies; label-aware scoring and final label placement.
 - **Milestone 3C**: Symmetric unclassified tree and two-point loop refinement.
 - **Milestone 3E**: Symmetric unclassified contact stars.
+
+Run the Chromium integration checks after installing the JavaScript and Python
+development dependencies:
+
+```bash
+npx playwright install --only-shell chromium
+npm run build:js
+uv run npm run test:browser
+```
+
+The checks build both documentation sites and exercise MathJax during instant
+navigation. The sites load MathJax from their configured CDNs.
