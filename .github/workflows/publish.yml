@@ -1,0 +1,80 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch: # Validation only; never uploads to PyPI.
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pypi-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch' || (!github.event.release.draft && !github.event.release.prerelease)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: uv sync --group dev
+      - run: npm ci
+      - name: Verify release version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          uv run python - <<'PY'
+          import os, re, sys
+          sys.path.insert(0, 'src')
+          import markfeyn
+          tag = os.environ['RELEASE_TAG']
+          if tag:
+              assert re.fullmatch(r'v\d+\.\d+\.\d+', tag), 'Expected regular vX.Y.Z release tag'
+              assert tag == 'v' + markfeyn.__version__, 'Tag/package version mismatch'
+          PY
+      - run: make lint test
+      - name: Verify bundled renderer
+        run: |
+          npm run build:js
+          git diff --exit-code -- src/markfeyn/assets/
+      - run: uv build
+      - run: uvx --from twine twine check --strict dist/*
+      - name: Smoke-test installed wheel
+        run: |
+          uv venv "$RUNNER_TEMP/smoke"
+          uv pip install --python "$RUNNER_TEMP/smoke" "$(ls dist/*.whl)[all]"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/smoke/bin/python" "$GITHUB_WORKSPACE/scripts/smoke_wheel.py" "$GITHUB_WORKSPACE/dist"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.event_name == 'release' && github.event.action == 'published' && !github.event.release.draft && !github.event.release.prerelease
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/markfeyn/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/
+      - name: Publish with PyPI Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
