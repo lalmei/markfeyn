@@ -39,6 +39,10 @@ jobs:
         run: make test-js
       - name: Check bundled renderer is up to date
         run: git diff --exit-code src/markfeyn/assets/
+      - name: Check README diagrams are up to date
+        run: |
+          node scripts/render-readme-examples.js
+          git diff --exit-code docs/assets/readme/
       - name: Build docs (strict)
         run: make docs
 
