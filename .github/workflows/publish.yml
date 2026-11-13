@@ -78,3 +78,37 @@ jobs:
           path: dist/
       - name: Publish with PyPI Trusted Publishing
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
+
+  verify-publisher:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Verify PyPI publisher without uploading
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request, urllib.error
+          # Official exchange: https://docs.pypi.org/trusted-publishers/using-a-publisher/
+          # Credentials remain in process memory only, never logged or saved.
+          request = urllib.request.Request(
+              os.environ['ACTIONS_ID_TOKEN_REQUEST_URL'] + '&audience=pypi',
+              headers={'Authorization': 'bearer ' + os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']})
+          with urllib.request.urlopen(request, timeout=30) as response:
+              oidc = json.load(response)['value']
+          request = urllib.request.Request(
+              'https://pypi.org/_/oidc/mint-token',
+              data=json.dumps({'token': oidc}).encode(),
+              headers={'Content-Type': 'application/json'})
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  result = json.load(response)
+          except urllib.error.HTTPError as error:
+              raise SystemExit(f'PyPI rejected publisher authentication (HTTP {error.code}); check publisher configuration.') from None
+          if not result.get('token'):
+              raise SystemExit('PyPI did not return an upload credential.')
+          del result, oidc, request
+          print('PyPI publisher authenticated; credential discarded. Nothing uploaded.')
+          PY
