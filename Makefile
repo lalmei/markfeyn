@@ -4,7 +4,6 @@ PYTEST := uv run --group dev pytest
 PROPERDOCS := uv run properdocs
 MKDOCS := uv run mkdocs
 JS_RENDERER := src/markfeyn/assets/feynman-diagrams.js
-DIST_FILES := dist/markfeyn-*.tar.gz dist/markfeyn-*-py3-none-any.whl
 DOCS_ADDR ?= localhost:8001
 
 help:
@@ -71,11 +70,12 @@ build: package
 package: build-js
 	uv build
 
-publish: package
-	uv publish $(DIST_FILES)
+publish publish-test: build-js
+	@output=$$(mktemp -d) && trap 'rm -rf "$$output"' EXIT && \
+	  uv build --out-dir "$$output" && \
+	  uv publish $(PUBLISH_OPTIONS) "$$output"/*
 
-publish-test: package
-	uv publish --publish-url https://test.pypi.org/legacy/ $(DIST_FILES)
+publish-test: PUBLISH_OPTIONS := --publish-url https://test.pypi.org/legacy/
 
 clean:
 	rm -rf build dist site src/*.egg-info .pytest_cache
