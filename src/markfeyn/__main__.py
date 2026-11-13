@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import shutil
+import subprocess
 import sys
 from importlib import resources
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from markfeyn import __version__
 from markfeyn.core import ASSET_NAME, read_bundled_asset
@@ -51,6 +54,34 @@ def copy_asset(dest: str) -> None:
     print(str(target.resolve()))
 
 
+def render_svg(source: str, output: str) -> None:
+    node = shutil.which("node")
+    if node is None:
+        raise RuntimeError("SVG export requires Node.js 22 or newer on PATH.")
+
+    diagram = sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8")
+    assets = resources.files("markfeyn").joinpath("assets")
+    # Copy both bundled modules into one directory even for zip-based imports.
+    with TemporaryDirectory(prefix="markfeyn-") as directory:
+        for name in (ASSET_NAME, "render-svg.cjs"):
+            Path(directory, name).write_bytes(assets.joinpath(name).read_bytes())
+        result = subprocess.run(
+            [node, str(Path(directory, "render-svg.cjs"))],
+            input=diagram,
+            capture_output=True,
+            encoding="utf-8",
+            check=False,
+            timeout=30,
+        )
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "SVG rendering failed.")
+    if output == "-":
+        sys.stdout.write(result.stdout)
+    else:
+        Path(output).write_text(result.stdout, encoding="utf-8")
+
+
+
 def main(argv: list[str] | None = None) -> int:
     """Main CLI entry point.
 
@@ -83,6 +114,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Destination path (file path or existing directory).",
     )
 
+    render_parser = subparsers.add_parser("render", help="Render a diagram to standalone SVG.")
+    render_parser.add_argument("source", help="Diagram source file, or - for stdin.")
+    render_parser.add_argument("-o", "--output", default="-", help="SVG file, or - for stdout.")
+
     # asset-path subcommand
     subparsers.add_parser(
         "asset-path",
@@ -102,6 +137,13 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)
             return 2
+    elif args.command == "render":
+        try:
+            render_svg(args.source, args.output)
+        except (OSError, RuntimeError, UnicodeError, subprocess.TimeoutExpired) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        return 0
     elif args.command == "asset-path":
         print(get_asset_path())
         return 0
