@@ -11,7 +11,8 @@
     "test:js": "npm run check:js && node --test tests/*.test.js",
     "render:readme": "npm run build:js && node scripts/render-readme-examples.js",
     "build:browser": "esbuild src/markfeyn/renderer/feynman-diagrams.js --bundle --format=iife --platform=browser --target=es2020 --charset=utf8 --minify --banner:js=\"/*! MarkFeyn renderer bundle. Includes elkjs; see THIRD_PARTY_NOTICES.md. */\" --footer:js=\"if (typeof module !== 'undefined' && module.exports && typeof globalThis !== 'undefined') module.exports = globalThis.FeynmanDiagrams;\" --outfile=src/markfeyn/assets/feynman-diagrams.js",
-    "build:export": "esbuild src/markfeyn/export/render-svg.cjs --bundle --platform=node --target=node22 --minify --external:./feynman-diagrams.js --legal-comments=linked --outfile=src/markfeyn/assets/render-svg.cjs"
+    "build:export": "esbuild src/markfeyn/export/render-svg.cjs --bundle --platform=node --target=node22 --minify --external:./feynman-diagrams.js --legal-comments=linked --outfile=src/markfeyn/assets/render-svg.cjs",
+    "test:browser": "node scripts/check-browser.cjs"
   },
   "repository": {
     "type": "git",
@@ -29,6 +30,7 @@
   "devDependencies": {
     "esbuild": "^0.28.1",
     "linkedom": "^0.18.12",
-    "mathjax-full": "^3.2.2"
+    "mathjax-full": "^3.2.2",
+    "playwright": "^1.61.1"
   }
 }

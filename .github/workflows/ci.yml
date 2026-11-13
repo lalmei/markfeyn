@@ -45,6 +45,10 @@ jobs:
           git diff --exit-code docs/assets/readme/
       - name: Build docs (strict)
         run: make docs
+      - name: Install Chromium
+        run: npx playwright install --with-deps --only-shell chromium
+      - name: Check rendered documentation in Chromium
+        run: uv run npm run test:browser
 
   package:
     needs: [python, js]
