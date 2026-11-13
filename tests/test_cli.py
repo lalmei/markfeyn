@@ -112,3 +112,45 @@ class TestMainFunction:
         result = main(["invalid-command"])
 
         assert result == 2
+
+
+def test_export_standalone_svg(tmp_path):
+    import shutil
+    import xml.etree.ElementTree as ET
+
+    import pytest
+
+    if shutil.which("node") is None:
+        pytest.skip("SVG export requires Node.js")
+
+    source = tmp_path / "test.feynman"
+    source.write_text("plain a->b\nlabel a:\\frac{1}{2}\n", encoding="utf-8")
+    output = tmp_path / "test.svg"
+
+    assert main(["render", str(source), "-o", str(output)]) == 0
+    svg = ET.parse(output).getroot()
+    assert svg.tag == "{http://www.w3.org/2000/svg}svg"
+    assert svg.find("{*}style") is not None
+    math_svg = svg.find(".//{*}svg[@class='feynman-diagram__label-math-svg']")
+    assert math_svg is not None
+    assert math_svg.find(".//{*}path") is not None
+    assert not svg.findall(".//{*}script")
+    assert not math_svg.findall(".//{*}use")
+
+
+def test_export_invalid_source_preserves_destination(tmp_path, capsys):
+    import shutil
+
+    import pytest
+
+    if shutil.which("node") is None:
+        pytest.skip("SVG export requires Node.js")
+
+    source = tmp_path / "invalid.feynman"
+    source.write_text("plain a->b\nbogus a", encoding="utf-8")
+    output = tmp_path / "test.svg"
+    output.write_text("existing", encoding="utf-8")
+
+    assert main(["render", str(source), "-o", str(output)]) == 1
+    assert output.read_text(encoding="utf-8") == "existing"
+    assert "unknown command" in capsys.readouterr().err

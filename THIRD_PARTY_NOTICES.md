@@ -13,3 +13,7 @@ MarkFeyn bundles the following third-party JavaScript dependency into
 `elkjs` is the JavaScript distribution of the Eclipse Layout Kernel. Its full
 license text is included in this repository at `licenses/ELKJS-EPL-2.0.md` and
 is available from the upstream project.
+
+The standalone SVG exporter bundles LinkeDOM, MathJax, and the supporting
+packages listed with their licenses in
+[SVG-export-dependencies.md](licenses/SVG-export-dependencies.md).
