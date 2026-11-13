@@ -191,3 +191,11 @@ Use `-` as the input path to read stdin. SVG goes to stdout unless you pass
 `-o`. Invalid diagram source or math labels produce a diagnostic on stderr
 and a nonzero exit status. Embed the resulting file in Markdown as
 `![Photon exchange](diagram.svg)`.
+
+
+SVGs have a white background by default. Use `--background transparent`
+to show the page or slide behind the diagram.
+
+```sh
+markfeyn render diagram.feynman --background transparent -o diagram.svg
+```

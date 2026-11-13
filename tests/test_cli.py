@@ -136,6 +136,14 @@ def test_export_standalone_svg(tmp_path):
     assert math_svg.find(".//{*}path") is not None
     assert not svg.findall(".//{*}script")
     assert not math_svg.findall(".//{*}use")
+    background = svg.find("{*}rect")
+    assert background is not None and background.get("fill") == "#ffffff"
+
+    assert main(["render", str(source), "--background", "transparent", "-o", str(output)]) == 0
+    transparent = ET.parse(output).getroot()
+    assert transparent.find("{*}rect") is None
+    assert transparent.attrib == svg.attrib
+    assert transparent.find(".//{*}svg[@class='feynman-diagram__label-math-svg']") is not None
 
 
 def test_export_invalid_source_preserves_destination(tmp_path, capsys):

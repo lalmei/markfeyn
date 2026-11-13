@@ -54,7 +54,7 @@ def copy_asset(dest: str) -> None:
     print(str(target.resolve()))
 
 
-def render_svg(source: str, output: str) -> None:
+def render_svg(source: str, output: str, background: str = "white") -> None:
     node = shutil.which("node")
     if node is None:
         raise RuntimeError("SVG export requires Node.js 22 or newer on PATH.")
@@ -66,7 +66,7 @@ def render_svg(source: str, output: str) -> None:
         for name in (ASSET_NAME, "render-svg.cjs"):
             Path(directory, name).write_bytes(assets.joinpath(name).read_bytes())
         result = subprocess.run(
-            [node, str(Path(directory, "render-svg.cjs"))],
+            [node, str(Path(directory, "render-svg.cjs")), background],
             input=diagram,
             capture_output=True,
             encoding="utf-8",
@@ -118,6 +118,11 @@ def main(argv: list[str] | None = None) -> int:
     render_parser.add_argument("source", help="Diagram source file, or - for stdin.")
     render_parser.add_argument("-o", "--output", default="-", help="SVG file, or - for stdout.")
 
+    render_parser.add_argument(
+        "--background", choices=("white", "transparent"), default="white",
+        help="SVG background (default: white).",
+    )
+
     # asset-path subcommand
     subparsers.add_parser(
         "asset-path",
@@ -139,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     elif args.command == "render":
         try:
-            render_svg(args.source, args.output)
+            render_svg(args.source, args.output, args.background)
         except (OSError, RuntimeError, UnicodeError, subprocess.TimeoutExpired) as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1

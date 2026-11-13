@@ -20,7 +20,7 @@ const math = mathjax.document("", {
   OutputJax: new SVG({ fontCache: "none" }),
 });
 
-async function renderStandaloneSvg(source) {
+async function renderStandaloneSvg(source, { background = "white" } = {}) {
   const { document, window } = parseHTML("<!doctype html><html><head></head><body></body></html>");
   const previousDocument = globalThis.document;
   const previousWindow = globalThis.window;
@@ -60,7 +60,7 @@ async function renderStandaloneSvg(source) {
     svgRenderer.renderAll(document);
     const styles = document.getElementById("feynman-diagram-styles").textContent;
 
-    return standaloneMarkup(svg, styles);
+    return standaloneMarkup(svg, styles, background);
   } finally {
     delete window.MathJax;
     if (previousDocument === undefined) delete globalThis.document;
@@ -70,7 +70,7 @@ async function renderStandaloneSvg(source) {
   }
 }
 
-function standaloneMarkup(svg, styles) {
+function standaloneMarkup(svg, styles, background) {
   const document = svg.ownerDocument;
   const [left, top, width, height] = svg.getAttribute("viewBox").split(/\s+/).map(Number);
   const x = left - BACKGROUND_MARGIN;
@@ -78,22 +78,24 @@ function standaloneMarkup(svg, styles) {
   const paddedWidth = width + 2 * BACKGROUND_MARGIN;
   const paddedHeight = height + 2 * BACKGROUND_MARGIN;
   const style = document.createElementNS(SVG_NS, "style");
-  const background = document.createElementNS(SVG_NS, "rect");
 
   svg.setAttribute("xmlns", SVG_NS);
   svg.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
   style.textContent = styles;
-  for (const [name, value] of Object.entries({
-    x, y, width: paddedWidth, height: paddedHeight, rx: 12, fill: "#ffffff",
-  })) {
-    background.setAttribute(name, String(value));
-  }
 
   svg.setAttribute("viewBox", `${x} ${y} ${paddedWidth} ${paddedHeight}`);
   svg.setAttribute("width", String(paddedWidth));
   svg.setAttribute("height", String(paddedHeight));
   svg.insertBefore(style, svg.firstChild);
-  svg.insertBefore(background, svg.querySelector("title").nextSibling);
+  if (background === "white") {
+    const rect = document.createElementNS(SVG_NS, "rect");
+    for (const [name, value] of Object.entries({
+      x, y, width: paddedWidth, height: paddedHeight, rx: 12, fill: "#ffffff",
+    })) {
+      rect.setAttribute(name, String(value));
+    }
+    svg.insertBefore(rect, svg.querySelector("title").nextSibling);
+  }
 
   return `${svg.outerHTML}\n`;
 }
@@ -101,7 +103,7 @@ function standaloneMarkup(svg, styles) {
 module.exports = { renderStandaloneSvg };
 
 if (require.main === module) {
-  renderStandaloneSvg(fs.readFileSync(0, "utf8"))
+  renderStandaloneSvg(fs.readFileSync(0, "utf8"), { background: process.argv[2] })
     .then((svg) => process.stdout.write(svg))
     .catch((error) => {
       process.stderr.write(`${error.message}\n`);
