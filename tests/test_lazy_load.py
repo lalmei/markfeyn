@@ -69,3 +69,17 @@ def test_lazy_load_disabled_keeps_eager_behaviour(tmp_path, build, load_config):
     assert "assets/javascripts/feynman-diagrams.js" in index
     assert "feynman-diagrams-loader.js" not in index
     assert not (site_dir / "assets/javascripts/feynman-diagrams-loader.js").exists()
+
+
+@pytest.mark.parametrize(("build", "load_config"), ENGINES)
+def test_lazy_loader_and_renderer_have_distinct_paths(tmp_path, build, load_config):
+    site_dir = build_site(
+        tmp_path, build, load_config, "\n      script_path: js/feynman-diagrams-loader.js"
+    )
+    index = (site_dir / "index.html").read_text(encoding="utf-8")
+    loader = (site_dir / "js/markfeyn-loader.js").read_text(encoding="utf-8")
+    renderer = (site_dir / "js/feynman-diagrams-loader.js").read_text(encoding="utf-8")
+
+    assert "js/markfeyn-loader.js" in index
+    assert '"feynman-diagrams-loader.js"' in loader
+    assert "MarkFeyn renderer bundle" in renderer

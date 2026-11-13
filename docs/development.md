@@ -7,7 +7,7 @@ uv sync --group dev
 npm install
 ```
 
-The development dependency group includes `mkdocs-material`, which is used by both local MkDocs and ProperDocs documentation builds.
+The development dependency group includes `mkdocs-materialx`, which is used by both local MkDocs and ProperDocs documentation builds.
 The npm dependencies bundle the browser renderer with ELK.js.
 
 Build the JavaScript renderer:

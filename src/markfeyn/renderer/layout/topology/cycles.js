@@ -15,6 +15,7 @@ import {
 // engages on pathologically dense graphs and lets those fall back to the
 // generic layout instead of enumerating cycles forever.
 const MAX_SIMPLE_CYCLES = 128;
+const MAX_SEARCH_CYCLE_LENGTH = 12;
 
 export function detectTadpoleLoops(semantic, visibleEdges) {
   const internal = new Set(semantic.internalVertices);
@@ -45,8 +46,14 @@ export function detectSimpleInternalCycles(semantic, visibleEdges) {
     addInternalNeighbor(adjacency, second, first);
   });
 
-  const cyclesByKey = new Map();
   const nodes = Array.from(adjacency.keys()).sort(compareStable);
+  const ring = singleLongRing(adjacency, nodes);
+
+  if (ring) {
+    return { cycles: [cycleSummary(ring, pairEdges, semantic)], truncated: false };
+  }
+
+  const cyclesByKey = new Map();
   const truncated = { value: false };
 
   for (const start of nodes) {
@@ -120,6 +127,26 @@ function internalPairEdges(visibleEdges, internal) {
   return pairEdges;
 }
 
+function singleLongRing(adjacency, nodes) {
+  if (nodes.length <= MAX_SEARCH_CYCLE_LENGTH || nodes.some((node) => adjacency.get(node).size !== 2)) {
+    return null;
+  }
+
+  const [start] = nodes;
+  const ring = [start];
+  let previous = start;
+  let current = [...adjacency.get(start)].sort(compareStable)[0];
+
+  while (current !== start) {
+    ring.push(current);
+    const next = [...adjacency.get(current)].find((node) => node !== previous);
+    previous = current;
+    current = next;
+  }
+
+  return ring.length === nodes.length ? ring : null;
+}
+
 function findCyclesFrom(start, current, adjacency, path, visited, cyclesByKey, truncated) {
   if (truncated.value) {
     return;
@@ -139,7 +166,7 @@ function findCyclesFrom(start, current, adjacency, path, visited, cyclesByKey, t
       continue;
     }
 
-    if (visited.has(neighbor) || compareStable(neighbor, start) < 0 || path.length >= 12) {
+    if (visited.has(neighbor) || compareStable(neighbor, start) < 0 || path.length >= MAX_SEARCH_CYCLE_LENGTH) {
       continue;
     }
 

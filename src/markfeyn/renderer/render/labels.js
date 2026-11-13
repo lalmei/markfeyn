@@ -113,7 +113,7 @@ function renderEdgeLabelForEdge(edge, text, layout, options = {}) {
   const from = layout.positions[edge.from];
   const to = layout.positions[edge.to];
 
-  if (!from || !to) {
+  if (edge.hidden || !from || !to) {
     return null;
   }
 

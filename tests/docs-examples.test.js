@@ -12,12 +12,14 @@ test("documented examples parse and layout", async () => {
     .sort()
     .map((name) => path.join(examplesDir, name));
 
+  exampleFiles.push(path.join(examplesDir, "..", "index.md"));
   const blocks = [];
   for (const examplesPath of exampleFiles) {
-    const examples = fs.readFileSync(examplesPath, "utf8");
+    const examples = fs.readFileSync(examplesPath, "utf8")
+      .replace(/^([ \t]*)````[^\n]*\n[\s\S]*?^\1````$/gm, "");
     blocks.push(
-      ...[...examples.matchAll(/```feynman\n([\s\S]*?)```/g)].map((match) => ({
-        source: match[1],
+      ...[...examples.matchAll(/^([ \t]*)```feynman\n([\s\S]*?)^\1```$/gm)].map((match) => ({
+        source: match[2],
         file: path.basename(examplesPath),
       })),
     );
@@ -46,3 +48,36 @@ test("documented examples parse and layout", async () => {
     );
   }
 });
+
+test("landing page uses reverse arrows for both antiparticle legs", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "docs", "index.md"), "utf8");
+  const diagram = feynman.parseFeynman(source.match(/^```feynman\n([\s\S]*?)^```$/m)[1]);
+  const antiparticles = diagram.edges.filter(({ from, to }) => from === "i2" || to === "o2");
+
+  assert.equal(antiparticles.length, 2);
+  assert.ok(antiparticles.every(({ arrow }) => arrow === "reverse"));
+});
+
+test("scattering and literature examples show the source they render", () => {
+  for (const file of ["scattering-decays.md", "from-the-literature.md"]) {
+    const source = fs.readFileSync(path.join(__dirname, "..", "docs", "examples", file), "utf8");
+    const copies = [];
+    const liveSource = source.replace(/^([ \t]*)````[^\n]*\n([\s\S]*?)^\1````$/gm, (_, indent, body) => {
+      const block = body.match(/^\s*```feynman\n([\s\S]*?)^\s*```$/m);
+
+      if (block) {
+        copies.push(normalizeExample(block[1]));
+      }
+
+      return "";
+    });
+    const live = [...liveSource.matchAll(/^([ \t]*)```feynman\n([\s\S]*?)^\1```$/gm)]
+      .map((match) => normalizeExample(match[2]));
+
+    assert.deepEqual(copies, live, file);
+  }
+});
+
+function normalizeExample(source) {
+  return source.trim().split("\n").map((line) => line.trim()).join("\n");
+}
