@@ -66,6 +66,11 @@ jobs:
           uv pip install --python "$RUNNER_TEMP/bare" dist/*.whl
           "$RUNNER_TEMP/bare/bin/python" -c "import markfeyn, markfeyn.core; assert markfeyn.core.read_bundled_asset()"
           "$RUNNER_TEMP/bare/bin/python" -m markfeyn --version
+      - name: Export standalone SVG from the installed wheel
+        run: |
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/bare/bin/python" "$GITHUB_WORKSPACE/scripts/smoke_svg_cli.py" \
+            "$RUNNER_TEMP/bare/bin/markfeyn"
       - name: Test full install (all engines)
         run: |
           uv venv "$RUNNER_TEMP/smoke"
