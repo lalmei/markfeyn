@@ -387,6 +387,11 @@ make docs
 make build
 ```
 
+Run `make coverage` to measure Python and JavaScript renderer coverage. The
+[Coverage workflow](https://github.com/lalmei/markfeyn/actions/workflows/coverage.yml)
+stores both reports and publishes results from `main` to Codecov. The badge
+populates once the repository is enabled in Codecov and a report is uploaded.
+
 Serve docs locally:
 
 ```bash
@@ -425,3 +430,5 @@ export UV_PUBLISH_TOKEN="pypi-..."
 - The script supports themes that expose Material-style instant loading through `document$.subscribe`.
 - It falls back to `DOMContentLoaded` for standard static documentation themes.
 - The browser renderer has no JavaScript runtime dependencies.
+
+[![Coverage](https://codecov.io/gh/lalmei/markfeyn/branch/main/graph/badge.svg)](https://codecov.io/gh/lalmei/markfeyn)

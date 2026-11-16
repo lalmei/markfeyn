@@ -42,6 +42,7 @@ dev = [
   "mkdocs-table-reader-plugin>=3.1.0",
   "pytest>=8",
   "ruff>=0.6",
+  "pytest-cov>=6",
 ]
 
 [project.urls]
@@ -65,6 +66,11 @@ version = {attr = "markfeyn.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+relative_files = true
+source = ["src/markfeyn"]
 
 [tool.ruff]
 target-version = "py39"

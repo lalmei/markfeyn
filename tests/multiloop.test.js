@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const feynman = require("../src/markfeyn/assets/feynman-diagrams.js");
+const feynman = require("./helpers/renderer");
 const {
   readLayoutFixture,
   pointDistance,

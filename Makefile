@@ -1,4 +1,4 @@
-.PHONY: help sync build-js lint test test-py test-js docs build-docs serve-docs serve build package publish publish-test clean
+.PHONY: help sync build-js lint test test-py test-js coverage coverage-py coverage-js docs build-docs serve-docs serve build package publish publish-test clean
 
 PYTEST := uv run --group dev pytest
 PROPERDOCS := uv run properdocs
@@ -14,6 +14,7 @@ help:
 	@echo "  test        Run Python and JavaScript tests"
 	@echo "  test-py     Run pytest"
 	@echo "  test-js     Check and run the JavaScript renderer tests"
+	@echo "  coverage    Report Python and JavaScript renderer coverage"
 	@echo "  docs        Build MkDocs and ProperDocs documentation with strict checks"
 	@echo "  docs-mkdocs Build MkDocs documentation with strict checks"
 	@echo "  docs-properdocs Build ProperDocs documentation with strict checks"
@@ -44,6 +45,14 @@ test-py:
 
 test-js:
 	npm run test:js
+
+coverage: coverage-py coverage-js
+
+coverage-py:
+	$(PYTEST) --cov --cov-report=term-missing --cov-report=xml:build/coverage/python.xml
+
+coverage-js:
+	npm run coverage:js
 
 docs: build-js docs-properdocs docs-mkdocs
 

@@ -4,7 +4,6 @@ const path = require("node:path");
 const { parseHTML } = require("linkedom");
 
 const ROOT = path.join(__dirname, "..");
-const RENDERER_PATH = path.join(ROOT, "src", "markfeyn", "assets", "feynman-diagrams.js");
 const FIXTURE_DIR = path.join(__dirname, "visual", "fixtures");
 const SNAPSHOT_DIR = path.join(__dirname, "visual", "snapshots");
 const UPDATE = process.env.MARKFEYN_UPDATE_VISUAL === "1";
@@ -60,7 +59,7 @@ function loadRenderer() {
   globalThis.document = env.document;
   globalThis.window = env.window;
 
-  const loaded = require(RENDERER_PATH);
+  const loaded = require("./helpers/renderer");
 
   debug("renderer loaded");
 
