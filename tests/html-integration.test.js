@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { parseHTML } = require("linkedom");
-const renderer = require("../src/markfeyn/assets/feynman-diagrams.js");
+const renderer = require("./helpers/renderer");
 
 test("the documented JavaScript hook renders newly inserted Markdown HTML", async () => {
   const docs = fs.readFileSync(path.join(__dirname, "../docs/installation.md"), "utf8");

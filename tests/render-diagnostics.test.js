@@ -1,7 +1,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { parseHTML } = require("linkedom");
-const feynman = require("../src/markfeyn/assets/feynman-diagrams.js");
+const feynman = require("./helpers/renderer");
 
 // Renders `source` through the real renderAll()/DOM pipeline and waits for
 // the placeholder <figure class="feynman-diagram--loading"> to be replaced

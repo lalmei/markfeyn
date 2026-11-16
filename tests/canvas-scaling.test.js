@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const feynman = require("../src/markfeyn/assets/feynman-diagrams.js");
+const feynman = require("./helpers/renderer");
 
 function fermionChainSource(edgeCount) {
   const lines = [];

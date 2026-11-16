@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { parseHTML } = require("linkedom");
-const feynman = require("../../src/markfeyn/assets/feynman-diagrams.js");
+const feynman = require("./renderer");
 
 const LAYOUT_FIXTURE_DIR = path.join(__dirname, "..", "layout", "fixtures");
 

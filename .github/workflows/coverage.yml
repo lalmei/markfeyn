@@ -1,0 +1,53 @@
+name: Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: uv sync --locked --group dev
+      - run: npm ci
+      - run: make coverage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: |
+            build/coverage/python.xml
+            build/coverage/js/lcov.info
+          if-no-files-found: error
+
+  publish:
+    if: github.repository == 'lalmei/markfeyn' && github.ref == 'refs/heads/main'
+    needs: coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: coverage-reports
+          path: build/coverage
+      - uses: codecov/codecov-action@v7.1.1
+        with:
+          use_oidc: true
+          disable_search: true
+          files: build/coverage/python.xml,build/coverage/js/lcov.info
+          fail_ci_if_error: true

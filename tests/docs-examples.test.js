@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const feynman = require("../src/markfeyn/assets/feynman-diagrams.js");
+const feynman = require("./helpers/renderer");
 
 test("documented examples parse and layout", async () => {
   const examplesDir = path.join(__dirname, "..", "docs", "examples");
